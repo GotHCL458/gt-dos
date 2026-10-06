@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-r"""GT-DOS v0.6 全流程测试:
+r"""GT-DOS v0.7 全流程测试:
    1) 首启 -> OOBE 向导 (语言/主机名/admin/主题)
    2) 重启 -> OOBE 不再出现 (持久化), 进入登录界面
    3) 以 admin 登录 -> whoami/users/config/df

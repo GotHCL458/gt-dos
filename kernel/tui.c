@@ -134,7 +134,7 @@ void tui_splash(void)
 
     /* 串口纯文本版 */
     if (serial_plain()) {
-        serial_puts("\n  GT-DOS v0.6  --  a tiny DOS-like OS (NASM + C)\n\n");
+        serial_puts("\n  GT-DOS v0.7  --  a tiny DOS-like OS (NASM + clang/LLVM)\n\n");
     }
 
     /* 进度条 */

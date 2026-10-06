@@ -86,8 +86,8 @@ static const struct entry table[] = {
     { "status.ready",    "Ready",                     "就绪" },
 
     /* ---- Shell 提示 ---- */
-    { "shell.banner",    "GT-DOS v0.6  --  Chinese font, MBR boot, protected system\n",
-      "GT-DOS v0.6  --  中文字库, MBR 引导, 系统保护\n" },
+    { "shell.banner",    "GT-DOS v0.7  --  x64 long mode, MBR boot, Chinese font\n",
+      "GT-DOS v0.7  --  x64 长模式, MBR 引导, 中文字库\n" },
     { "shell.hint",
       "Signed in as '%s' on '%s'. Type HELP for commands.\n",
       "已登录 '%s'@'%s'。输入 HELP 查看命令。\n" },
@@ -168,7 +168,7 @@ static const struct entry table[] = {
     { "gui.chk",     "Enable effect",               "启用效果" },
     { "gui.close",   "Close",                       "关闭" },
     { "gui.about_t", "GT-DOS Graphical Desktop",    "GT-DOS 图形桌面" },
-    { "gui.about_v", "Version 0.6  (NASM + C)",     "版本 0.6  (NASM + C)" },
+    { "gui.about_v", "Version 0.7  (NASM + clang/LLVM)", "版本 0.7  (NASM + clang/LLVM)" },
     { "gui.about_d", "640x480 truecolor, double buffered", "640x480 真彩色, 双缓冲渲染" },
     { "gui.about_f", "Chinese glyphs from font.bin", "中文字模来自 font.bin 字库" },
     { "gui.sys_t",   "System Information",          "系统信息" },

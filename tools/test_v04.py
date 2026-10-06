@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""GT-DOS v0.6 回归: 单盘 C: + GT-DOS 目录 + INCLUDE 头文件 + 属性 +
+"""GT-DOS v0.7 回归: 单盘 C: + GT-DOS 目录 + INCLUDE 头文件 + 属性 +
    busybox 命令 + DIR /A + 系统保护 + 中文显示(串口 UTF-8)."""
 import os, shutil, socket, subprocess, sys, time
 

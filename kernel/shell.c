@@ -17,7 +17,7 @@
 #define PIT_FREQ_DIV 1331
 
 static const char *version =
-    "GT-DOS 0.6 [i386 protected mode, NASM + clang/LLVM]";
+    "GT-DOS 0.7 [x64 long mode, NASM + clang/LLVM]";
 
 /* ============================================================ 回滚视图 */
 /* 统一的滚动入口: delta>0 向上翻 (看历史), 带上下限钳制与状态指示.
