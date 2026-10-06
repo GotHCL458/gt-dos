@@ -1,0 +1,18 @@
+# 第三方工具链与模拟器 (体积过大, 不入库)
+/mingw64/
+/qemu/
+/x86dbg/
+
+# Minoca OS 参考源码 (独立项目)
+/os-0.4.0.2414/
+/os
+
+# 构建产物与镜像 (镜像通过 Release 分发)
+/build/
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 运行日志
+*.log
