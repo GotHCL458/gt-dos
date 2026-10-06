@@ -154,7 +154,10 @@ assert on real boot output rather than on mocks.
   `0xA0000` VGA aperture and corrupt the framebuffer.
 - Building requires Windows; the kernel itself is fully freestanding and does not depend on the
   host platform.
-- A license has not been declared for this project yet.
+
+## License
+
+Released under the [MIT License](LICENSE). Copyright (c) 2026 GotHCL458.
 
 ## Links
 
