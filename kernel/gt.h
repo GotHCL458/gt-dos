@@ -88,10 +88,10 @@ int  serial_getchar(void);     /* 无数据返回 -1 */
 
 /* 引导器邮箱 (boot.asm 写入) */
 #define MB_BOOT_DRIVE 0x0600       /* u8  引导盘号 */
-#define MB_FONT_LBA   0x0604       /* u32 font.bin 起始 LBA */
-#define MB_FONT_SECT  0x0608       /* u32 font.bin 扇区数 */
-#define MB_CPM_LBA    0x060C       /* u32 cpm.bin 起始 LBA */
-#define MB_CPM_SECT   0x0610       /* u32 cpm.bin 扇区数 */
+#define MB_FONT_LBA   0x0604       /* u32 font.gtd 起始 LBA */
+#define MB_FONT_SECT  0x0608       /* u32 font.gtd 扇区数 */
+#define MB_CPM_LBA    0x060C       /* u32 cpm.gtd 起始 LBA */
+#define MB_CPM_SECT   0x0610       /* u32 cpm.gtd 扇区数 */
 
 /* 16 色 VGA 调色板 */
 enum {
@@ -149,9 +149,6 @@ void gfx_flip(void);                 /* 整屏提交后台缓冲 */
 void gfx_flip_rect(int x, int y, int w, int h);
 
 /* ---------------------------------------------------------------- GUI */
-void gui_run(void);                  /* 进入图形桌面 (阻塞, 退出返回 shell) */
-bool gui_available(void);            /* VBE Bochs 接口可用? */
-bool gui_active(void);               /* 当前在图形桌面中 (屏蔽滚轮回 shell) */
 void vga_enter_gfx(void);            /* 控制台切到图形文本后端 */
 void vga_refresh(void);              /* 重绘整个文本控制台 */
 void vga_relayout(void);             /* 分辨率改变后重排文本网格 */

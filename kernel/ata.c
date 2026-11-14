@@ -1,9 +1,6 @@
-/* ==========================================================================
- *  GT-DOS ATA PIO 驱动 (Primary 通道: Master + Slave 双设备)
- *  ---------------------------------------------------------------------------
- *  28 位 LBA 模式. QEMU 映射: -hda => dev0(master), -hdb => dev1(slave).
- *  对外保留 dev0 的兼容接口 (ata_read/ata_write/...), 多盘场景用 *_dev。
- * ========================================================================== */
+/* ATA PIO 驱动, Primary 通道 Master+Slave, 28 位 LBA.
+   QEMU: -hda=dev0(master), -hdb=dev1(slave). ata_read/ata_write 走 dev0,
+   多盘用 *_dev. */
 #include "gt.h"
 
 #define ATA_IO      0x1F0

@@ -1,10 +1,5 @@
-/* ==========================================================================
- *  GT-DOS 国际化 (i18n)
- *  ---------------------------------------------------------------------------
- *  双语字表: 英文 / 简体中文. 中文串以 UTF-8 字面量存储,
- *  由 vga.c 的 UTF-8 解码 + 动态字库渲染.
- *  L(key) 按当前语言取文案; 缺省返回英文 (即 key 本身对应的 en 字段).
- * ========================================================================== */
+/* 国际化: 英文 / 简体中文双语字表. 中文串以 UTF-8 字面量存储, 由 vga.c 的
+   UTF-8 解码 + 动态字库渲染. L(key) 按当前语言取文案, 缺省返回英文. */
 #include "gt.h"
 
 struct entry {
@@ -77,8 +72,8 @@ static const struct entry table[] = {
     { "login.welcome",   "  Welcome, %s%s.\n",        "  欢迎, %s%s。\n" },
 
     /* ---- 启动/状态 ---- */
-    { "splash.sub",      "        a tiny DOS-like OS  --  NASM + C (clang/LLVM)\n",
-      "        一个迷你 DOS 风格操作系统 -- NASM + C (clang/LLVM)\n" },
+    { "splash.sub",      "        a tiny DOS-like OS\n",
+      "        迷你 DOS 风格操作系统\n" },
     { "splash.s1",       "Loading kernel",            "加载内核" },
     { "splash.s2",       "Mounting disks",            "挂载磁盘" },
     { "splash.s3",       "Starting services",         "启动服务" },
@@ -86,8 +81,8 @@ static const struct entry table[] = {
     { "status.ready",    "Ready",                     "就绪" },
 
     /* ---- Shell 提示 ---- */
-    { "shell.banner",    "GT-DOS v0.7  --  x64 long mode, MBR boot, Chinese font\n",
-      "GT-DOS v0.7  --  x64 长模式, MBR 引导, 中文字库\n" },
+    { "shell.banner",    "GT-DOS v0.8\n",
+      "GT-DOS v0.8\n" },
     { "shell.hint",
       "Signed in as '%s' on '%s'. Type HELP for commands.\n",
       "已登录 '%s'@'%s'。输入 HELP 查看命令。\n" },
@@ -106,7 +101,6 @@ static const struct entry table[] = {
       "  SERIAL ON|OFF     toggle serial output\n"
       "  COLOR <0-15>      set text color\n"
       "  DIV0              raise divide-by-zero (test)\n"
-      "  GUI               enter graphical desktop\n"
       "  RES <W>x<H>|list  change resolution (640x480..1280x1024)\n"
       "  WHOAMI / USERS / LOGIN / LOGOUT\n"
       "  PASSWD [user]     (self only unless admin)\n"
@@ -133,7 +127,6 @@ static const struct entry table[] = {
       "  SERIAL ON|OFF  串口开关\n"
       "  COLOR 0-15     文字颜色\n"
       "  DIV0           除零测试\n"
-      "  GUI            进入图形桌面\n"
       "  RES <宽>x<高>|list  切换分辨率 (640x480..1280x1024)\n"
       "  WHOAMI USERS LOGIN LOGOUT\n"
       "  PASSWD [用户]  修改口令 (非管理员仅限自己)\n"
@@ -155,26 +148,6 @@ static const struct entry table[] = {
       "编辑: 方向键/Home/End/Del, 上/下=历史。\n"
       "滚动: 鼠标滚轮 / Ctrl+上/下 / PgUp/PgDn。\n" },
 
-    /* ---- GUI 桌面 ---- */
-    { "gui.title",   "GT-DOS Desktop",              "GT-DOS 桌面" },
-    { "gui.welcome", "Welcome to the GT-DOS desktop", "欢迎使用 GT-DOS 桌面" },
-    { "gui.demo",    "Controls Demo",               "控件演示" },
-    { "gui.about",   "About",                       "关于" },
-    { "gui.sys",     "System Info",                 "系统信息" },
-    { "gui.clicks",  "Clicks: ",                    "点击次数: " },
-    { "gui.exit",    "Exit",                        "退出桌面" },
-    { "gui.start",   "Start",                       "开始" },
-    { "gui.press",   "Press me",                    "按我计数" },
-    { "gui.chk",     "Enable effect",               "启用效果" },
-    { "gui.close",   "Close",                       "关闭" },
-    { "gui.about_t", "GT-DOS Graphical Desktop",    "GT-DOS 图形桌面" },
-    { "gui.about_v", "Version 0.7  (NASM + clang/LLVM)", "版本 0.7  (NASM + clang/LLVM)" },
-    { "gui.about_d", "640x480 truecolor, double buffered", "640x480 真彩色, 双缓冲渲染" },
-    { "gui.about_f", "Chinese glyphs from font.bin", "中文字模来自 font.bin 字库" },
-    { "gui.sys_t",   "System Information",          "系统信息" },
-    { "gui.sys_mem", "Conventional memory: ",       "常规内存: " },
-    { "gui.sys_up",  "Uptime: ",                    "运行时间: " },
-    { "gui.sys_drv", "FAT drives mounted: ",        "已挂载磁盘数: " },
     { 0, 0, 0 }
 };
 

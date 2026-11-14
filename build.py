@@ -14,7 +14,7 @@ GT-DOS 构建脚本
   LBA0        : MBR (boot/mbr.asm, 分区表由本脚本写入)
   part1 C:    : FAT16 系统盘 (含 \GT-DOS\ 系统目录与 INCLUDE 头文件)
   part2 隐藏  : 盘尾启动分区 (type 0x11, bootable):
-                [boot.bin | kernel.bin | font.bin | cpm.bin]
+                [boot.gtb | kernel.gtb | font.gtd | cpm.gtd]
 工具链: NASM + clang/LLVM + QEMU
 =======================================================================
 """
@@ -301,7 +301,6 @@ C_SOURCES = [
     "softirq.c",
     "apic.c",
     "gfx.c",
-    "gui.c",
     "keyboard.c",
     "mouse.c",
     "timer.c",
@@ -319,9 +318,9 @@ ASM_SOURCES = ["entry.asm", "isr.asm"]
 
 
 def ensure_font():
-    """font.bin / cpm.bin 缺失时自动调用 tools/mkfont.py 生成."""
-    fpath = os.path.join(BUILD, "font.bin")
-    cpath = os.path.join(BUILD, "cpm.bin")
+    """font.gtd / cpm.gtd 缺失时自动调用 tools/mkfont.py 生成."""
+    fpath = os.path.join(BUILD, "font.gtd")
+    cpath = os.path.join(BUILD, "cpm.gtd")
     if os.path.isfile(fpath) and os.path.isfile(cpath):
         return
     print("==> 字模缺失, 调用 tools/mkfont.py 生成 (首次较慢)")
@@ -335,7 +334,7 @@ def ensure_font():
 
 def build_boot2():
     src = os.path.join(ROOT, "boot", "boot.asm")
-    out = os.path.join(BUILD, "boot.bin")
+    out = os.path.join(BUILD, "boot.gtb")
     run([TOOLS["nasm"], "-f", "bin", src, "-o", out])
     data = open(out, "rb").read()
     if len(data) != SECTOR * 16:
@@ -346,7 +345,7 @@ def build_boot2():
 
 def build_mbr():
     src = os.path.join(ROOT, "boot", "mbr.asm")
-    out = os.path.join(BUILD, "mbr.bin")
+    out = os.path.join(BUILD, "mbr.gtb")
     run([TOOLS["nasm"], "-f", "bin", src, "-o", out])
     data = open(out, "rb").read()
     if len(data) != SECTOR:
@@ -375,7 +374,7 @@ def build_kernel():
          os.path.join(ROOT, "kernel", "kernel.ld"),
          "-o", elf] + objs)
 
-    bin_ = os.path.join(BUILD, "kernel.bin")
+    bin_ = os.path.join(BUILD, "kernel.gtb")
     run([TOOLS["llvm-objcopy"], "-O", "binary", elf, bin_])
 
     data = open(bin_, "rb").read()
@@ -498,8 +497,8 @@ def build():
     print("==> 编译内核 (NASM + clang/LLVM, x86-64 long mode)")
     kernel, _ = build_kernel()
     ensure_font()
-    font = open(os.path.join(BUILD, "font.bin"), "rb").read()
-    cpm = open(os.path.join(BUILD, "cpm.bin"), "rb").read()
+    font = open(os.path.join(BUILD, "font.gtd"), "rb").read()
+    cpm = open(os.path.join(BUILD, "cpm.gtd"), "rb").read()
     print("==> 组装单硬盘镜像 (MBR + C: FAT16 + 隐藏启动分区)")
     hd = make_hd_image(mbr, boot2, kernel, font, cpm)
     return hd

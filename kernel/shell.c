@@ -1,13 +1,6 @@
-/* ==========================================================================
- *  GT-DOS 命令行解释器 (类 DOS Shell)
- *  ---------------------------------------------------------------------------
- *  特性:
- *    - 行编辑 / 命令历史 / 彩色输出 / 滚轮回看 (输入层在 ui.c)
- *    - 真实磁盘 FAT16/32 (DIR/CAT/PUT/DEL/MKDIR/DF/DISK/MOUNT)
- *    - 用户系统 (whoami/users/login/logout/passwd/useradd/userdel)
- *    - 配置持久化 (config/oobe/hostname)
- *    - 电源 (reboot/shutdown; Ctrl+Alt+Del 热重启)
- * ========================================================================== */
+/* 命令行解释器 (类 DOS Shell). 输入层在 ui.c, 提供行编辑/命令历史/彩色输出/
+   滚轮回看. 命令涵盖 FAT16/32 磁盘操作, 用户系统, 配置持久化, 电源管理
+   (Ctrl+Alt+Del 热重启). */
 #include "gt.h"
 
 #define LINE_MAX   160
@@ -16,8 +9,7 @@
 /* PIT 通道2 分频, 约 896 Hz 的提示音 */
 #define PIT_FREQ_DIV 1331
 
-static const char *version =
-    "GT-DOS 0.7 [x64 long mode, NASM + clang/LLVM]";
+static const char *version = "GT-DOS 0.8";
 
 /* ============================================================ 回滚视图 */
 /* 统一的滚动入口: delta>0 向上翻 (看历史), 带上下限钳制与状态指示.
@@ -1076,8 +1068,6 @@ static void execute(char *line)
         cmd_config(argc, argv);
     } else if (!strncasecmp(cmd, "oobe", 8)) {
         cmd_oobe();
-    } else if (!strncasecmp(cmd, "gui", 8)) {
-        gui_run();
     } else if (!strncasecmp(cmd, "res", 8)) {
         cmd_res(argc, argv);
     } else if (!strncasecmp(cmd, "apic", 8)) {

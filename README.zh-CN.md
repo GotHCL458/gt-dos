@@ -4,9 +4,9 @@
 
 GT-DOS 是一个从零实现的 **x64 教学操作系统**，使用 NASM 汇编与 C（clang/LLVM 编译）编写。
 它通过自己的 MBR 与二级加载器，从单个 64 MB 硬盘镜像引导进入 64 位长模式，并提供文本控制台、
-图形桌面、FAT16 文件系统、用户账户与中英双语 Shell。
+FAT16 文件系统、用户账户与中英双语 Shell。
 
-![version](https://img.shields.io/badge/version-0.7-blue)
+![version](https://img.shields.io/badge/version-0.8-blue)
 
 ## 功能特性
 
@@ -27,15 +27,15 @@ GT-DOS 是一个从零实现的 **x64 教学操作系统**，使用 NASM 汇编�
 **图形**
 - Bochs VBE 线性帧缓冲，LFB 地址通过 PCI 配置空间探测获得
 - 双缓冲——所有绘制先写入后台缓冲再翻转，因此无闪烁
-- 运行时切换分辨率：640x480 / 800x600 / 1024x768 / 1280x1024
-- GUI 桌面：窗口、拖拽、标题栏、图标与任务栏
+- 文本控制台运行时切换分辨率：640x480 / 800x600 / 1024x768 / 1280x1024
+- 文本控制台在帧缓冲上软渲染，中文不受 VGA 256 槽限制
 
 **字体**
-- 16x16 灰度中文字模，以原生 14 px、GDI `CLEARTYPE_QUALITY` 渲染
+- 16x16 灰度字模，以原生 16 px、GDI `CLEARTYPE_QUALITY` 渲染，填满整个单元
 - 每像素 4 bit、16 级灰度，绘制时与背景做 alpha 混合
-- 约 21,500 个字模（ASCII、拉丁字母、符号与中文）共用同一基线，
+- 约 21,400 个字模（ASCII、拉丁字母、符号与中文）共用自适应基线，
   因此中英文可以整齐排列在同一行
-- 由 `tools/mkfont.py` 生成 `build/font.bin`（2.75 MB）与 `cpm.bin`
+- 由 `tools/mkfont.py` 生成 `build/font.gtd`（2.75 MB）与 `cpm.gtd`
 
 **系统**
 - OOBE 首次启动向导（语言 → 主机名 → 管理员 → 主题）
@@ -67,7 +67,7 @@ python build.py all        # 先编译再运行
 python build.py clean      # 清理 build 目录
 ```
 
-首次编译会一并生成字模：当 `build/font.bin` 或 `build/cpm.bin` 缺失时，
+首次编译会一并生成字模：当 `build/font.gtd` 或 `build/cpm.gtd` 缺失时，
 会自动调用 `tools/mkfont.py`，耗时明显长于后续编译。
 
 直接启动已发布的镜像：
@@ -87,9 +87,12 @@ qemu-system-x86_64 -hda gt-dos-hd.img -boot c
 | --- | --- | --- |
 | MBR | LBA 0 | `boot/mbr.asm`，分区表由 `build.py` 写入 |
 | 分区 1（C:） | LBA 2048，120832 扇区 | FAT16 系统盘，含 `\GT-DOS\` 目录与 `INCLUDE` 头文件 |
-| 分区 2（隐藏） | 盘尾 8192 扇区 | 启动分区，类型 `0x11`，带可引导标志：`boot.bin` + `kernel.bin` + `font.bin` + `cpm.bin` |
+| 分区 2（隐藏） | 盘尾 8192 扇区 | 启动分区，类型 `0x11`，带可引导标志：`boot.gtb` + `kernel.gtb` + `font.gtd` + `cpm.gtd` |
 
-启动分区位于磁盘末尾并携带可引导标志；内核在启动时通过 ATA 从中读取 `font.bin` 与 `cpm.bin`。
+启动分区位于磁盘末尾并携带可引导标志；内核在启动时通过 ATA 从中读取 `font.gtd` 与 `cpm.gtd`。
+
+自研二进制采用分类语义后缀：`.gtb` 为引导/内核裸二进制（`mbr`/`boot`/`kernel`），`.gtd` 为数据块
+（`font`/`cpm`）；`.gtp`（程序）与 `.gtl`（共享库）为将来预留。
 
 ## Shell 命令
 
@@ -106,7 +109,7 @@ qemu-system-x86_64 -hda gt-dos-hd.img -boot c
 `MKDIR`/`MD`、`RMDIR`、`TOUCH`、`ATTRIB`、`CP`/`COPY`、`MV`/`REN`、`HEAD`、`WC`、`TREE`、
 `DF`、`DISK`、`MOUNT`
 
-**图形与硬件** — `GUI`、`RES <W>x<H>` / `RES LIST`、`APIC`、`IRQSTAT`
+**显示与硬件** — `RES <W>x<H>` / `RES LIST`、`APIC`、`IRQSTAT`
 
 **电源** — `REBOOT`、`SHUTDOWN`/`POWEROFF`（需要管理员权限）
 
@@ -128,14 +131,12 @@ kernel/
   softirq.c          输入下半部的延迟处理
   ata.c fat.c cfg.c user.c               存储, 文件系统, 配置, 账户
   gfx.c vga.c tui.c console.c ui.c       图形层, 文本控制台, 启动画面
-  gui.c              图形桌面
   shell.c            命令解释器
   i18n.c power.c oobe.c lib.c            文案, 复位/关机, 首次启动向导
 tools/
-  mkfont.py          字模生成器 (GDI -> 4bit 灰度 font.bin + cpm.bin)
+  mkfont.py          字模生成器 (GDI -> 4bit 灰度 font.gtd + cpm.gtd)
   test_v03.py        端到端测试: OOBE, 登录, 文件命令
   test_v04.py        回归测试: 单盘 C:, GT-DOS 目录, 属性, 系统保护
-  verify_gui.py      基于抓屏像素分析的 GUI 验证
 build.py             构建脚本与镜像组装
 ```
 
@@ -144,7 +145,7 @@ build.py             构建脚本与镜像组装
 
 ## 说明与限制
 
-- 内核目前为 198 扇区（100,992 字节），加载区间为 `0x10000` 到 `0x80000`。
+- 内核目前为 175 扇区（89,464 字节），加载区间为 `0x10000` 到 `0x80000`。
   若要继续增大，需要调整加载地址。
 - 大块零初始化缓冲（`font_buf`、码点表、后台缓冲）被放置在 1 MB 以上、
   标记为 `NOLOAD` 的 `.highbss` 段。若放在普通 `.bss` 中，会与 `0xA0000`

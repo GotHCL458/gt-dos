@@ -1,16 +1,9 @@
-/* ==========================================================================
- *  GT-DOS 可选 APIC 模式 (IO-APIC + 本地 APIC, MMIO 访问)
- *  ---------------------------------------------------------------------------
- *  目的: 突破 8259A 的 16 中断上限, 为将来多核 SMP 铺路.
- *  本内核无分页, 直接恒等映射访问 0xFEE00000 (本地 APIC) 与
- *  0xFEC00000 (IO-APIC). 仅在单 CPU BSP 上运行, 用 MMIO 而非 x2APIC MSR.
- *
- *  切换步骤 (apic_enable):
- *    1) 本地 APIC: 设 LDR/DFR, 开 spurious (向量 255), 屏蔽 LVT0/1 (ExtINT);
- *    2) IO-APIC: ISA IRQ0..15 -> 重定向表项 0..15, 向量 64+n, 电平触发;
- *    3) 屏蔽 8259A (IMR=0xFF), 此后中断只经 APIC 进来.
- *  回退 (apic_disable): 反向恢复 PIC.
- * ========================================================================== */
+/* IO-APIC + 本地 APIC, MMIO 访问, 突破 8259A 的 16 中断上限.
+   无分页, 恒等映射访问 0xFEE00000 (本地 APIC) 与 0xFEC00000 (IO-APIC);
+   单 CPU BSP, 用 MMIO 而非 x2APIC MSR.
+   apic_enable: 1) 本地 APIC 设 LDR/DFR, 开 spurious(向量255), 屏蔽 LVT0/1;
+   2) IO-APIC ISA IRQ0..15 重定向到表项 0..15, 向量 64+n, 电平触发;
+   3) 屏蔽 8259A (IMR=0xFF). apic_disable 反向恢复 PIC. */
 #include "gt.h"
 
 #define LAPIC_BASE 0xFEE00000u

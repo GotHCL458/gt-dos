@@ -4,16 +4,16 @@
 GT-DOS 字模提取脚本 (原生尺寸灰度抗锯齿 + 基线对齐版)
 =======================================================================
 用 Windows GDI 从系统 TrueType 字体提取 16x16 灰度字模:
-  - 原生 14px 渲染 + ANTIALIASED_QUALITY: GDI 在实际尺寸上做 hinting,
+  - 原生 16px 渲染 + CLEARTYPE_QUALITY: GDI 在实际尺寸上做 hinting,
     笔画横平竖直 (清晰), 只有边缘是灰度 (圆滑). 不做超采样降采样,
     那会破坏 hinting 导致整体发虚.
   - 4bit 灰度 (16 级): 边缘过渡细腻.
-  - 基线对齐: 用 TEXTMETRIC.tmAscent 计算真实基线, 所有字模
-    (中文/英文/符号) 基线固定在输出第 13 行 -> 混排排列平齐
+  - 基线对齐: 用 TEXTMETRIC.tmAscent 计算真实基线并自适应, 所有字模
+    (中文/英文/符号) 共用同一基线 -> 混排排列平齐
 输出:
-  build/font.bin  每字模 128 字节: 16 行 x 8 字节, 每行 16 像素 x 4bit
+  build/font.gtd  每字模 128 字节: 16 行 x 8 字节, 每行 16 像素 x 4bit
                   灰度 (0=背景 15=实心), 行内 MSB first (高 4bit=偶数列)
-  build/cpm.bin   码点表, u16 小端升序 (内核二分查找用)
+  build/cpm.gtd   码点表, u16 小端升序 (内核二分查找用)
 用法: python tools/mkfont.py   (build.py 会在缺失时自动调用)
 """
 
@@ -84,10 +84,12 @@ CELL = 16            # 输出单元 16x16
 DIB = 32             # 渲染画布 (留边距防裁切)
 BYTES_PER_GLYPH = CELL * 8           # 128 字节: 16 行 x 8 字节 (4bit/像素)
 BLACKNESS = 0x00000042
-FONT_EM = -14        # 原生渲染 em (14 像素, 16 格内留 1px 上下边距)
+FONT_EM = -16        # 原生渲染 em (16 像素, 填满 16 行单元, 笔画更实更清晰)
 RENDER_X = 6
 RENDER_Y = 8
-BASELINE_OUT = 13    # 基线固定在输出第 13 行上方边界 (行 0..12=上伸区)
+# 基线在 main() 中按字体 tmAscent 自适应 (min(ascent, CELL-2)):
+# 中文方块无下伸, 可顶满; 拉丁下伸部至少保留 2 行, 兼顾对齐与不裁切.
+BASELINE_OUT = 14    # 参考值; 实际以 tmAscent 自适应为准
 # CLEARTYPE_QUALITY 渲染, 只读绿色通道 = 带 hinting 的灰度 AA (实心笔画+平滑边缘)
 CLEARTYPE_QUALITY = 5
 
@@ -207,10 +209,12 @@ def main():
 
     # 基线 (画布坐标): TA_TOP 下, 行盒顶在 RENDER_Y, 基线 = RENDER_Y + tmAscent
     baseline_cy = RENDER_Y + tm.tmAscent
-    # 画布基线 -> 输出第 BASELINE_OUT 行上边界: 裁剪窗口左上角 oy
-    oy = baseline_cy - BASELINE_OUT
+    # 自适应基线: 上伸尽量完整保留, 至少留 2 行给下伸 (中文无下伸可顶满)
+    baseline_out = min(tm.tmAscent, CELL - 2)
+    # 画布基线 -> 输出第 baseline_out 行上边界: 裁剪窗口左上角 oy
+    oy = baseline_cy - baseline_out
     print(f"    字体: {name_used}  ascent={tm.tmAscent} descent={tm.tmDescent}")
-    print(f"    基线: 画布 y={baseline_cy} -> 输出行 {BASELINE_OUT} (原生灰度 AA)")
+    print(f"    基线: 画布 y={baseline_cy} -> 输出行 {baseline_out} (原生灰度 AA)")
 
     font_bin = bytearray()
     blank = 0
@@ -238,8 +242,8 @@ def main():
     font_bin += bytes((total - len(CODES)) * BYTES_PER_GLYPH)
     cpm_bin += b"\xff\xff" * (total - len(CODES))
 
-    fpath = os.path.join(out_dir, "font.bin")
-    cpath = os.path.join(out_dir, "cpm.bin")
+    fpath = os.path.join(out_dir, "font.gtd")
+    cpath = os.path.join(out_dir, "cpm.gtd")
     with open(fpath, "wb") as f:
         f.write(font_bin)
     with open(cpath, "wb") as f:

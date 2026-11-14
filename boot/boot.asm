@@ -1,23 +1,18 @@
-; ============================================================================
-;  GT-DOS  Stage 2 引导器 (由 MBR 加载到 0x7E00)
-;  ---------------------------------------------------------------------------
-;  职责: 从高端隐藏启动分区用 INT13h AH=42h (LBA DAP) 把内核加载到 0x10000,
-;        并把 font.bin / cpm.bin 的起始 LBA 与扇区数写入内存邮箱, 由内核在
-;        保护模式 (A20 已开) 用 ATA 读取. 最后跳转内核入口 (实模式).
-;
-;  各文件的起始 LBA 与扇区数由 build.py 通过标记补丁写入.
-;  汇编: nasm -f bin boot/boot.asm -o build/boot.bin
-; ============================================================================
+; GT-DOS Stage 2 引导器 (由 MBR 加载到 0x7E00).
+; 从高端隐藏启动分区用 INT13h AH=42h (LBA DAP) 把内核加载到 0x10000, 并把
+; font.gtd/cpm.gtd 的起始 LBA 与扇区数写入内存邮箱, 内核在保护模式用 ATA 读取,
+; 最后跳转内核入口. 各文件起始 LBA/扇区数由 build.py 通过标记补丁写入.
+; 汇编: nasm -f bin boot/boot.asm -o build/boot.gtb
 
 [BITS 16]
 [ORG 0x7E00]
 
 ; ---- 传给内核的邮箱 ----
 BOOT_DRIVE_ADDR equ 0x0600          ; 引导盘号
-FONT_LBA_ADDR   equ 0x0604          ; u32 font.bin 起始 LBA
-FONT_SECT_ADDR  equ 0x0608          ; u32 font.bin 扇区数
-CPM_LBA_ADDR    equ 0x060C          ; u32 cpm.bin 起始 LBA
-CPM_SECT_ADDR   equ 0x0610          ; u32 cpm.bin 扇区数
+FONT_LBA_ADDR   equ 0x0604          ; u32 font.gtd 起始 LBA
+FONT_SECT_ADDR  equ 0x0608          ; u32 font.gtd 扇区数
+CPM_LBA_ADDR    equ 0x060C          ; u32 cpm.gtd 起始 LBA
+CPM_SECT_ADDR   equ 0x0610          ; u32 cpm.gtd 扇区数
 
 KERNEL_SEG equ 0x1000               ; 0x10000
 MAX_CHUNK  equ 32                   ; 每次 INT13 最多读 32 扇区 (16KB)
