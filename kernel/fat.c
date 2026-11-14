@@ -1095,6 +1095,7 @@ int fat_fd_open(const char *path, int flags)
 int fat_fd_read(int fd, void *buf, u32 n)
 {
     if (fd < 3 || fd >= 3 + FD_MAX) return -1;
+    GT_ASSERT_BOUNDED(fd - 3, FD_MAX);
     struct fd_ent *e = &fdtab[fd - 3];
     if (!e->used) return -1;
     u8 *dst = (u8 *)buf;
@@ -1106,6 +1107,7 @@ int fat_fd_read(int fd, void *buf, u32 n)
 int fat_fd_write(int fd, const void *buf, u32 n)
 {
     if (fd < 3 || fd >= 3 + FD_MAX) return -1;
+    GT_ASSERT_BOUNDED(fd - 3, FD_MAX);
     struct fd_ent *e = &fdtab[fd - 3];
     if (!e->used) return -1;
     const u8 *src = (const u8 *)buf;

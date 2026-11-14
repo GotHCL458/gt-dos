@@ -3,6 +3,16 @@
  * ========================================================================== */
 #include "gt.h"
 
+/* clang -fstack-protector-strong 在此目标使用全局守卫变量. 放 .data 预置非零值
+   (若放 .bss 会被 kmain 的 BSS 清零抹掉), 各函数进出读取一致. */
+unsigned long __stack_chk_guard = 0x594C2D3A8E7F6150UL;
+
+/* -fstack-protector-strong 的失败回调: 栈金丝雀被改写 -> panic */
+void __stack_chk_fail(void)
+{
+    panic("stack smashing detected");
+}
+
 void *memcpy(void *dst, const void *src, size_t n)
 {
     u8 *d = (u8 *)dst;

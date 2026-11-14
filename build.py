@@ -276,7 +276,7 @@ CFLAGS = [
     "-std=gnu11",
     "-ffreestanding",
     "-fno-builtin",
-    "-fno-stack-protector",
+    "-fstack-protector-strong",
     "-fno-pic",
     "-fno-pie",
     "-fno-asynchronous-unwind-tables",

@@ -187,3 +187,4 @@ align 16
 stack_bottom:
     resb 32768                      ; 32 KiB 内核栈
 stack_top:
+

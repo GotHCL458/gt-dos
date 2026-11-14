@@ -269,6 +269,10 @@ void pic_init(void);
 void pic_send_eoi(int irq);
 void panic(const char *msg);
 
+/* 边界/不变量断言: 违反即 __builtin_trap (#UD -> isr6 打印并 halt) */
+#define GT_ASSERT(cond)              do { if (!(cond)) __builtin_trap(); } while (0)
+#define GT_ASSERT_BOUNDED(i, cap)    do { if ((u64)(i) >= (u64)(cap)) __builtin_trap(); } while (0)
+
 /* ---------------------------------------------------- 系统调用门 (INT 0x21) */
 #define SYSCALL_VECTOR 0x21
 enum {
