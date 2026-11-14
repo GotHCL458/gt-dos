@@ -30,6 +30,7 @@ SECTIONS
     .highbss (NOLOAD) : {
         *(.highbss) *(.highbss.*)
     }
+    __highbss_end = .;
 
     /DISCARD/ : {
         *(.comment)

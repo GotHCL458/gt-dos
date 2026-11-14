@@ -61,7 +61,7 @@ void syscall_handle(struct regs *r)
         r->rax = (u64)-1;
         break;
     case SYS_EXIT:
-        /* 程序执行模型 (P5) 接入后改为回跳到 shell; 当前无程序上下文 */
+        if (exec_is_active()) exec_exit((int)r->rdi);
         r->rax = (u64)-1;
         break;
     default:

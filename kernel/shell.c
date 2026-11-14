@@ -530,6 +530,31 @@ static void cmd_mount(void)
     }
 }
 
+static void cmd_run(int argc, char **argv)
+{
+    if (!need_admin()) return;
+    if (argc < 2) { err("Usage: RUN <file.gtp>\n"); return; }
+    if (!fat_ready()) { err("No volume mounted.\n"); return; }
+    char abs[PATHMAX];
+    resolve_path(argv[1], abs);
+    int code = exec_run(abs);
+    if (code < 0) {
+        const char *why;
+        switch (code) {
+        case -1: why = "file not found"; break;
+        case -2: why = "is a directory"; break;
+        case -3: why = "empty or too large"; break;
+        case -4: why = "a program is already running"; break;
+        case -5: why = "read failed"; break;
+        case -6: why = "short read"; break;
+        default: why = "bad load layout"; break;
+        }
+        err("RUN failed: %s\n", why);
+        return;
+    }
+    ok("Program exited with code %d.\n", code);
+}
+
 static void cmd_df(void)
 {
     if (!fat_ready()) {
@@ -1049,6 +1074,8 @@ static void execute(char *line)
         cmd_config(argc, argv);
     } else if (!strncasecmp(cmd, "oobe", 8)) {
         cmd_oobe();
+    } else if (!strncasecmp(cmd, "run", 8)) {
+        cmd_run(argc, argv);
     } else if (!strncasecmp(cmd, "apic", 8)) {
         cmd_apic(argc, argv);
     } else if (!strncasecmp(cmd, "irqstat", 8)) {

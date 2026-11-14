@@ -278,6 +278,14 @@ enum {
 };
 void syscall_handle(struct regs *r);    /* 由 isr_handler 分派 */
 
+/* ------------------------------------------------ 程序执行模型 (exec) */
+#define PROG_BASE       0x600000ULL
+#define PROG_MAX        0x100000ULL
+#define PROG_STACK_TOP  0x7FF000ULL
+int  exec_run(const char *abs);         /* 载入并运行, 返回退出码(<0 为错误) */
+void exec_exit(int code);               /* SYS_EXIT 调用: 回跳到 shell */
+bool exec_is_active(void);
+
 /* 中断嵌套状态 (idt.c) */
 int  irq_in_service(void);             /* 当前正在服务的中断层数 */
 int  irq_nest_max(void);               /* 历史最大嵌套深度 */

@@ -313,9 +313,10 @@ C_SOURCES = [
     "oobe.c",
     "shell.c",
     "syscall.c",
+    "exec.c",
 ]
 
-ASM_SOURCES = ["entry.asm", "isr.asm"]
+ASM_SOURCES = ["entry.asm", "isr.asm", "exec_asm.asm"]
 
 
 def ensure_font():
@@ -411,7 +412,15 @@ def load_include_seed():
     return files
 
 
-def make_hd_image(mbr, boot2, kernel, font, cpm):
+def build_demo_prog():
+    """汇编 tools/hello.asm -> build/hello.gtp, 作为示例程序种子."""
+    src = os.path.join(ROOT, "tools", "hello.asm")
+    out = os.path.join(BUILD, "hello.gtp")
+    run([TOOLS["nasm"], "-f", "bin", src, "-o", out])
+    return open(out, "rb").read()
+
+
+def make_hd_image(mbr, boot2, kernel, font, cpm, hello):
     """组装单 HDD 镜像: MBR + C: FAT16 + 盘尾启动分区."""
     boot_secs = 16
     kern_secs = (len(kernel) + SECTOR - 1) // SECTOR
@@ -442,6 +451,7 @@ def make_hd_image(mbr, boot2, kernel, font, cpm):
     attr_hdr = 0x01 | 0x04 | 0x20                # R|S|A (系统头文件, 受保护)
     include = load_include_seed()
     seed = {
+        "HELLO.GTP": hello,                      # 示例程序 (RUN HELLO.GTP)
         "GT-DOS": {                              # 系统目录 (可见, 名称保护)
             "INCLUDE": {
                 n: (attr_hdr, d) for n, d in include.items()
@@ -500,8 +510,9 @@ def build():
     ensure_font()
     font = open(os.path.join(BUILD, "font.gtd"), "rb").read()
     cpm = open(os.path.join(BUILD, "cpm.gtd"), "rb").read()
+    hello = build_demo_prog()
     print("==> 组装单硬盘镜像 (MBR + C: FAT16 + 隐藏启动分区)")
-    hd = make_hd_image(mbr, boot2, kernel, font, cpm)
+    hd = make_hd_image(mbr, boot2, kernel, font, cpm, hello)
     return hd
 
 
