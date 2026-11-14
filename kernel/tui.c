@@ -144,7 +144,7 @@ void tui_splash(void)
         bar[k++] = ' ';
         cols += 1;
         const char *p = label;
-        while (*p) {
+        while (*p && k < 34) {
             if ((*p & 0xC0) != 0x80) cols++;
             if (cols >= 22) break;
             bar[k++] = *p++;

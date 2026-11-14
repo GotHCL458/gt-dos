@@ -28,14 +28,14 @@ static void scroll_console(int delta)
     char msg[44];
     int k = 0;
     const char *pre = " SCROLL +";
-    while (*pre) msg[k++] = *pre++;
+    while (*pre && k < 43) msg[k++] = *pre++;
     char num[8];
     itoa_base((u32)off, num, 10, false);
-    for (char *q = num; *q; q++) msg[k++] = *q;
+    for (char *q = num; *q && k < 43; q++) msg[k++] = *q;
     const char *mid = "/";
-    while (*mid) msg[k++] = *mid++;
+    while (*mid && k < 43) msg[k++] = *mid++;
     itoa_base((u32)max_off, num, 10, false);
-    for (char *q = num; *q; q++) msg[k++] = *q;
+    for (char *q = num; *q && k < 43; q++) msg[k++] = *q;
     const char *post = (off >= max_off) ? " TOP " : " Ctrl+D/wheel=down ";
     while (*post && k < 43) msg[k++] = *post++;
     msg[k] = '\0';
@@ -103,9 +103,12 @@ static bool path_normalize(const char *in, char *out)
         return true;
     }
     for (int i = 0; i < depth; i++) {
+        if (k >= PATHMAX - 1) return false;
         out[k++] = '\\';
-        for (const char *s = stack[i]; *s; s++)
+        for (const char *s = stack[i]; *s; s++) {
+            if (k >= PATHMAX - 1) return false;
             out[k++] = *s;
+        }
     }
     out[k] = '\0';
     return true;

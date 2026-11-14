@@ -783,11 +783,12 @@ bool fat_create(const char *name, const void *data, u32 len)
             return false;
         if (old.attr & (ATTR_RO | ATTR_SYS))
             return false;
+        if (!read_sect(old_lba, scratch_b))
+            return false;
+        scratch_b[old_off] = 0xE5;
+        if (!write_sect(old_lba, scratch_b))
+            return false;
         free_chain(dirent_clus(&old));
-        if (read_sect(old_lba, scratch_b)) {
-            scratch_b[old_off] = 0xE5;
-            write_sect(old_lba, scratch_b);
-        }
     }
 
     u32 c = 0, first = 0;
@@ -861,12 +862,13 @@ bool fat_delete(const char *name)
     if (d.attr & (ATTR_RO | ATTR_SYS))
         return false;                 /* 只读/系统文件保护 */
 
-    free_chain(dirent_clus(&d));
-
     if (!read_sect(lba, scratch_b))
         return false;
     scratch_b[off] = 0xE5;
-    return write_sect(lba, scratch_b);
+    if (!write_sect(lba, scratch_b))
+        return false;
+    free_chain(dirent_clus(&d));
+    return true;
 }
 
 bool fat_mkdir(const char *name)
@@ -965,11 +967,13 @@ bool fat_rmdir(const char *name)
             break;
     }
 
-    free_chain(c);
     if (!read_sect(lba, scratch_b))
         return false;
     scratch_b[off] = 0xE5;
-    return write_sect(lba, scratch_b);
+    if (!write_sect(lba, scratch_b))
+        return false;
+    free_chain(c);
+    return true;
 }
 
 bool fat_setattr(const char *name, u8 attrs)
