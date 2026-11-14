@@ -305,6 +305,7 @@ C_SOURCES = [
     "mouse.c",
     "timer.c",
     "lib.c",
+    "crypto.c",
     "ata.c",
     "fat.c",
     "cfg.c",
@@ -420,7 +421,42 @@ def build_demo_prog():
     return open(out, "rb").read()
 
 
-def make_hd_image(mbr, boot2, kernel, font, cpm, hello):
+# --------------------------------------------------------- 系统文件加密 (AES-128-CBC)
+# 加密实现只在 C 侧 (kernel/crypto.c). 构建时用主机编译器生成 tools/encsys 工具,
+# 内核与镜像种子因此共用同一份算法.
+
+def _host_cc():
+    for c in (os.path.join(ROOT, "mingw64", "bin", "gcc.exe"),
+              r"C:\mingw64\bin\gcc.exe",
+              r"C:\Program Files\mingw64\bin\gcc.exe",
+              "gcc"):
+        if os.path.isabs(c):
+            if os.path.isfile(c):
+                return c
+        else:
+            return c
+    return "gcc"
+
+
+def build_enc_tool():
+    """编译构建期加密工具 build/encsys.exe (复用 kernel/crypto.c)."""
+    out = os.path.join(BUILD, "encsys.exe")
+    src = os.path.join(ROOT, "tools", "encsys.c")
+    run([_host_cc(), "-I", os.path.join(ROOT, "kernel"), src,
+         os.path.join(ROOT, "kernel", "crypto.c"), "-o", out])
+    return out
+
+
+def enc_sys_file(data, tool):
+    """系统文件密文格式: GTE1 + u32 明文长 + AES-128-CBC 密文."""
+    r = subprocess.run([tool], input=data, capture_output=True)
+    if r.returncode != 0:
+        print("[!] 系统文件加密失败")
+        sys.exit(1)
+    return r.stdout
+
+
+def make_hd_image(mbr, boot2, kernel, font, cpm, hello, enc_tool):
     """组装单 HDD 镜像: MBR + C: FAT16 + 盘尾启动分区."""
     boot_secs = 16
     kern_secs = (len(kernel) + SECTOR - 1) // SECTOR
@@ -454,7 +490,7 @@ def make_hd_image(mbr, boot2, kernel, font, cpm, hello):
         "HELLO.GTP": hello,                      # 示例程序 (RUN HELLO.GTP)
         "GT-DOS": {                              # 系统目录 (可见, 名称保护)
             "INCLUDE": {
-                n: (attr_hdr, d) for n, d in include.items()
+                n: (attr_hdr, enc_sys_file(d, enc_tool)) for n, d in include.items()
             },
         },
     }
@@ -511,8 +547,9 @@ def build():
     font = open(os.path.join(BUILD, "font.gtd"), "rb").read()
     cpm = open(os.path.join(BUILD, "cpm.gtd"), "rb").read()
     hello = build_demo_prog()
+    enc_tool = build_enc_tool()
     print("==> 组装单硬盘镜像 (MBR + C: FAT16 + 隐藏启动分区)")
-    hd = make_hd_image(mbr, boot2, kernel, font, cpm, hello)
+    hd = make_hd_image(mbr, boot2, kernel, font, cpm, hello, enc_tool)
     return hd
 
 

@@ -218,6 +218,9 @@ void     fat_set_show_all(bool on);    /* DIR /A: 显示隐藏/系统条目 */
 void     fat_set_allow_sys(bool on);   /* 系统内部写 \GT-DOS\ 状态文件 */
 bool     fat_read_dir_file(const char *dir, const char *name, void *buf,
                            u32 max, u32 *out_len);
+u32      gt_encrypt(const u8 *in, u32 len, u8 *out);  /* AES-128-CBC, 返回密文长 */
+u32      gt_decrypt(const u8 *in, u32 clen, u8 *out); /* 返回明文长, 失败 0 */
+bool     fat_path_protected(const char *path);/* \GT-DOS\ 下的路径 */
 
 /* 文件描述符层 (供 INT 0x21 系统调用): fd 0/1/2 = 控制台 */
 #define FD_MAX 8

@@ -51,8 +51,11 @@ a FAT16 file system, user accounts and a bilingual (Chinese/English) shell.
   are seeded onto the disk's `INCLUDE` directory
 
 **Security**
-- Non-admin users can only write inside their own home directory (`\USERS\<name>\`);
-  system files under `\GT-DOS\` are protected for everyone
+- Every file under `\GT-DOS\` is stored AES-128-CBC encrypted (PKCS#7 padding); the kernel
+  decrypts transparently for its own use
+- System files are strictly protected: no account, including `admin`, may read, modify or
+  delete them (`TYPE`/`HEAD`/`WC`/`CP`/`MV` refuse, writes and deletes are blocked)
+- Non-admin users can only write inside their own home directory (`\USERS\<name>\`)
 - Privileged commands (`USERADD`, `USERDEL`, `HOSTNAME`, `CONFIG RESET`, `OOBE`, `MOUNT`,
   `DIV0`, `RUN`, `REBOOT`, `SHUTDOWN`) require administrator
 - Compiler stack protection (`-fstack-protector-strong`) and bounds assertions (`GT_ASSERT`)

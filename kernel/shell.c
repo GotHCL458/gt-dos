@@ -210,6 +210,16 @@ static bool need_admin(void)
     return true;
 }
 
+/* 系统文件 (\GT-DOS\) 拒绝读取: 加密内容不对外暴露, 管理员亦然 */
+static bool read_denied(const char *abs)
+{
+    if (fat_path_protected(abs)) {
+        err("System file is protected (read denied).\n");
+        return true;
+    }
+    return false;
+}
+
 /* ============================================================ 内置命令 */
 /* HELP: 图形文本模式无字模槽限制, 单页完整输出 (历史可回滚翻阅) */
 static void cmd_help(void)
@@ -773,6 +783,7 @@ static void cmd_cp(int argc, char **argv)
     char sa[PATHMAX], da[PATHMAX];
     resolve_path(argv[1], sa);
     resolve_path(argv[2], da);
+    if (read_denied(sa)) return;
 
     static u8 buf[4096];
     u32 got = 0;
@@ -793,6 +804,7 @@ static void cmd_mv(int argc, char **argv)
     char sa[PATHMAX], da[PATHMAX];
     resolve_path(argv[1], sa);
     resolve_path(argv[2], da);
+    if (read_denied(sa)) return;
 
     static u8 buf[4096];
     u32 got = 0;
@@ -825,6 +837,7 @@ static void cmd_head(int argc, char **argv)
     }
     char abs[PATHMAX];
     resolve_path(argv[fi], abs);
+    if (read_denied(abs)) return;
 
     static u8 buf[4096];
     u32 got = 0;
@@ -855,6 +868,7 @@ static void cmd_wc(int argc, char **argv)
     if (argc < 2) { err("Usage: WC <file>\n"); return; }
     char abs[PATHMAX];
     resolve_path(argv[1], abs);
+    if (read_denied(abs)) return;
 
     static u8 buf[4096];
     u32 got = 0;
@@ -916,6 +930,8 @@ static void cmd_type(const char *arg)
 
     char abs[PATHMAX];
     resolve_path(arg, abs);
+    if (read_denied(abs)) return;
+
     static u8 buf[4096];
     u32 got = 0;
     if (!fat_read_file(abs, buf, sizeof(buf) - 1, &got)) {

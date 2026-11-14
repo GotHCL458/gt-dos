@@ -49,7 +49,10 @@ FAT16 文件系统、用户账户与中英双语 Shell。
   被种子写入磁盘的 `INCLUDE` 目录
 
 **安全**
-- 非管理员仅可写自己家目录（`\USERS\<名>\`）内的文件；`\GT-DOS\` 系统文件对所有人受保护
+- `\GT-DOS\` 下所有文件以 AES-128-CBC（PKCS#7 填充）密文存储；内核内部读取时透明解密
+- 系统文件严格保护：任何账户（包括 `admin`）都不可读、不可改、不可删
+  （`TYPE`/`HEAD`/`WC`/`CP`/`MV` 拒绝，写入与删除被拦截）
+- 非管理员仅可写自己家目录（`\USERS\<名>\`）内的文件
 - 特权命令（`USERADD`、`USERDEL`、`HOSTNAME`、`CONFIG RESET`、`OOBE`、`MOUNT`、`DIV0`、
   `RUN`、`REBOOT`、`SHUTDOWN`）需管理员权限
 - 编译器栈保护（`-fstack-protector-strong`）与边界断言（`GT_ASSERT`）

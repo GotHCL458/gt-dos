@@ -114,7 +114,9 @@ def main():
     vm.cmd("dir /a gt-dos\\include")
     check("INCLUDE shows stdio.h", vm.expect("stdio.h", 4000))
     vm.cmd("cat gt-dos\\include\\stdio.h")
-    check("stdio.h content", vm.expect("_GT_STDIO_H", 3000))
+    check("system header read denied", vm.expect("read denied", 3000))
+    vm.cmd("cat gt-dos\\gtos.cfg")
+    check("system config read denied", vm.expect("read denied", 3000))
     vm.cmd("put gt-dos\\hack.txt x")
     check("write into GT-DOS blocked", vm.expect("protected", 3000))
 

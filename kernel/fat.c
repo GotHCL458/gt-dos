@@ -639,7 +639,28 @@ bool fat_find(const char *name, struct fat_dirent *out)
 
 bool fat_read_file(const char *name, void *buf, u32 max, u32 *out_len)
 {
-    return fat_read_dir_file(0, name, buf, max, out_len);
+    u32 got = 0;
+    if (!fat_read_dir_file(0, name, buf, max, &got))
+        return false;
+    /* 系统文件密文 -> 透明解密 */
+    u8 *b = (u8 *)buf;
+    if (got >= 8 && b[0] == 'G' && b[1] == 'T' && b[2] == 'E' && b[3] == '1') {
+        u32 plen = (u32)b[4] | ((u32)b[5] << 8) |
+                   ((u32)b[6] << 16) | ((u32)b[7] << 24);
+        u32 dlen = gt_decrypt(b + 8, got - 8, b);
+        if (dlen) {
+            got = (plen < dlen) ? plen : dlen;
+        }
+    }
+    if (out_len) *out_len = got;
+    return true;
+}
+
+bool fat_path_protected(const char *path)
+{
+    if (path && path[0] && path[1] == ':')   /* 跳过 "C:" 盘符 */
+        path += 2;
+    return path_protected(path);
 }
 
 bool fat_read_dir_file(const char *dir, const char *name, void *buf,
@@ -802,6 +823,21 @@ bool fat_create(const char *name, const void *data, u32 len)
     if (!name || !WOK)
         return false;
     if (sys_write_denied(name)) return false;
+
+    /* 系统文件落盘前加密 (AES-128-CBC): 头部 "GTE1" + 明文长度, 其后为密文 */
+    static u8 enc_buf[4200] __attribute__((section(".highbss")));
+    if (path_protected(name)) {
+        if (len + 8 + 16 > sizeof(enc_buf))
+            return false;
+        enc_buf[0] = 'G'; enc_buf[1] = 'T'; enc_buf[2] = 'E'; enc_buf[3] = '1';
+        enc_buf[4] = (u8)(len & 0xFF);
+        enc_buf[5] = (u8)((len >> 8) & 0xFF);
+        enc_buf[6] = (u8)((len >> 16) & 0xFF);
+        enc_buf[7] = (u8)((len >> 24) & 0xFF);
+        u32 clen = gt_encrypt((const u8 *)data, len, enc_buf + 8);
+        data = enc_buf;
+        len = 8 + clen;
+    }
 
     u8 raw[11];
     u32 dir_clus = resolve_parent(name, raw);
