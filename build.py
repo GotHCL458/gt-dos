@@ -306,6 +306,7 @@ C_SOURCES = [
     "timer.c",
     "lib.c",
     "crypto.c",
+    "gtlib.c",
     "ata.c",
     "fat.c",
     "cfg.c",
@@ -413,12 +414,22 @@ def load_include_seed():
     return files
 
 
-def build_demo_prog():
-    """汇编 tools/hello.asm -> build/hello.gtp, 作为示例程序种子."""
-    src = os.path.join(ROOT, "tools", "hello.asm")
-    out = os.path.join(BUILD, "hello.gtp")
+def build_asm_asset(src_name, out_name):
+    """汇编 tools/<src_name> -> build/<out_name>, 返回字节内容."""
+    src = os.path.join(ROOT, "tools", src_name)
+    out = os.path.join(BUILD, out_name)
     run([TOOLS["nasm"], "-f", "bin", src, "-o", out])
     return open(out, "rb").read()
+
+
+def build_demo_assets():
+    """示例程序 / 共享库 / 数据文件 (随镜像种子写入 C:)."""
+    return {
+        "HELLO.GTP": build_asm_asset("hello.asm", "hello.gtp"),
+        "DEMO.GTP": build_asm_asset("demo.asm", "demo.gtp"),
+        "SAMPLE.GTL": build_asm_asset("sample_lib.asm", "sample.gtl"),
+        "DATA.GTD": b"GTD-DATA\n",
+    }
 
 
 # --------------------------------------------------------- 系统文件加密 (AES-128-CBC)
@@ -456,7 +467,7 @@ def enc_sys_file(data, tool):
     return r.stdout
 
 
-def make_hd_image(mbr, boot2, kernel, font, cpm, hello, enc_tool):
+def make_hd_image(mbr, boot2, kernel, font, cpm, assets, enc_tool):
     """组装单 HDD 镜像: MBR + C: FAT16 + 盘尾启动分区."""
     boot_secs = 16
     kern_secs = (len(kernel) + SECTOR - 1) // SECTOR
@@ -487,13 +498,14 @@ def make_hd_image(mbr, boot2, kernel, font, cpm, hello, enc_tool):
     attr_hdr = 0x01 | 0x04 | 0x20                # R|S|A (系统头文件, 受保护)
     include = load_include_seed()
     seed = {
-        "HELLO.GTP": hello,                      # 示例程序 (RUN HELLO.GTP)
         "GT-DOS": {                              # 系统目录 (可见, 名称保护)
             "INCLUDE": {
                 n: (attr_hdr, enc_sys_file(d, enc_tool)) for n, d in include.items()
             },
         },
     }
+    for name, payload in assets.items():         # 示例程序/库/数据
+        seed[name] = payload
     fat_img, clusters = make_fat16_volume(PART1_SECTORS, seed)
 
     # 启动分区 raw 内容
@@ -546,7 +558,7 @@ def build():
     ensure_font()
     font = open(os.path.join(BUILD, "font.gtd"), "rb").read()
     cpm = open(os.path.join(BUILD, "cpm.gtd"), "rb").read()
-    hello = build_demo_prog()
+    hello = build_demo_assets()
     enc_tool = build_enc_tool()
     print("==> 组装单硬盘镜像 (MBR + C: FAT16 + 隐藏启动分区)")
     hd = make_hd_image(mbr, boot2, kernel, font, cpm, hello, enc_tool)

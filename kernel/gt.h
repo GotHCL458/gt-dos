@@ -233,6 +233,14 @@ int  fat_fd_open(const char *path, int flags);
 int  fat_fd_read(int fd, void *buf, u32 n);
 int  fat_fd_write(int fd, const void *buf, u32 n);
 int  fat_fd_close(int fd);
+int  fat_fd_seek(int fd, int offset, int whence);
+int  fat_fd_opendir(const char *path);
+int  fat_fd_readdir(int fd, struct fat_dirent *out);
+
+/* 用户程序可见的元数据 (与 stat.h / dirent.h 保持一致) */
+struct gt_stat   { u32 size; u32 attr; u32 is_dir; };
+struct gt_dirent { char name[16]; u32 size; u32 attr; u32 is_dir; };
+int  fat_stat_pub(const char *path, struct gt_stat *out);
 
 /* ------------------------------------------------------------------ 控制台 */
 void console_init(void);
@@ -281,7 +289,9 @@ void panic(const char *msg);
 enum {
     SYS_EXIT = 0, SYS_PUTC = 1, SYS_GETC = 2, SYS_WRITE = 3, SYS_READ = 4,
     SYS_OPEN = 5, SYS_CLOSE = 6, SYS_UPTIME = 7, SYS_REBOOT = 8,
-    SYS_SHUTDOWN = 9, SYS_GETTIME = 10, SYS_PUTS = 11
+    SYS_SHUTDOWN = 9, SYS_GETTIME = 10, SYS_PUTS = 11,
+    SYS_SEEK = 12, SYS_STAT = 13, SYS_OPENDIR = 14, SYS_READDIR = 15,
+    SYS_SLEEP = 16, SYS_LIBLOAD = 17, SYS_LIBSYM = 18
 };
 void syscall_handle(struct regs *r);    /* 由 isr_handler 分派 */
 
@@ -292,6 +302,14 @@ void syscall_handle(struct regs *r);    /* 由 isr_handler 分派 */
 int  exec_run(const char *abs);         /* 载入并运行, 返回退出码(<0 为错误) */
 void exec_exit(int code);               /* SYS_EXIT 调用: 回跳到 shell */
 bool exec_is_active(void);
+
+/* ---------------------------------------------------- 共享库 (.gtl) */
+#define LIB_BASE     0x500000ULL
+#define LIB_MAX      0x100000ULL
+#define LIB_MAXLIBS  8
+int  lib_load(const char *path);        /* 返回句柄(>=1) 或 -1 */
+u64  lib_sym(int handle, const char *name);  /* 返回符号地址或 0 */
+void lib_reset(void);
 
 /* 中断嵌套状态 (idt.c) */
 int  irq_in_service(void);             /* 当前正在服务的中断层数 */

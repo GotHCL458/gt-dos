@@ -18,9 +18,16 @@
  *   9   SYS_SHUTDOWN-                                      管理员才执行
  *   10  SYS_GETTIME gt_time*                               0 或 -1
  *   11  SYS_PUTS    str                                    0
+ *   12  SYS_SEEK    fd, offset, whence                    新位置或 -1
+ *   13  SYS_STAT    path, gt_stat*                         0 或 -1
+ *   14  SYS_OPENDIR path                                   fd 或 -1
+ *   15  SYS_READDIR fd, gt_dirent*                         1/0/-1
+ *   16  SYS_SLEEP   ms                                     0
+ *   17  SYS_LIBLOAD path (.gtl)                            句柄或 -1
+ *   18  SYS_LIBSYM  handle, name                           地址或 0
  *
  * fd 0/1/2 为控制台(stdin/stdout/stderr), 文件 fd 从 3 起.
- * 配套头: unistd.h(内联包装) time.h(stdint.h ctype.h).
+ * 配套头: unistd.h / stat.h / dirent.h / gtlib.h / time.h / stdint.h / ctype.h.
  */
 #ifndef _GT_GTOS_H
 #define _GT_GTOS_H

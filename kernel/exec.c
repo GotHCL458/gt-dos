@@ -30,6 +30,7 @@ int exec_run(const char *abs)
     if (!fat_read_file(abs, (void *)PROG_BASE, PROG_MAX, &got)) return -5;
     if (got != d.size) return -6;
     exec_active = true;
+    lib_reset();                    /* 每个程序独立库命名空间 */
     u64 code = exec_enter(PROG_BASE, PROG_STACK_TOP, exec_ctx);
     exec_active = false;
     return (int)code;

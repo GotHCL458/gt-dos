@@ -84,6 +84,14 @@ def main():
     check("exit code returned", vm.expect("exited with code 0", 3000), vm.buf[-200:])
 
     vm.buf = ""
+    vm.cmd("run demo.gtp", 2500)
+    check("gtd data read via open/read",
+          vm.expect("GTD-DATA", 4000), vm.buf[-300:])
+    check("seek + read", vm.expect("[DATA]", 3000), vm.buf[-300:])
+    check("gtl shared library call", vm.expect("LIB OK", 3000), vm.buf[-300:])
+    check("demo exit code", vm.expect("exited with code 0", 3000), vm.buf[-300:])
+
+    vm.buf = ""
     vm.cmd("run nope.gtp", 1000)
     check("missing file reported", vm.expect("RUN failed", 3000), vm.buf[-200:])
 

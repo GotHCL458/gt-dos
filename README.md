@@ -43,11 +43,32 @@ a FAT16 file system, user accounts and a bilingual (Chinese/English) shell.
 - i18n layer with complete Chinese and English strings
 
 **System calls & programs**
-- `INT 0x21` software-interrupt gate: `EXIT/PUTC/GETC/WRITE/READ/OPEN/CLOSE/UPTIME/REBOOT/SHUTDOWN/GETTIME/PUTS`
-- A small `open/read/write/close` fd layer over FAT (fds 0/1/2 are the console)
+- `INT 0x21` software-interrupt gate. `rax` selects the call, `rdi`/`rsi`/`rdx` carry the
+  arguments (SysV order), and the result comes back in `rax`:
+
+| # | Call | # | Call |
+| --- | --- | --- | --- |
+| 0 | `SYS_EXIT` | 10 | `SYS_GETTIME` |
+| 1 | `SYS_PUTC` | 11 | `SYS_PUTS` |
+| 2 | `SYS_GETC` | 12 | `SYS_SEEK` |
+| 3 | `SYS_WRITE` | 13 | `SYS_STAT` |
+| 4 | `SYS_READ` | 14 | `SYS_OPENDIR` |
+| 5 | `SYS_OPEN` | 15 | `SYS_READDIR` |
+| 6 | `SYS_CLOSE` | 16 | `SYS_SLEEP` |
+| 7 | `SYS_UPTIME` | 17 | `SYS_LIBLOAD` |
+| 8 | `SYS_REBOOT` | 18 | `SYS_LIBSYM` |
+| 9 | `SYS_SHUTDOWN` | | |
+
+- A small `open/read/write/close/seek` fd layer over FAT (fds 0/1/2 are the console),
+  plus directory handles through `SYS_OPENDIR`/`SYS_READDIR`
 - `RUN <file.gtp>` loads a flat binary into a scratch region and transfers control; the
   program returns to the shell via `SYS_EXIT`
-- Public headers under `kernel/include/` (`gtos.h`, `unistd.h`, `time.h`, `stdint.h`, `ctype.h`)
+- `.gtl` shared libraries: a loader maps the image into `LIB_BASE` (0x500000) and resolves
+  exports by name through `SYS_LIBLOAD`/`SYS_LIBSYM`; the library namespace is reset for
+  every program
+- `.gtd` data files are read through the same fd layer (`DATA.GTD` in the demo)
+- Public headers under `kernel/include/` (`gtos.h`, `unistd.h`, `stat.h`, `dirent.h`,
+  `gtlib.h`, `time.h`, `stdint.h`, `ctype.h`, `stdio.h`, `string.h`, `stdlib.h`)
   are seeded onto the disk's `INCLUDE` directory
 
 **Security**
@@ -112,8 +133,8 @@ The boot partition sits at the end of the disk and carries the bootable flag; th
 `font.gtd` and `cpm.gtd` from it at boot time over ATA.
 
 Binary artifacts use GT-DOS semantic suffixes: `.gtb` for raw loader/kernel binaries
-(`mbr`/`boot`/`kernel`), `.gtd` for data blobs (`font`/`cpm`); `.gtp` (programs) and `.gtl`
-(shared libraries) are reserved for future use.
+(`mbr`/`boot`/`kernel`), `.gtd` for data blobs (`font`/`cpm`/`data`), `.gtp` for user programs
+(`hello`/`demo`) and `.gtl` for shared libraries (`sample_lib`).
 
 ## Shell Commands
 
@@ -148,11 +169,13 @@ kernel/
   exec_asm.asm       stack-frame switch for RUN (exec_enter / exec_longjmp)
   kernel.ld          linker script; large buffers live in .highbss above 1 MB
   gt.h               kernel-wide definitions
-  include/           public headers (gtos.h, unistd.h, time.h, stdint.h, ctype.h, stdio.h, ...)
+  include/           public headers (gtos.h, unistd.h, stat.h, dirent.h, gtlib.h, ...)
   kmain.c            kernel entry
   idt.c apic.c       interrupts: IDT, APIC/IO-APIC, dispatch
   syscall.c          INT 0x21 system-call dispatch
   exec.c             RUN program loader (loads a .gtp into PROG_BASE)
+  gtlib.c            .gtl shared-library loader and symbol table
+  crypto.c           AES-128-CBC for encrypted system files
   timer.c keyboard.c mouse.c serial.c    devices
   softirq.c          deferred work for input bottom halves
   ata.c fat.c cfg.c user.c               storage, file system (incl. fd layer), config, accounts
@@ -162,6 +185,8 @@ kernel/
 tools/
   mkfont.py          font generator (GDI -> 4-bit grayscale font.gtd + cpm.gtd)
   hello.asm          example program (INT 0x21 SYS_WRITE/SYS_EXIT), seeded as HELLO.GTP
+  demo.asm           example program: .gtd read/seek, stat, .gtl library call (DEMO.GTP)
+  sample_lib.asm     example shared library exporting add/mul (SAMPLE.GTL)
   test_v03.py        end-to-end test: OOBE, login, file commands
   test_v04.py        regression: single C: disk, GT-DOS directory, attributes, protection
   test_syscall.py    INT 0x21 gate and RUN program-execution test
@@ -173,7 +198,7 @@ assert on real boot output rather than on mocks.
 
 ## Notes and Limitations
 
-- The kernel currently fits in 182 sectors (92,776 bytes), loaded between `0x10000` and `0x80000`.
+- The kernel currently fits in 202 sectors (103,000 bytes), loaded between `0x10000` and `0x80000`.
   Growing past that window requires relocating the load address.
 - Large zero-initialised buffers (`font_buf`, the code page table, the back buffer) are placed in
   a `NOLOAD` `.highbss` section above 1 MB. If they were in ordinary `.bss` they would overlap the

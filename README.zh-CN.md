@@ -42,10 +42,30 @@ FAT16 文件系统、用户账户与中英双语 Shell。
 - i18n 层，提供完整的中英文文案
 
 **系统调用与程序**
-- `INT 0x21` 软中断门：`EXIT/PUTC/GETC/WRITE/READ/OPEN/CLOSE/UPTIME/REBOOT/SHUTDOWN/GETTIME/PUTS`
-- 基于 FAT 的 `open/read/write/close` fd 层（fd 0/1/2 为控制台）
+- `INT 0x21` 软中断门：`rax` 选择调用号，`rdi`/`rsi`/`rdx` 依次传参（SysV 约定），
+  返回值写回 `rax`：
+
+| 号 | 调用 | 号 | 调用 |
+| --- | --- | --- | --- |
+| 0 | `SYS_EXIT` | 10 | `SYS_GETTIME` |
+| 1 | `SYS_PUTC` | 11 | `SYS_PUTS` |
+| 2 | `SYS_GETC` | 12 | `SYS_SEEK` |
+| 3 | `SYS_WRITE` | 13 | `SYS_STAT` |
+| 4 | `SYS_READ` | 14 | `SYS_OPENDIR` |
+| 5 | `SYS_OPEN` | 15 | `SYS_READDIR` |
+| 6 | `SYS_CLOSE` | 16 | `SYS_SLEEP` |
+| 7 | `SYS_UPTIME` | 17 | `SYS_LIBLOAD` |
+| 8 | `SYS_REBOOT` | 18 | `SYS_LIBSYM` |
+| 9 | `SYS_SHUTDOWN` | | |
+
+- 基于 FAT 的 `open/read/write/close/seek` fd 层（fd 0/1/2 为控制台），
+  目录句柄经 `SYS_OPENDIR`/`SYS_READDIR` 遍历
 - `RUN <文件.gtp>` 将平面二进制载入暂存区并跳转执行；程序经 `SYS_EXIT` 返回 shell
-- `kernel/include/` 下的公开头文件（`gtos.h`、`unistd.h`、`time.h`、`stdint.h`、`ctype.h`）
+- `.gtl` 共享库：加载器把镜像映射到 `LIB_BASE`（0x500000），
+  由 `SYS_LIBLOAD`/`SYS_LIBSYM` 按名解析导出符号；每个程序运行前重置库命名空间
+- `.gtd` 数据文件通过同一 fd 层读取（示例程序读取 `DATA.GTD`）
+- `kernel/include/` 下的公开头文件（`gtos.h`、`unistd.h`、`stat.h`、`dirent.h`、`gtlib.h`、
+  `time.h`、`stdint.h`、`ctype.h`、`stdio.h`、`string.h`、`stdlib.h`）
   被种子写入磁盘的 `INCLUDE` 目录
 
 **安全**
@@ -107,7 +127,7 @@ qemu-system-x86_64 -hda gt-dos-hd.img -boot c
 启动分区位于磁盘末尾并携带可引导标志；内核在启动时通过 ATA 从中读取 `font.gtd` 与 `cpm.gtd`。
 
 自研二进制采用分类语义后缀：`.gtb` 为引导/内核裸二进制（`mbr`/`boot`/`kernel`），`.gtd` 为数据块
-（`font`/`cpm`）；`.gtp`（程序）与 `.gtl`（共享库）为将来预留。
+（`font`/`cpm`/`data`），`.gtp` 为用户程序（`hello`/`demo`），`.gtl` 为共享库（`sample_lib`）。
 
 ## Shell 命令
 
@@ -142,11 +162,13 @@ kernel/
   exec_asm.asm       RUN 的栈帧切换 (exec_enter / exec_longjmp)
   kernel.ld          链接脚本; 大缓冲位于 1MB 以上的 .highbss
   gt.h               内核全局定义
-  include/           公开头文件 (gtos.h, unistd.h, time.h, stdint.h, ctype.h, stdio.h 等)
+  include/           公开头文件 (gtos.h, unistd.h, stat.h, dirent.h, gtlib.h 等)
   kmain.c            内核入口
   idt.c apic.c       中断: IDT, APIC/IO-APIC, 分发
   syscall.c          INT 0x21 系统调用分派
   exec.c             RUN 程序加载器 (把 .gtp 载入 PROG_BASE)
+  gtlib.c            .gtl 共享库加载器与符号表
+  crypto.c           系统文件加密 (AES-128-CBC)
   timer.c keyboard.c mouse.c serial.c    设备驱动
   softirq.c          输入下半部的延迟处理
   ata.c fat.c cfg.c user.c               存储, 文件系统(含 fd 层), 配置, 账户
@@ -156,6 +178,8 @@ kernel/
 tools/
   mkfont.py          字模生成器 (GDI -> 4bit 灰度 font.gtd + cpm.gtd)
   hello.asm          示例程序 (INT 0x21 SYS_WRITE/SYS_EXIT), 种子为 HELLO.GTP
+  demo.asm           示例程序: .gtd 读取/seek、stat、.gtl 库调用 (DEMO.GTP)
+  sample_lib.asm     示例共享库, 导出 add/mul (SAMPLE.GTL)
   test_v03.py        端到端测试: OOBE, 登录, 文件命令
   test_v04.py        回归测试: 单盘 C:, GT-DOS 目录, 属性, 系统保护
   test_syscall.py    INT 0x21 门与 RUN 程序执行测试
@@ -167,7 +191,7 @@ build.py             构建脚本与镜像组装
 
 ## 说明与限制
 
-- 内核目前为 182 扇区（92,776 字节），加载区间为 `0x10000` 到 `0x80000`。
+- 内核目前为 202 扇区（103,000 字节），加载区间为 `0x10000` 到 `0x80000`。
   若要继续增大，需要调整加载地址。
 - 大块零初始化缓冲（`font_buf`、码点表、后台缓冲）被放置在 1 MB 以上、
   标记为 `NOLOAD` 的 `.highbss` 段。若放在普通 `.bss` 中，会与 `0xA0000`

@@ -1096,7 +1096,7 @@ bool fat_touch(const char *name)
 #define FD_BUFSZ 4096
 static u8 fd_buf[FD_MAX][FD_BUFSZ] __attribute__((section(".highbss")));
 struct fd_ent {
-    bool used; u32 len; u32 pos; bool dirty; char path[160];
+    bool used; u32 len; u32 pos; bool dirty; bool isdir; u32 dirpos; char path[160];
 };
 static struct fd_ent fdtab[FD_MAX];
 
@@ -1119,7 +1119,9 @@ int fat_fd_open(const char *path, int flags)
     u32 got = 0;
     if (!fat_read_file(path, fd_buf[slot], FD_BUFSZ, &got)) got = 0;
     fdtab[slot].used = true;
-    fdtab[slot].len = got;
+    fdtab[slot].isdir = exists && d.is_dir;
+    fdtab[slot].dirpos = 0;
+    fdtab[slot].len = fdtab[slot].isdir ? 0 : got;
     fdtab[slot].pos = 0;
     fdtab[slot].dirty = false;
     int n = 0;
@@ -1167,5 +1169,51 @@ int fat_fd_close(int fd)
         e->dirty = false;
     }
     e->used = false; e->len = 0; e->pos = 0;
+    e->isdir = false; e->dirpos = 0;
     return rc;
+}
+
+/* whence: 0=SET, 1=CUR, 2=END */
+int fat_fd_seek(int fd, int offset, int whence)
+{
+    if (fd < 3 || fd >= 3 + FD_MAX) return -1;
+    struct fd_ent *e = &fdtab[fd - 3];
+    if (!e->used || e->isdir) return -1;
+    long np;
+    if (whence == 1)      np = (long)e->pos + offset;
+    else if (whence == 2) np = (long)e->len + offset;
+    else                  np = offset;
+    if (np < 0 || (u32)np > e->len) return -1;
+    e->pos = (u32)np;
+    return (int)e->pos;
+}
+
+int fat_fd_opendir(const char *path)
+{
+    return fat_fd_open(path, O_RDONLY);   /* 目录 fd: isdir 由 open 判定 */
+}
+
+/* 读取下一个目录项: 1=有, 0=结束, -1=错误 */
+int fat_fd_readdir(int fd, struct fat_dirent *out)
+{
+    if (fd < 3 || fd >= 3 + FD_MAX || !out) return -1;
+    struct fd_ent *e = &fdtab[fd - 3];
+    if (!e->used || !e->isdir) return -1;
+    static struct fat_dirent arr[32];
+    int n = fat_list_dir(e->path, arr, 32);
+    if (n < 0) n = 0;
+    if (e->dirpos >= (u32)n) return 0;
+    *out = arr[e->dirpos++];
+    return 1;
+}
+
+int fat_stat_pub(const char *path, struct gt_stat *out)
+{
+    if (!path || !path[0] || !out) return -1;
+    struct fat_dirent d;
+    if (!fat_find(path, &d)) return -1;
+    out->size = d.size;
+    out->attr = d.attrs;
+    out->is_dir = d.is_dir ? 1 : 0;
+    return 0;
 }

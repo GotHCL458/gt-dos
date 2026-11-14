@@ -185,6 +185,75 @@ int str_contains(const char *hay, char c)
     return 0;
 }
 
+/* ---------------------------------------------------- 标准库补充实现 */
+char *strchr(const char *s, int c)
+{
+    for (;; s++) {
+        if (*s == (char)c)
+            return (char *)s;
+        if (!*s)
+            return 0;
+    }
+}
+
+char *strrchr(const char *s, int c)
+{
+    const char *last = 0;
+    for (;; s++) {
+        if (*s == (char)c)
+            last = s;
+        if (!*s)
+            return (char *)last;
+    }
+}
+
+int strcasecmp(const char *a, const char *b)
+{
+    while (*a && lower_of(*a) == lower_of(*b)) {
+        a++;
+        b++;
+    }
+    return (int)(u8)lower_of(*a) - (int)(u8)lower_of(*b);
+}
+
+int abs(int v)
+{
+    return v < 0 ? -v : v;
+}
+
+/* 支持 base=10 / 16 (0x 前缀), end 可为 0 */
+unsigned long strtoul(const char *s, char **end, int base)
+{
+    while (*s == ' ' || *s == '\t')
+        s++;
+    int neg = 0;
+    if (*s == '-' || *s == '+') {
+        neg = (*s == '-');
+        s++;
+    }
+    if (base == 0) {
+        base = 10;
+        if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+            base = 16;
+            s += 2;
+        }
+    } else if (base == 16 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        s += 2;
+    }
+    unsigned long v = 0;
+    for (;; s++) {
+        int d;
+        if (*s >= '0' && *s <= '9') d = *s - '0';
+        else if (*s >= 'a' && *s <= 'f') d = *s - 'a' + 10;
+        else if (*s >= 'A' && *s <= 'F') d = *s - 'A' + 10;
+        else break;
+        if (d >= base) break;
+        v = v * (unsigned long)base + (unsigned long)d;
+    }
+    if (end) *end = (char *)s;
+    return neg ? (unsigned long)(-(long)v) : v;
+}
+
 int fmt_uint(u32 value, char *buf)
 {
     itoa_base(value, buf, 10, false);

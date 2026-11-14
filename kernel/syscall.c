@@ -42,6 +42,43 @@ void syscall_handle(struct regs *r)
     case SYS_CLOSE:
         r->rax = (u64)fat_fd_close((int)r->rdi);
         break;
+    case SYS_SEEK:
+        r->rax = (u64)fat_fd_seek((int)r->rdi, (int)r->rsi, (int)r->rdx);
+        break;
+    case SYS_STAT:
+        r->rax = (u64)fat_stat_pub((const char *)r->rdi, (struct gt_stat *)r->rsi);
+        break;
+    case SYS_OPENDIR:
+        r->rax = (u64)fat_fd_opendir((const char *)r->rdi);
+        break;
+    case SYS_READDIR: {
+        struct fat_dirent d;
+        int rc = fat_fd_readdir((int)r->rdi, &d);
+        if (rc == 1 && r->rsi) {
+            struct gt_dirent *o = (struct gt_dirent *)r->rsi;
+            int i = 0;
+            while (i < 15 && d.name[i]) { o->name[i] = d.name[i]; i++; }
+            o->name[i] = '\0';
+            o->size = d.size;
+            o->attr = d.attrs;
+            o->is_dir = d.is_dir ? 1 : 0;
+        }
+        r->rax = (u64)rc;
+        break;
+    }
+    case SYS_SLEEP:
+        /* 中断门进入时 IF=0, 而 timer_sleep_ms 依赖 hlt 被时钟中断唤醒 */
+        cpu_sti();
+        timer_sleep_ms((u32)r->rdi);
+        cpu_cli();
+        r->rax = 0;
+        break;
+    case SYS_LIBLOAD:
+        r->rax = (u64)lib_load((const char *)r->rdi);
+        break;
+    case SYS_LIBSYM:
+        r->rax = lib_sym((int)r->rdi, (const char *)r->rsi);
+        break;
     case SYS_UPTIME:
         r->rax = (u64)timer_uptime_ms();
         break;
