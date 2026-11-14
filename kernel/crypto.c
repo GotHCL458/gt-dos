@@ -1,7 +1,7 @@
 /* 系统文件加密: AES-128-CBC + PKCS#7 填充.
-   密钥内嵌于内核 (属混淆级保护, 非硬件密钥隔离).
+   加密轮用 32 位 T 表 (Te0..Te3) 实现, 解密轮用逆 S 盒逐字节实现.
    接口: gt_encrypt 返回密文长度 (16 的倍数); gt_decrypt 返回明文长度.
-   同一 CBC IV 常量, 与 build.py 的镜像种子加密保持一致. */
+   同一 CBC IV 常量, 与构建期工具 tools/gtmkfs.c 共用本文件. */
 #include "gt.h"
 
 static const u8 sbox[256] = {
@@ -44,7 +44,7 @@ static const u8 rsbox[256] = {
 
 static const u8 rcon[11] = { 0x00,0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1b,0x36 };
 
-/* 128 位主密钥 (与 build.py 保持一致) */
+/* 128 位主密钥 (与构建期工具共用) */
 static const u8 aes_key[16] = {
     0x47,0x54,0x2d,0x44,0x4f,0x53,0x2d,0x41,
     0x45,0x53,0x2d,0x31,0x32,0x38,0x2d,0x4b
@@ -56,59 +56,115 @@ static const u8 aes_iv[16] = {
     0x41,0x45,0x53,0x2d,0x43,0x42,0x43,0x00
 };
 
-static u8 rk[176];
+static u8  rk[176];                  /* 字节形式轮密钥 (解密用) */
+static u32 rkw[44];                  /* 字形式轮密钥 (加密用) */
+static u32 Te0[256], Te1[256], Te2[256], Te3[256];
+static bool aes_ready;
 
 static u8 xtime(u8 x)
 {
     return (u8)((x << 1) ^ ((x >> 7) ? 0x1b : 0x00));
 }
 
-static void aes_expand(void)
+static u32 rotr32(u32 x, int n)
 {
-    u8 t[4];
+    return (x >> n) | (x << (32 - n));
+}
+
+static u32 get_be32(const u8 *p)
+{
+    return ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | (u32)p[3];
+}
+
+static void put_be32(u8 *p, u32 v)
+{
+    p[0] = (u8)(v >> 24);
+    p[1] = (u8)(v >> 16);
+    p[2] = (u8)(v >> 8);
+    p[3] = (u8)v;
+}
+
+static void aes_setup(void)
+{
+    /* 密钥扩展: 字节表与字表同时生成 */
     for (int i = 0; i < 16; i++)
         rk[i] = aes_key[i];
-    for (int i = 16; i < 176; i += 4) {
-        for (int j = 0; j < 4; j++)
-            t[j] = rk[i - 4 + j];
-        if (i % 16 == 0) {
-            u8 tmp = t[0];
-            t[0] = (u8)(sbox[t[1]] ^ rcon[i / 16]);
-            t[1] = sbox[t[2]];
-            t[2] = sbox[t[3]];
-            t[3] = sbox[tmp];
+    for (int i = 0; i < 4; i++)
+        rkw[i] = get_be32(aes_key + 4 * i);
+
+    for (int i = 4; i < 44; i++) {
+        u32 t = rkw[i - 1];
+        if (i % 4 == 0) {
+            t = (t << 8) | (t >> 24);                  /* RotWord */
+            t = ((u32)sbox[(t >> 24) & 0xFF] << 24) |
+                ((u32)sbox[(t >> 16) & 0xFF] << 16) |
+                ((u32)sbox[(t >> 8) & 0xFF] << 8) |
+                (u32)sbox[t & 0xFF];                   /* SubWord */
+            t ^= (u32)rcon[i / 4] << 24;
         }
-        for (int j = 0; j < 4; j++)
-            rk[i + j] = (u8)(rk[i - 16 + j] ^ t[j]);
+        rkw[i] = rkw[i - 4] ^ t;
+    }
+    for (int i = 4; i < 44; i++)
+        put_be32(rk + 4 * i, rkw[i]);
+
+    /* Te0[x] = [2s, s, s, 3s]; Te1..3 为字节循环移位 */
+    for (int x = 0; x < 256; x++) {
+        u8 s = sbox[x];
+        u8 s2 = xtime(s);
+        u8 s3 = (u8)(s2 ^ s);
+        u32 v = ((u32)s2 << 24) | ((u32)s << 16) | ((u32)s << 8) | (u32)s3;
+        Te0[x] = v;
+        Te1[x] = rotr32(v, 8);
+        Te2[x] = rotr32(v, 16);
+        Te3[x] = rotr32(v, 24);
     }
 }
 
+static void aes_encrypt_block(const u8 *in, u8 *out)
+{
+    u32 s0 = get_be32(in) ^ rkw[0];
+    u32 s1 = get_be32(in + 4) ^ rkw[1];
+    u32 s2 = get_be32(in + 8) ^ rkw[2];
+    u32 s3 = get_be32(in + 12) ^ rkw[3];
+
+    for (int r = 1; r < 10; r++) {
+        const u32 *k = rkw + 4 * r;
+        u32 t0 = Te0[s0 >> 24] ^ Te1[(s1 >> 16) & 0xFF] ^
+                 Te2[(s2 >> 8) & 0xFF] ^ Te3[s3 & 0xFF] ^ k[0];
+        u32 t1 = Te0[s1 >> 24] ^ Te1[(s2 >> 16) & 0xFF] ^
+                 Te2[(s3 >> 8) & 0xFF] ^ Te3[s0 & 0xFF] ^ k[1];
+        u32 t2 = Te0[s2 >> 24] ^ Te1[(s3 >> 16) & 0xFF] ^
+                 Te2[(s0 >> 8) & 0xFF] ^ Te3[s1 & 0xFF] ^ k[2];
+        u32 t3 = Te0[s3 >> 24] ^ Te1[(s0 >> 16) & 0xFF] ^
+                 Te2[(s1 >> 8) & 0xFF] ^ Te3[s2 & 0xFF] ^ k[3];
+        s0 = t0; s1 = t1; s2 = t2; s3 = t3;
+    }
+
+    u32 t0 = ((u32)sbox[s0 >> 24] << 24) | ((u32)sbox[(s1 >> 16) & 0xFF] << 16) |
+             ((u32)sbox[(s2 >> 8) & 0xFF] << 8) | (u32)sbox[s3 & 0xFF];
+    u32 t1 = ((u32)sbox[s1 >> 24] << 24) | ((u32)sbox[(s2 >> 16) & 0xFF] << 16) |
+             ((u32)sbox[(s3 >> 8) & 0xFF] << 8) | (u32)sbox[s0 & 0xFF];
+    u32 t2 = ((u32)sbox[s2 >> 24] << 24) | ((u32)sbox[(s3 >> 16) & 0xFF] << 16) |
+             ((u32)sbox[(s0 >> 8) & 0xFF] << 8) | (u32)sbox[s1 & 0xFF];
+    u32 t3 = ((u32)sbox[s3 >> 24] << 24) | ((u32)sbox[(s0 >> 16) & 0xFF] << 16) |
+             ((u32)sbox[(s1 >> 8) & 0xFF] << 8) | (u32)sbox[s2 & 0xFF];
+    put_be32(out, t0 ^ rkw[40]);
+    put_be32(out + 4, t1 ^ rkw[41]);
+    put_be32(out + 8, t2 ^ rkw[42]);
+    put_be32(out + 12, t3 ^ rkw[43]);
+}
+
+/* ------------------------------------------------------------ 解密 (逆轮) */
 static void add_round_key(u8 *s, const u8 *k)
 {
     for (int i = 0; i < 16; i++)
         s[i] ^= k[i];
 }
 
-static void sub_bytes(u8 *s)
-{
-    for (int i = 0; i < 16; i++)
-        s[i] = sbox[s[i]];
-}
-
 static void inv_sub_bytes(u8 *s)
 {
     for (int i = 0; i < 16; i++)
         s[i] = rsbox[s[i]];
-}
-
-/* 状态按列主序: s[r + 4c] */
-static void shift_rows(u8 *s)
-{
-    u8 t;
-    t = s[1];  s[1] = s[5];  s[5] = s[9];  s[9] = s[13]; s[13] = t;
-    t = s[2];  s[2] = s[10]; s[10] = t;
-    t = s[6];  s[6] = s[14]; s[14] = t;
-    t = s[3];  s[3] = s[15]; s[15] = s[11]; s[11] = s[7]; s[7] = t;
 }
 
 static void inv_shift_rows(u8 *s)
@@ -118,19 +174,6 @@ static void inv_shift_rows(u8 *s)
     t = s[2];  s[2] = s[10]; s[10] = t;
     t = s[6];  s[6] = s[14]; s[14] = t;
     t = s[3];  s[3] = s[7];  s[7] = s[11]; s[11] = s[15]; s[15] = t;
-}
-
-static void mix_columns(u8 *s)
-{
-    for (int c = 0; c < 4; c++) {
-        u8 *p = s + 4 * c;
-        u8 a0 = p[0], a1 = p[1], a2 = p[2], a3 = p[3];
-        u8 all = (u8)(a0 ^ a1 ^ a2 ^ a3);
-        p[0] = (u8)(a0 ^ all ^ xtime((u8)(a0 ^ a1)));
-        p[1] = (u8)(a1 ^ all ^ xtime((u8)(a1 ^ a2)));
-        p[2] = (u8)(a2 ^ all ^ xtime((u8)(a2 ^ a3)));
-        p[3] = (u8)(a3 ^ all ^ xtime((u8)(a3 ^ a0)));
-    }
 }
 
 static u8 gmul(u8 a, u8 b)
@@ -158,25 +201,6 @@ static void inv_mix_columns(u8 *s)
     }
 }
 
-static void aes_encrypt_block(const u8 *in, u8 *out)
-{
-    u8 s[16];
-    for (int i = 0; i < 16; i++)
-        s[i] = in[i];
-    add_round_key(s, rk);
-    for (int r = 1; r <= 9; r++) {
-        sub_bytes(s);
-        shift_rows(s);
-        mix_columns(s);
-        add_round_key(s, rk + r * 16);
-    }
-    sub_bytes(s);
-    shift_rows(s);
-    add_round_key(s, rk + 160);
-    for (int i = 0; i < 16; i++)
-        out[i] = s[i];
-}
-
 static void aes_decrypt_block(const u8 *in, u8 *out)
 {
     u8 s[16];
@@ -196,11 +220,9 @@ static void aes_decrypt_block(const u8 *in, u8 *out)
         out[i] = s[i];
 }
 
-static bool aes_ready;
-
 u32 gt_encrypt(const u8 *in, u32 len, u8 *out)
 {
-    if (!aes_ready) { aes_expand(); aes_ready = true; }
+    if (!aes_ready) { aes_setup(); aes_ready = true; }
     u32 pad = 16 - (len % 16);
     u32 total = len + pad;
     u8 prev[16], blk[16];
@@ -220,7 +242,7 @@ u32 gt_encrypt(const u8 *in, u32 len, u8 *out)
 
 u32 gt_decrypt(const u8 *in, u32 clen, u8 *out)
 {
-    if (!aes_ready) { aes_expand(); aes_ready = true; }
+    if (!aes_ready) { aes_setup(); aes_ready = true; }
     if (clen == 0 || (clen % 16) != 0)
         return 0;
     u8 prev[16], blk[16], tmp[16];
@@ -242,4 +264,17 @@ u32 gt_decrypt(const u8 *in, u32 clen, u8 *out)
         if (out[clen - 1 - i] != (u8)pad)
             return 0;
     return clen - pad;
+}
+
+/* ------------------------------------------------------------------ CRC32 */
+u32 gt_crc32(const void *data, u32 len)
+{
+    const u8 *p = (const u8 *)data;
+    u32 crc = 0xFFFFFFFFu;
+    while (len--) {
+        crc ^= *p++;
+        for (int i = 0; i < 8; i++)
+            crc = (crc >> 1) ^ (0xEDB88320u & (u32)(-(i32)(crc & 1)));
+    }
+    return ~crc;
 }

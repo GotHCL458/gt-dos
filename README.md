@@ -23,7 +23,7 @@ a FAT16 file system, user accounts and a bilingual (Chinese/English) shell.
 - IDT with 16-byte x64 gates, ISR stubs, SysV-compliant register save/restore
 - APIC + IO-APIC with interrupt priority (TPR) and vector classes
 - Softirq pattern: top half only buffers input, bottom half decodes in the idle loop
-- ATA PIO driver, FAT16 file system, serial console (UTF-8)
+- ATA PIO driver, exFAT file system (long names, allocation bitmap, FAT chains), serial console (UTF-8)
 
 **Graphics**
 - Bochs VBE linear framebuffer, LFB address discovered through PCI configuration space
@@ -57,9 +57,9 @@ a FAT16 file system, user accounts and a bilingual (Chinese/English) shell.
 | 6 | `SYS_CLOSE` | 16 | `SYS_SLEEP` |
 | 7 | `SYS_UPTIME` | 17 | `SYS_LIBLOAD` |
 | 8 | `SYS_REBOOT` | 18 | `SYS_LIBSYM` |
-| 9 | `SYS_SHUTDOWN` | | |
+| 9 | `SYS_SHUTDOWN` | 19 | `SYS_STATX` |
 
-- A small `open/read/write/close/seek` fd layer over FAT (fds 0/1/2 are the console),
+- A small `open/read/write/close/seek` fd layer over exFAT (fds 0/1/2 are the console),
   plus directory handles through `SYS_OPENDIR`/`SYS_READDIR`
 - `RUN <file.gtp>` loads a flat binary into a scratch region and transfers control; the
   program returns to the shell via `SYS_EXIT`
@@ -71,9 +71,19 @@ a FAT16 file system, user accounts and a bilingual (Chinese/English) shell.
   `gtlib.h`, `time.h`, `stdint.h`, `ctype.h`, `stdio.h`, `string.h`, `stdlib.h`)
   are seeded onto the disk's `INCLUDE` directory
 
+**exFAT vendor extension**
+- Each file/directory entry set carries three vendor entries (type `0xE0`):
+  encryption metadata (flag, algorithm, plaintext size, CRC32), ACL (owner and mode bits),
+  and version + CRC32
+- `SYS_STATX` exposes them to programs (`flags`/`version`/`crc`/`owner`/`mode`);
+  the kernel enforces the owner on writes by non-admin users
+
 **Security**
-- Every file under `\GT-DOS\` is stored AES-128-CBC encrypted (PKCS#7 padding); the kernel
-  decrypts transparently for its own use
+- Every file under `\GT-DOS\` is stored AES-128-CBC encrypted (PKCS#7 padding, T-table
+  fast path); the kernel decrypts transparently for its own use
+- Image formatting and encryption are performed entirely by the standalone C tool
+  `tools/gtmkfs.c` (it links the same `kernel/crypto.c`); the build script only writes a
+  seed manifest and invokes it once
 - System files are strictly protected: no account, including `admin`, may read, modify or
   delete them (`TYPE`/`HEAD`/`WC`/`CP`/`MV` refuse, writes and deletes are blocked)
 - Non-admin users can only write inside their own home directory (`\USERS\<name>\`)
@@ -126,7 +136,7 @@ The image is a single 64 MB raw hard disk with an MBR partition table:
 | Region | Location | Contents |
 | --- | --- | --- |
 | MBR | LBA 0 | `boot/mbr.asm`, partition table written by `build.py` |
-| Partition 1 (C:) | LBA 2048, 120832 sectors | FAT16 system volume, holds `\GT-DOS\` and the `INCLUDE` headers |
+| Partition 1 (C:) | LBA 2048, 120832 sectors | exFAT system volume, holds `\GT-DOS\` and the `INCLUDE` headers |
 | Partition 2 (hidden) | last 8192 sectors | Boot partition, type `0x11`, bootable: `boot.gtb` + `kernel.gtb` + `font.gtd` + `cpm.gtd` |
 
 The boot partition sits at the end of the disk and carries the bootable flag; the kernel reads
@@ -175,15 +185,16 @@ kernel/
   syscall.c          INT 0x21 system-call dispatch
   exec.c             RUN program loader (loads a .gtp into PROG_BASE)
   gtlib.c            .gtl shared-library loader and symbol table
-  crypto.c           AES-128-CBC for encrypted system files
+  crypto.c           AES-128-CBC (T-table fast path) + CRC32
   timer.c keyboard.c mouse.c serial.c    devices
   softirq.c          deferred work for input bottom halves
-  ata.c fat.c cfg.c user.c               storage, file system (incl. fd layer), config, accounts
+  ata.c fat.c cfg.c user.c               storage, exFAT driver (incl. fd layer), config, accounts
   gfx.c vga.c tui.c console.c ui.c       graphics layer, text console, splash
   shell.c            command interpreter
   i18n.c power.c oobe.c lib.c            strings, reset/poweroff, first-boot wizard, libc stubs
 tools/
   mkfont.py          font generator (GDI -> 4-bit grayscale font.gtd + cpm.gtd)
+  gtmkfs.c           standalone exFAT formatter/populator + AES encryption (pure C)
   hello.asm          example program (INT 0x21 SYS_WRITE/SYS_EXIT), seeded as HELLO.GTP
   demo.asm           example program: .gtd read/seek, stat, .gtl library call (DEMO.GTP)
   sample_lib.asm     example shared library exporting add/mul (SAMPLE.GTL)
@@ -198,7 +209,7 @@ assert on real boot output rather than on mocks.
 
 ## Notes and Limitations
 
-- The kernel currently fits in 202 sectors (103,000 bytes), loaded between `0x10000` and `0x80000`.
+- The kernel currently fits in 207 sectors (105,944 bytes), loaded between `0x10000` and `0x80000`.
   Growing past that window requires relocating the load address.
 - Large zero-initialised buffers (`font_buf`, the code page table, the back buffer) are placed in
   a `NOLOAD` `.highbss` section above 1 MB. If they were in ordinary `.bss` they would overlap the

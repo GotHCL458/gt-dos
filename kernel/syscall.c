@@ -48,6 +48,9 @@ void syscall_handle(struct regs *r)
     case SYS_STAT:
         r->rax = (u64)fat_stat_pub((const char *)r->rdi, (struct gt_stat *)r->rsi);
         break;
+    case SYS_STATX:
+        r->rax = (u64)fat_statx((const char *)r->rdi, (struct gt_statx *)r->rsi);
+        break;
     case SYS_OPENDIR:
         r->rax = (u64)fat_fd_opendir((const char *)r->rdi);
         break;

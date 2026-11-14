@@ -83,10 +83,28 @@ _start:
     cmp rax, 5
     jne fail
 
+    ; ---- SYS_STATX: 校验 exFAT 厂商扩展 (版本 / 所有者) ----
+    mov rax, 19                 ; SYS_STATX
+    lea rdi, [rel datapath]
+    lea rsi, [rel stxbuf]
+    int 0x21
+    test rax, rax
+    jnz fail
+    cmp dword [rel stxbuf + 16], 1       ; version >= 1
+    jb fail
+    cmp dword [rel stxbuf + 24], 0x54535953   ; owner = "SYST..."
+    jne fail
+
     mov rax, 3
     mov rdi, 1
     lea rsi, [rel okmsg]
     mov rdx, 7
+    int 0x21
+
+    mov rax, 3
+    mov rdi, 1
+    lea rsi, [rel xmsg]
+    mov rdx, 9
     int 0x21
     jmp done
 
@@ -110,8 +128,10 @@ datapath: db "DATA.GTD", 0
 libpath:  db "SAMPLE.GTL", 0
 symadd:   db "add", 0
 okmsg:    db "LIB OK", 10
+xmsg:     db "XATTR OK", 10
 badmsg:   db "LIB FAIL", 10
 lbrack:   db "["
 rbrack:   db "]", 10
 stbuf:    times 16 db 0
+stxbuf:   times 44 db 0
 buf:      times 32 db 0

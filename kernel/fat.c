@@ -1,75 +1,133 @@
-/* FAT16/FAT32 文件系统, 自动识别. C:=dev0 的 FAT16 分区, MBR 分区表由内核解析;
-   盘尾隐藏启动分区 (type 0x11) 非 FAT 卷, 挂载时跳过. \GT-DOS\ 目录禁止创建/
-   删除/改属性. 路径 "C:\DIR\FILE" 切到该卷, 其余按当前卷, 相对路径由 shell
-   拼成绝对路径传入. */
+/* exFAT 文件系统. C:=dev0 的 exFAT 分区, MBR 分区表由内核解析; 盘尾隐藏
+   启动分区 (type 0x11) 非本驱动挂载对象. 路径 "C:\DIR\FILE" 切到该卷,
+   其余按当前卷, 相对路径由 shell 拼成绝对路径传入.
+
+   目录项支持 GT-DOS 厂商扩展 (类型 0xE0):
+     1 加密元数据 (GTE1 + AES-128-CBC)
+     2 ACL (所有者与权限位)
+     3 版本与 CRC32
+   文件名按 ASCII 处理 (使用与 mkfs 一致的 Up-case 表映射 a-z). */
 #include "gt.h"
 
 #define SEC_SIZE 512
 #define MAX_VOL  2
+#define DIR_CACHE_SZ 32768
 
-struct raw_dir {
-    u8  name[11];
-    u8  attr;
-    u8  reserved;
-    u8  crt_tenth;
-    u8  crt_time[2];
-    u8  crt_date[2];
-    u8  last_acc[2];
-    u16 hi_clus;
-    u8  wr_time[2];
-    u8  wr_date[2];
-    u16 lo_clus;
-    u32 size;
-} __attribute__((packed));
+/* exFAT 目录项类型 */
+#define ET_END     0x00
+#define ET_BITMAP  0x81
+#define ET_UPCASE  0x82
+#define ET_LABEL   0x83
+#define ET_FILE    0x85
+#define ET_STREAM  0xC0
+#define ET_NAME    0xC1
+#define ET_VENDOR  0xE0
 
-typedef char raw_dir_must_be_32[1 - 2 * (sizeof(struct raw_dir) != 32)];
+#define MAX_SET_ENTS 12
+#define MAX_NAME     63
 
 /* ------------------------------------------------------------------ 卷 */
 struct vol {
     char letter;
     bool mounted;
     int  dev;
-    bool is32;
     u32  part_lba;
+    u32  part_sectors;
     u8   sec_per_clus;
-    u16  root_entries;
-    u32  fat_size;
-    u32  fat_base;
-    u32  data_start;
-    u32  root_dir_start;
-    u32  root_clus;
+    u32  fat_offset;
+    u32  fat_len;
+    u32  heap_offset;
     u32  cluster_count;
+    u32  root_clus;
+    u32  bitmap_clus;
+    u32  bitmap_len;
 };
 
 static struct vol vols[MAX_VOL];
 static int nvol;
 static int cur;                       /* 当前卷索引 (shell 盘符) */
 static int work;                      /* 本次操作卷索引 (路径解析用) */
-static bool show_all;                 /* DIR /A: 显示隐藏/系统条目 */
-static bool allow_sys;                /* 系统内部写 \GT-DOS\ 状态文件 */
+static bool show_all;
+static bool allow_sys;
 
-static u8   scratch_a[SEC_SIZE];      /* FAT 读改写 */
-static u8   scratch_b[SEC_SIZE];      /* 目录读改写 */
-static u8   scratch_c[SEC_SIZE];      /* 数据读 */
+static u8 scratch_a[SEC_SIZE];
+static u8 scratch_b[SEC_SIZE];
+static u8 scratch_c[SEC_SIZE];
+
+static u8 bm_cache[8192] __attribute__((section(".highbss")));
+static u8 dir_cache[DIR_CACHE_SZ] __attribute__((section(".highbss")));
 
 #define V (&vols[work])
 #define WOK (work >= 0 && work < nvol && vols[work].mounted)
+#define CLUS_BYTES ((u32)V->sec_per_clus * SEC_SIZE)
 
+/* ------------------------------------------------------------------ 工具 */
+static u16 rd_le16(const u8 *p) { return (u16)((u32)p[0] | ((u32)p[1] << 8)); }
 static u32 rd_le32(const u8 *p)
 {
     return (u32)p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) | ((u32)p[3] << 24);
 }
-static u16 rd_le16(const u8 *p) { return (u16)((u32)p[0] | ((u32)p[1] << 8)); }
-static void wr_le16(u8 *p, u16 val) { p[0] = (u8)val; p[1] = (u8)(val >> 8); }
-static void wr_le32(u8 *p, u32 val)
+static u64 rd_le64(const u8 *p)
 {
-    p[0] = (u8)val; p[1] = (u8)(val >> 8);
-    p[2] = (u8)(val >> 16); p[3] = (u8)(val >> 24);
+    return (u64)rd_le32(p) | ((u64)rd_le32(p + 4) << 32);
+}
+static void wr_le16(u8 *p, u16 v) { p[0] = (u8)v; p[1] = (u8)(v >> 8); }
+static void wr_le32(u8 *p, u32 v)
+{
+    p[0] = (u8)v; p[1] = (u8)(v >> 8);
+    p[2] = (u8)(v >> 16); p[3] = (u8)(v >> 24);
+}
+static void wr_le64(u8 *p, u64 v)
+{
+    wr_le32(p, (u32)v);
+    wr_le32(p + 4, (u32)(v >> 32));
+}
+
+static u16 rr1_16(u16 h)
+{
+    return (u16)(((u32)h >> 1) | ((u32)h << 15));
+}
+
+static u32 rr1_32(u32 h)
+{
+    return (h >> 1) | (h << 31);
+}
+
+static u16 name_hash(const char *name)
+{
+    u16 h = 0;
+    for (const u8 *p = (const u8 *)name; *p; p++) {
+        u16 u = (u16)*p;
+        if (u >= 'a' && u <= 'z')
+            u = (u16)(u - 32);
+        h = (u16)(rr1_16(h) + (u & 0xFF));
+        h = (u16)(rr1_16(h) + (u >> 8));
+    }
+    return h;
+}
+
+static u16 set_checksum(const u8 *ents, int count)
+{
+    u16 cs = 0;
+    for (int i = 0; i < count * 32; i++) {
+        if (i == 2 || i == 3)
+            continue;
+        cs = (u16)(rr1_16(cs) + ents[i]);
+    }
+    return cs;
+}
+
+static u32 exfat_stamp(void)
+{
+    int y, mo, d, h, mi, s;
+    rtc_read(&y, &mo, &d, &h, &mi, &s);
+    if (y < 1980) y = 1980;
+    u16 dt = (u16)(((y - 1980) << 9) | (mo << 5) | d);
+    u16 tm = (u16)((h << 11) | (mi << 5) | (s / 2));
+    return ((u32)dt << 16) | tm;
 }
 
 /* ---------------------------------------------------------- 路径盘符 */
-/* 若 path 以 "X:" 开头, 把操作卷 work 切到该卷并返回剩余路径; 否则 work=当前卷.
- * 注意: 只改 work, 不改 cur (shell 的当前盘符). 卷不存在返回 0. */
 static const char *use_path(const char *path)
 {
     if (path && path[0] && path[1] == ':') {
@@ -83,7 +141,7 @@ static const char *use_path(const char *path)
         work = i;
         return path + 2;
     }
-    work = cur;                       /* 无前缀: 用当前盘 */
+    work = cur;
     if (!WOK)
         return 0;
     return path;
@@ -113,14 +171,9 @@ bool fat_set_drive(char letter)
 }
 
 char fat_drive(void) { return vols[cur].letter; }
-
 void fat_set_show_all(bool on) { show_all = on; }
-
 int fat_drive_count(void) { return nvol; }
-char fat_drive_letter(int i)
-{
-    return (i >= 0 && i < nvol) ? vols[i].letter : 0;
-}
+char fat_drive_letter(int i) { return (i >= 0 && i < nvol) ? vols[i].letter : 0; }
 
 /* ------------------------------------------------------------------ 底层 */
 static bool read_sect(u32 lba, void *buf)
@@ -132,332 +185,457 @@ static bool write_sect(u32 lba, const void *buf)
     return ata_write_dev(V->dev, lba, 1, buf);
 }
 
-static u32 eoc_marker(void) { return V->is32 ? 0x0FFFFFF8u : 0xFFF8u; }
-static bool is_eoc(u32 x) { return x >= eoc_marker(); }
+static u32 clus_to_sect(u32 c)
+{
+    return V->part_lba + V->heap_offset + (c - 2) * (u32)V->sec_per_clus;
+}
+
+static bool is_eoc(u32 x) { return x >= 0xFFFFFFF8u; }
 
 static u32 fat_get(u32 n)
 {
-    u32 byte_off = V->is32 ? n * 4 : n * 2;
-    u32 fat_sect = byte_off / SEC_SIZE;
-    if (!read_sect(V->part_lba + V->fat_base + fat_sect, scratch_a))
+    u32 byte_off = n * 4;
+    u32 lba = V->part_lba + V->fat_offset + byte_off / SEC_SIZE;
+    if (!read_sect(lba, scratch_a))
         return 0;
-    u32 in = byte_off % SEC_SIZE;
-    if (V->is32)
-        return rd_le32(scratch_a + in) & 0x0FFFFFFFu;
-    return rd_le16(scratch_a + in);
+    return rd_le32(scratch_a + byte_off % SEC_SIZE);
 }
 
 static bool fat_set(u32 n, u32 val)
 {
-    u32 byte_off = V->is32 ? n * 4 : n * 2;
-    u32 fat_sect = byte_off / SEC_SIZE;
-    u32 lba = V->part_lba + V->fat_base + fat_sect;
+    u32 byte_off = n * 4;
+    u32 lba = V->part_lba + V->fat_offset + byte_off / SEC_SIZE;
     if (!read_sect(lba, scratch_a))
         return false;
-    u32 in = byte_off % SEC_SIZE;
-    if (V->is32) {
-        u32 keep = rd_le32(scratch_a + in) & 0xF0000000u;
-        wr_le32(scratch_a + in, (val & 0x0FFFFFFFu) | keep);
-    } else {
-        wr_le16(scratch_a + in, (u16)val);
-    }
+    wr_le32(scratch_a + byte_off % SEC_SIZE, val);
     return write_sect(lba, scratch_a);
 }
 
-static u32 clus_to_sect(u32 c)
+/* --------------------------------------------------------- 分配位图 */
+static bool bm_load(void)
 {
-    return V->data_start + (c - 2) * (u32)V->sec_per_clus;
-}
-
-static u32 root_dir_clus(void) { return V->is32 ? V->root_clus : 0; }
-
-/* ------------------------------------------------------------------ 挂载 */
-static bool looks_like_fat_bs(const u8 *bs)
-{
-    if (bs[510] != 0x55 || bs[511] != 0xAA)
+    if (V->bitmap_len == 0 || V->bitmap_len > sizeof(bm_cache))
         return false;
-    u16 bps = rd_le16(bs + 11);
-    if (bps != SEC_SIZE)
-        return false;
-    u8 spc = bs[13];
-    if (spc == 0 || (spc & (spc - 1)))
-        return false;
-    if (bs[16] == 0)
-        return false;
-    return true;
-}
-
-/* 挂载设备 dev 到盘符 letter (扫描 MBR 分区表, 找第一个 FAT 分区) */
-static bool mount_one(int dev, char letter)
-{
-    if (!ata_present_dev(dev))
-        return false;
-
-    struct vol *nv = 0;
-    for (int i = 0; i < nvol; i++)
-        if (vols[i].dev == dev) { nv = &vols[i]; break; }
-    if (!nv) {
-        if (nvol >= MAX_VOL)
-            return false;
-        nv = &vols[nvol];
-        nvol++;
-    }
-    memset(nv, 0, sizeof(*nv));
-    nv->dev = dev;
-    nv->letter = (char)toupper_(letter);
-    work = cur = (int)(nv - vols);    /* 挂载期间读写走 V=vols[work] */
-
-    bool ok = false;
-    do {
-        u8 s0[SEC_SIZE];
-        if (!read_sect(0, s0))
-            break;
-        if (s0[510] != 0x55 || s0[511] != 0xAA)
-            break;
-
-        u32 part_lba = 0;
-        if (!looks_like_fat_bs(s0)) {
-            bool found = false;
-            for (int i = 0; i < 4; i++) {
-                const u8 *pe = s0 + 0x1BE + i * 16;
-                u8 type = pe[4];
-                if (type == 0x06 || type == 0x0B || type == 0x0C ||
-                    type == 0x0E || type == 0x04 || type == 0x01) {
-                    part_lba = rd_le32(pe + 8);
-                    found = true;
-                    break;
-                }
-            }
-            if (!found)
-                break;
+    u32 c = V->bitmap_clus;
+    u32 done = 0;
+    while (done < V->bitmap_len) {
+        for (u32 s = 0; s < (u32)V->sec_per_clus && done + s * SEC_SIZE < V->bitmap_len; s++) {
+            u32 chunk = V->bitmap_len - done - s * SEC_SIZE;
+            if (chunk > SEC_SIZE) chunk = SEC_SIZE;
+            if (!read_sect(clus_to_sect(c) + s, bm_cache + done + s * SEC_SIZE))
+                return false;
+            (void)chunk;
         }
-
-        u8 bs[SEC_SIZE];
-        if (part_lba == 0) {
-            memcpy(bs, s0, SEC_SIZE);
-        } else if (!read_sect(part_lba, bs)) {
-            break;
-        }
-        if (!looks_like_fat_bs(bs))
-            break;
-
-        nv->part_lba = part_lba;
-        nv->sec_per_clus = bs[13];
-        nv->root_entries = rd_le16(bs + 17);
-        u16 reserved = rd_le16(bs + 14);
-        u8  num_fats = bs[16];
-        u32 fat_sz = rd_le16(bs + 22);
-        if (fat_sz == 0)
-            fat_sz = rd_le32(bs + 36);
-        nv->fat_size = fat_sz;
-        nv->fat_base = reserved;
-
-        u32 total = rd_le16(bs + 19);
-        if (total == 0)
-            total = rd_le32(bs + 32);
-        nv->root_clus = rd_le32(bs + 44);
-
-        u32 root_sect = (nv->root_entries * 32 + SEC_SIZE - 1) / SEC_SIZE;
-        nv->data_start = part_lba + reserved + (u32)num_fats * fat_sz + root_sect;
-        nv->root_dir_start = part_lba + reserved + (u32)num_fats * fat_sz;
-
-        u32 clus_area =
-            (total > (u32)reserved + (u32)num_fats * fat_sz + root_sect)
-            ? (total - (u32)reserved - (u32)num_fats * fat_sz - root_sect)
-            : 0;
-        nv->cluster_count = clus_area / nv->sec_per_clus;
-
-        nv->is32 = (nv->root_entries == 0) || (nv->cluster_count >= 65525);
-        if (!nv->is32 && nv->cluster_count < 4085)
-            break;                    /* FAT12 不支持 */
-
-        nv->mounted = true;
-        ok = true;
-    } while (0);
-
-    if (!ok && nv == &vols[nvol - 1])
-        nvol--;
-    return ok;
-}
-
-bool fat_mount(void)
-{
-    nvol = 0;
-    cur = 0;
-    work = 0;
-    char l0 = gcfg.sys_drive ? gcfg.sys_drive : 'C';
-    bool a = mount_one(0, l0);
-
-    for (int i = 0; i < nvol; i++)
-        if (vols[i].dev == 0 && vols[i].mounted)
-            cur = i;
-    work = cur;
-    return a;
-}
-
-u32 fat_total_clusters(void) { work = cur; return V->cluster_count; }
-u32 fat_free_clusters(void)
-{
-    work = cur;
-    if (!WOK)
-        return 0;
-    u32 free_n = 0;
-    for (u32 c = 2; c < V->cluster_count + 2; c++)
-        if (fat_get(c) == 0)
-            free_n++;
-    return free_n;
-}
-
-/* ------------------------------------------------------------ 名字转换 */
-static bool name_to_raw(const char *name, u8 out[11])
-{
-    for (int i = 0; i < 11; i++)
-        out[i] = ' ';
-    const char *dot = 0;
-    for (const char *p = name; *p; p++) {
-        if (*p == '.') { dot = p; break; }
-    }
-    int base_len = dot ? (int)(dot - name) : (int)strlen(name);
-    if (base_len > 8 || base_len == 0)
-        return false;
-    for (int i = 0; i < base_len; i++) {
-        char c = name[i];
-        if (c >= 'a' && c <= 'z') c = (char)(c - 32);
-        out[i] = (u8)c;
-    }
-    if (dot) {
-        int ext_len = (int)strlen(dot + 1);
-        if (ext_len > 3)
-            return false;
-        for (int j = 0; j < ext_len; j++) {
-            char c = dot[1 + j];
-            if (c >= 'a' && c <= 'z') c = (char)(c - 32);
-            out[8 + j] = (u8)c;
+        done += CLUS_BYTES;
+        if (done < V->bitmap_len) {
+            u32 nxt = fat_get(c);
+            if (is_eoc(nxt) || nxt < 2)
+                return false;
+            c = nxt;
         }
     }
     return true;
 }
 
-static void raw_to_name(const u8 raw[11], char *out)
+static bool bm_flush(void)
 {
-    int k = 0;
-    for (int i = 0; i < 8 && raw[i] != ' ' && raw[i] != 0; i++) {
-        char c = (char)raw[i];
-        if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
-        out[k++] = c;
-    }
-    bool has_ext = false;
-    for (int i = 8; i < 11 && raw[i] != ' ' && raw[i] != 0; i++)
-        has_ext = true;
-    if (has_ext) {
-        out[k++] = '.';
-        for (int i = 8; i < 11 && raw[i] != ' ' && raw[i] != 0; i++) {
-            char c = (char)raw[i];
-            if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
-            out[k++] = c;
+    u32 c = V->bitmap_clus;
+    u32 done = 0;
+    while (done < V->bitmap_len) {
+        for (u32 s = 0; s < (u32)V->sec_per_clus && done + s * SEC_SIZE < V->bitmap_len; s++) {
+            u8 sect[SEC_SIZE];
+            u32 chunk = V->bitmap_len - done - s * SEC_SIZE;
+            if (chunk > SEC_SIZE) chunk = SEC_SIZE;
+            memset(sect, 0, SEC_SIZE);
+            memcpy(sect, bm_cache + done + s * SEC_SIZE, chunk);
+            if (!write_sect(clus_to_sect(c) + s, sect))
+                return false;
+        }
+        done += CLUS_BYTES;
+        if (done < V->bitmap_len) {
+            u32 nxt = fat_get(c);
+            if (is_eoc(nxt) || nxt < 2)
+                return false;
+            c = nxt;
         }
     }
-    out[k] = 0;
+    return true;
 }
 
-/* ---------------------------------------------------------- 目录遍历 */
-struct dir_iter {
-    u32 clus;
-    u32 sect_in;
-    u32 ent;
-    u32 lba;
-    bool valid;
-    bool done;
+static bool bm_test(u32 c)
+{
+    u32 bit = c - 2;
+    if ((bit >> 3) >= V->bitmap_len)
+        return true;
+    return (bm_cache[bit >> 3] & (u8)(1u << (bit & 7))) != 0;
+}
+
+static void bm_mark(u32 c, int on)
+{
+    u32 bit = c - 2;
+    if ((bit >> 3) >= V->bitmap_len)
+        return;
+    if (on)
+        bm_cache[bit >> 3] |= (u8)(1u << (bit & 7));
+    else
+        bm_cache[bit >> 3] &= (u8)~(1u << (bit & 7));
+}
+
+static u32 alloc_cluster(void)
+{
+    for (u32 c = 2; c < V->cluster_count + 2; c++) {
+        if (!bm_test(c)) {
+            bm_mark(c, 1);
+            bm_flush();
+            return c;
+        }
+    }
+    return 0;
+}
+
+static void free_chain(u32 c)
+{
+    bool dirty = false;
+    while (c >= 2 && c < V->cluster_count + 2) {
+        u32 nxt = fat_get(c);
+        fat_set(c, 0);
+        bm_mark(c, 0);
+        dirty = true;
+        if (is_eoc(nxt) || nxt < 2)
+            break;
+        c = nxt;
+    }
+    if (dirty)
+        bm_flush();
+}
+
+/* ------------------------------------------------------------ 目录载入 */
+struct dload {
+    u32 first;
+    u32 nclus;
+    u32 nent;
 };
 
-static void di_init(struct dir_iter *it, u32 dir_clus)
+static bool dir_load(u32 first, struct dload *dl)
 {
-    it->clus = dir_clus;
-    it->sect_in = 0;
-    it->ent = 0;
-    it->valid = false;
-    it->done = false;
-    it->lba = 0;
+    u32 c = first;
+    u32 off = 0;
+    u32 n = 0;
+    for (;;) {
+        if (off + CLUS_BYTES > DIR_CACHE_SZ)
+            return false;
+        for (u32 s = 0; s < (u32)V->sec_per_clus; s++) {
+            if (!read_sect(clus_to_sect(c) + s, dir_cache + off + s * SEC_SIZE))
+                return false;
+        }
+        off += CLUS_BYTES;
+        n++;
+        u32 nxt = fat_get(c);
+        if (is_eoc(nxt) || nxt < 2)
+            break;
+        c = nxt;
+    }
+    if (off < DIR_CACHE_SZ)
+        memset(dir_cache + off, 0, DIR_CACHE_SZ - off);
+    dl->first = first;
+    dl->nclus = n;
+    dl->nent = off / 32;
+    return true;
 }
 
-static const struct raw_dir *di_cur(struct dir_iter *it)
+static bool dir_flush(const struct dload *dl)
 {
-    if (it->clus == 0) {
-        u32 total_sect = (V->root_entries * 32 + SEC_SIZE - 1) / SEC_SIZE;
-        if (it->sect_in >= total_sect) { it->done = true; return 0; }
-        it->lba = V->root_dir_start + it->sect_in;
-    } else {
-        it->lba = clus_to_sect(it->clus) + it->sect_in;
-    }
-    if (!read_sect(it->lba, scratch_b)) { it->done = true; return 0; }
-    it->valid = true;
-    return (const struct raw_dir *)(scratch_b + it->ent * 32);
-}
-
-static bool di_next(struct dir_iter *it)
-{
-    if (it->done)
-        return false;
-    if (!it->valid)
-        return true;
-
-    it->ent++;
-    if (it->ent < 16)
-        return true;
-
-    it->ent = 0;
-    it->valid = false;
-
-    if (it->clus == 0) {
-        u32 total_sect = (V->root_entries * 32 + SEC_SIZE - 1) / SEC_SIZE;
-        it->sect_in++;
-        if (it->sect_in >= total_sect) { it->done = true; return false; }
-        return true;
-    }
-
-    it->sect_in++;
-    if (it->sect_in >= (u32)V->sec_per_clus) {
-        u32 nxt = fat_get(it->clus);
-        it->sect_in = 0;
-        if (is_eoc(nxt) || nxt < 2) { it->done = true; return false; }
-        it->clus = nxt;
+    u32 c = dl->first;
+    u32 off = 0;
+    for (u32 i = 0; i < dl->nclus; i++) {
+        for (u32 s = 0; s < (u32)V->sec_per_clus; s++) {
+            if (!write_sect(clus_to_sect(c) + s, dir_cache + off + s * SEC_SIZE))
+                return false;
+        }
+        off += CLUS_BYTES;
+        u32 nxt = fat_get(c);
+        if (is_eoc(nxt) || nxt < 2)
+            break;
+        c = nxt;
     }
     return true;
 }
 
-static bool dir_find(u32 dir_clus, const u8 raw[11], struct raw_dir *out,
-                     u32 *sect_lba, u32 *sect_off)
+static bool dir_extend(struct dload *dl)
 {
-    struct dir_iter it;
-    di_init(&it, dir_clus);
+    u32 c = dl->first;
     for (;;) {
-        const struct raw_dir *d = di_cur(&it);
-        if (!d)
-            return false;
-        if (d->name[0] == 0x00)
-            return false;
-        if (d->name[0] != 0xE5 && memcmp(d->name, raw, 11) == 0) {
-            if (out) *out = *d;
-            if (sect_lba) *sect_lba = it.lba;
-            if (sect_off) *sect_off = it.ent * 32;
-            return true;
-        }
-        if (!di_next(&it))
-            return false;
+        u32 nxt = fat_get(c);
+        if (is_eoc(nxt) || nxt < 2)
+            break;
+        c = nxt;
     }
+    u32 off = dl->nclus * CLUS_BYTES;
+    if (off + CLUS_BYTES > DIR_CACHE_SZ)
+        return false;
+    u32 n = alloc_cluster();
+    if (n == 0)
+        return false;
+    fat_set(c, n);
+    fat_set(n, 0xFFFFFFFFu);
+    memset(dir_cache + off, 0, CLUS_BYTES);
+    dl->nclus++;
+    dl->nent = (off + CLUS_BYTES) / 32;
+    return true;
 }
 
-static u32 resolve_parent(const char *path, u8 raw_name[11])
+static int dir_find_free(const struct dload *dl, int count)
 {
-    char comp[16];
-    u32 dir_clus = root_dir_clus();
+    int run = 0;
+    for (u32 i = 0; i < dl->nent; i++) {
+        u8 t = dir_cache[i * 32];
+        if (t & 0x80) {
+            run = 0;
+        } else {
+            if (++run >= count)
+                return (int)(i + 1 - count);
+        }
+    }
+    return -1;
+}
+
+/* ------------------------------------------------------------ 目录项集 */
+struct finfo {
+    bool used;
+    int  idx;
+    int  count;
+    char name[MAX_NAME + 1];
+    u8   attr;
+    u32  first;
+    u64  size;
+    bool no_fat;
+    u32  plain_size;
+    u8   xflags;
+    u32  version;
+    u32  crc;
+    char owner[16];
+    u16  mode;
+};
+
+static void set_defaults(struct finfo *fi)
+{
+    memset(fi, 0, sizeof(*fi));
+    strncpy(fi->owner, "SYSTEM", sizeof(fi->owner) - 1);
+    fi->version = 1;
+}
+
+/* 解析 file 目录项及其后续项, idx 为 file 项在目录中的下标 */
+static bool set_parse(int idx, struct finfo *fi)
+{
+    const u8 *e = dir_cache + idx * 32;
+    int count = e[1];
+    if (count < 2 || count > MAX_SET_ENTS - 1)
+        return false;
+    if ((u32)(idx + 1 + count) * 32 > DIR_CACHE_SZ)
+        return false;
+
+    if (set_checksum(e, 1 + count) != rd_le16(e + 2))
+        return false;
+
+    set_defaults(fi);
+    fi->used = true;
+    fi->idx = idx;
+    fi->count = 1 + count;
+    fi->attr = (u8)rd_le16(e + 4);
+
+    const u8 *stream = 0;
+    int nlen = 0;
+    for (int i = 1; i <= count; i++) {
+        const u8 *s = e + i * 32;
+        if (s[0] == ET_STREAM) {
+            stream = s;
+            nlen = s[3];
+            fi->no_fat = (s[1] & 0x02) != 0;
+            fi->size = rd_le64(s + 8);
+            fi->first = rd_le32(s + 20);
+            if (rd_le64(s + 24) > fi->size)
+                fi->size = rd_le64(s + 24);
+        }
+    }
+    if (!stream)
+        return false;
+
+    int n = 0;
+    for (int i = 1; i <= count && n < nlen; i++) {
+        const u8 *s = e + i * 32;
+        if (s[0] != ET_NAME)
+            continue;
+        for (int j = 0; j < 15 && n < nlen && n < MAX_NAME; j++) {
+            u16 ch = rd_le16(s + 2 + j * 2);
+            fi->name[n++] = (ch && ch < 128) ? (char)ch : '?';
+        }
+    }
+    fi->name[n] = 0;
+    if (n == 0)
+        return false;
+
+    fi->plain_size = (u32)(fi->size > 0xFFFFFFFFu ? 0xFFFFFFFFu : fi->size);
+    for (int i = 1; i <= count; i++) {
+        const u8 *s = e + i * 32;
+        if (s[0] != ET_VENDOR)
+            continue;
+        if (s[1] == GT_XTYPE_ENCRYPT) {
+            fi->xflags = s[4];
+            fi->plain_size = rd_le32(s + 8);
+            fi->crc = rd_le32(s + 16);
+        } else if (s[1] == GT_XTYPE_ACL) {
+            fi->mode = rd_le16(s + 4);
+            memcpy(fi->owner, s + 8, 16);
+            fi->owner[15] = 0;
+        } else if (s[1] == GT_XTYPE_VERSION) {
+            fi->version = rd_le32(s + 4);
+            fi->crc = rd_le32(s + 8);
+        }
+    }
+    if (!fi->owner[0])
+        strncpy(fi->owner, "SYSTEM", sizeof(fi->owner) - 1);
+    return true;
+}
+
+static bool name_eq(const char *a, const char *b)
+{
+    while (*a && *b) {
+        if (toupper_((u8)*a) != toupper_((u8)*b))
+            return false;
+        a++;
+        b++;
+    }
+    return *a == 0 && *b == 0;
+}
+
+/* 在已载入目录中查找名字: 返回 1=文件, 0=未找到 */
+static int dir_lookup(const char *name, struct finfo *out)
+{
+    u32 i = 0;
+    while (i * 32 < DIR_CACHE_SZ) {
+        u8 t = dir_cache[i * 32];
+        if (t == ET_END)
+            break;
+        if (t == ET_FILE) {
+            struct finfo fi;
+            if (set_parse((int)i, &fi)) {
+                if (name_eq(fi.name, name)) {
+                    if (out) *out = fi;
+                    return 1;
+                }
+                i += (u32)fi.count;
+                continue;
+            }
+        }
+        i++;
+    }
+    return 0;
+}
+
+/* 构建目录项集, 返回项数 */
+static int build_set(u8 *out, const char *name, u8 attr, u32 first, u64 size,
+                     u32 plain_size, const char *owner, u16 mode,
+                     u8 xflags, u32 crc)
+{
+    int nlen = (int)strlen(name);
+    if (nlen > MAX_NAME)
+        nlen = MAX_NAME;
+    int nname = (nlen + 14) / 15;
+    int secondary = 4 + nname;           /* stream + 名称 + 3 个扩展项 */
+    int total = 1 + secondary;
+    if (total > MAX_SET_ENTS)
+        return 0;
+    memset(out, 0, (size_t)total * 32);
+
+    u32 ts = exfat_stamp();
+    u8 *e = out;
+    e[0] = ET_FILE;
+    e[1] = (u8)secondary;
+    wr_le16(e + 4, attr);
+    wr_le32(e + 8, ts);
+    wr_le32(e + 12, ts);
+    wr_le32(e + 16, ts);
+
+    e = out + 32;
+    e[0] = ET_STREAM;
+    e[1] = (u8)(first ? 0x01 : 0x00);
+    e[3] = (u8)nlen;
+    wr_le16(e + 4, name_hash(name));
+    wr_le64(e + 8, size);
+    wr_le32(e + 20, first);
+    wr_le64(e + 24, size);
+
+    for (int i = 0; i < nname; i++) {
+        e = out + 64 + i * 32;
+        e[0] = ET_NAME;
+        for (int j = 0; j < 15; j++) {
+            int k = i * 15 + j;
+            wr_le16(e + 2 + j * 2, (k < nlen) ? (u16)(u8)name[k] : 0);
+        }
+    }
+
+    e = out + 64 + nname * 32;
+    e[0] = ET_VENDOR;
+    e[1] = GT_XTYPE_ENCRYPT;
+    e[4] = xflags;
+    e[5] = 1;
+    wr_le32(e + 8, plain_size);
+    wr_le32(e + 16, crc);
+
+    e += 32;
+    e[0] = ET_VENDOR;
+    e[1] = GT_XTYPE_ACL;
+    wr_le16(e + 4, mode);
+    strncpy((char *)e + 8, owner, 16);
+
+    e += 32;
+    e[0] = ET_VENDOR;
+    e[1] = GT_XTYPE_VERSION;
+    wr_le32(e + 4, 1);
+    wr_le32(e + 8, crc);
+
+    wr_le16(out + 2, set_checksum(out, total));
+    return total;
+}
+
+static bool dir_insert(u32 dir_clus, const u8 *ents, int count)
+{
+    struct dload dl;
+    if (!dir_load(dir_clus, &dl))
+        return false;
+    int slot = dir_find_free(&dl, count);
+    if (slot < 0) {
+        if (!dir_extend(&dl))
+            return false;
+        slot = dir_find_free(&dl, count);
+        if (slot < 0)
+            return false;
+    }
+    memcpy(dir_cache + (u32)slot * 32, ents, (size_t)count * 32);
+    return dir_flush(&dl);
+}
+
+static bool dir_remove(u32 dir_clus, int idx, int count)
+{
+    struct dload dl;
+    if (!dir_load(dir_clus, &dl))
+        return false;
+    for (int i = 0; i < count; i++)
+        dir_cache[(u32)(idx + i) * 32] &= 0x7F;
+    return dir_flush(&dl);
+}
+
+/* ---------------------------------------------------------- 路径解析 */
+static u32 resolve_parent(const char *path, char *base, int cap)
+{
+    char comp[MAX_NAME + 1];
+    u32 dir_clus = V->root_clus;
 
     const char *slash = 0;
     for (const char *q = path; *q; q++)
         if (*q == '\\' || *q == '/')
             slash = q;
-
-    const char *base = slash ? slash + 1 : path;
+    const char *b = slash ? slash + 1 : path;
     const char *end = slash ? slash : path;
 
     const char *p = path;
@@ -467,56 +645,51 @@ static u32 resolve_parent(const char *path, u8 raw_name[11])
             sep++;
         size_t n = (size_t)(sep - p);
         if (n == 0) { p = sep + 1; continue; }
-        if (n >= sizeof(comp))
+        if (n > MAX_NAME)
             return 0xFFFFFFFFu;
         memcpy(comp, p, n);
         comp[n] = 0;
-        u8 raw[11];
-        if (!name_to_raw(comp, raw))
+
+        struct dload dl;
+        if (!dir_load(dir_clus, &dl))
             return 0xFFFFFFFFu;
-        struct raw_dir d;
-        if (!dir_find(dir_clus, raw, &d, 0, 0))
+        struct finfo fi;
+        if (!dir_lookup(comp, &fi))
             return 0xFFFFFFFFu;
-        if (!(d.attr & ATTR_DIR))
+        if (!(fi.attr & ATTR_DIR))
             return 0xFFFFFFFFu;
-        dir_clus = ((u32)d.hi_clus << 16) | d.lo_clus;
+        dir_clus = fi.first;
         p = sep + 1;
     }
 
-    size_t n = strlen(base);
-    if (n == 0 || n >= sizeof(comp))
+    size_t n = strlen(b);
+    if (n == 0 || n > MAX_NAME || (int)n >= cap)
         return 0xFFFFFFFFu;
-    memcpy(comp, base, n);
-    comp[n] = 0;
-    if (!name_to_raw(comp, raw_name))
-        return 0xFFFFFFFFu;
+    memcpy(base, b, n);
+    base[n] = 0;
     return dir_clus;
 }
 
-static u32 dirent_clus(const struct raw_dir *d)
+static bool get_entry(const char *path, struct finfo *fi, u32 *parent)
 {
-    return ((u32)d->hi_clus << 16) | d->lo_clus;
-}
-
-static bool get_dirent(const char *path, struct raw_dir *d,
-                       u32 *lba, u32 *off)
-{
-    u8 raw[11];
-    u32 dir_clus = resolve_parent(path, raw);
+    char base[MAX_NAME + 1];
+    u32 dir_clus = resolve_parent(path, base, sizeof(base));
     if (dir_clus == 0xFFFFFFFFu)
         return false;
-    return dir_find(dir_clus, raw, d, lba, off);
+    struct dload dl;
+    if (!dir_load(dir_clus, &dl))
+        return false;
+    if (!dir_lookup(base, fi))
+        return false;
+    if (parent) *parent = dir_clus;
+    return true;
 }
 
-/* --------------------------------------------------------------- 公开 API */
-
-/* 系统保护: 路径首段为 "GT-DOS" (任意层级) 视为系统目录, 禁止写操作.
- * path 为去掉盘符后的路径 (可能以 \ 或 / 开头). */
+/* --------------------------------------------------------------- 保护 */
 static bool path_protected(const char *path)
 {
     while (*path == '\\' || *path == '/')
         path++;
-    /* 比较前 6 个字符 (不区分大小写), 且其后必须是分隔符或结尾 */
     if (!(path[0] == 'G' || path[0] == 'g')) return false;
     const char *ref = "GT-DOS";
     for (int i = 0; i < 6; i++)
@@ -526,18 +699,16 @@ static bool path_protected(const char *path)
     return (nxt == '\0' || nxt == '\\' || nxt == '/');
 }
 
-/* 非管理员仅可写自己家目录 \USERS\<name>\ 下的路径; 管理员不受限.
-   path 为去盘符的绝对路径 (如 "\USERS\bob\x"). */
 static bool outside_user_home(const char *path)
 {
     if (user_is_admin())
         return false;
     const char *name = user_name();
     if (!name || !name[0])
-        return true;                 /* 未登录: 禁止写 */
+        return true;
     while (*path == '\\' || *path == '/')
         path++;
-    const char *ref = "USERS\\";     /* U S E R S \ */
+    const char *ref = "USERS\\";
     for (int i = 0; i < 6; i++)
         if (toupper_(path[i]) != ref[i])
             return true;
@@ -551,12 +722,22 @@ static bool outside_user_home(const char *path)
     char nxt = path[j];
     if (nxt != '\0' && nxt != '\\' && nxt != '/')
         return true;
-    return false;                    /* 位于自己家目录内 */
+    return false;
+}
+
+static bool acl_denied(const struct finfo *fi)
+{
+    if (user_is_admin())
+        return false;
+    const char *u = user_name();
+    if (!u || !u[0])
+        return true;
+    return !name_eq(fi->owner, u);
 }
 
 static bool sys_write_denied(const char *path)
 {
-    if (allow_sys)                 /* 系统自身写 GT-DOS 状态文件时放行 */
+    if (allow_sys)
         return false;
     if (path_protected(path)) {
         kprintf("System file/folder protected.\n");
@@ -571,52 +752,215 @@ static bool sys_write_denied(const char *path)
 
 void fat_set_allow_sys(bool on) { allow_sys = on; }
 
+bool fat_path_protected(const char *path)
+{
+    if (path && path[0] && path[1] == ':')
+        path += 2;
+    return path_protected(path);
+}
+
+/* --------------------------------------------------------------- 挂载 */
+static bool boot_checksum_ok(u32 part_lba)
+{
+    u32 cs = 0;
+    for (u32 s = 0; s < 11; s++) {
+        if (!read_sect(part_lba + s, scratch_a))
+            return false;
+        for (u32 i = 0; i < SEC_SIZE; i++) {
+            u32 gi = s * SEC_SIZE + i;
+            if (gi == 106 || gi == 107 || gi == 112 || gi == 113)
+                continue;
+            cs = rr1_32(cs) + scratch_a[i];
+        }
+    }
+    if (!read_sect(part_lba + 11, scratch_b))
+        return false;
+    for (u32 i = 0; i < SEC_SIZE; i += 4)
+        if (rd_le32(scratch_b + i) != cs)
+            return false;
+    return true;
+}
+
+static bool mount_part(int dev, char letter, u32 part_lba, u32 part_sectors)
+{
+    struct vol *nv = 0;
+    for (int i = 0; i < nvol; i++)
+        if (vols[i].dev == dev) { nv = &vols[i]; break; }
+    if (!nv) {
+        if (nvol >= MAX_VOL)
+            return false;
+        nv = &vols[nvol];
+        nvol++;
+    }
+    memset(nv, 0, sizeof(*nv));
+    nv->dev = dev;
+    nv->letter = (char)toupper_(letter);
+    nv->part_lba = part_lba;
+    nv->part_sectors = part_sectors;
+    work = cur = (int)(nv - vols);
+
+    u8 *bs = scratch_a;
+    if (!read_sect(part_lba, bs))
+        goto fail;
+    if (memcmp(bs + 3, "EXFAT   ", 8) != 0)
+        goto fail;
+    if (bs[0x6C] != 9)                    /* 512 字节/扇区 */
+        goto fail;
+    if (bs[0x6D] < 1 || bs[0x6D] > 8)
+        goto fail;
+
+    nv->sec_per_clus = (u8)(1u << bs[0x6D]);
+    nv->fat_offset = rd_le32(bs + 0x50);
+    nv->fat_len = rd_le32(bs + 0x54);
+    nv->heap_offset = rd_le32(bs + 0x58);
+    nv->cluster_count = rd_le32(bs + 0x5C);
+    nv->root_clus = rd_le32(bs + 0x60);
+    if (nv->cluster_count < 8 || nv->root_clus < 2)
+        goto fail;
+    if ((u64)nv->heap_offset + (u64)nv->cluster_count * nv->sec_per_clus > part_sectors)
+        goto fail;
+
+    if (!boot_checksum_ok(part_lba))
+        goto fail;
+
+    /* 从根目录找分配位图 */
+    struct dload dl;
+    if (!dir_load(nv->root_clus, &dl))
+        goto fail;
+    bool found = false;
+    for (u32 i = 0; i < dl.nent; i++) {
+        u8 *e = dir_cache + i * 32;
+        if (e[0] == ET_BITMAP) {
+            nv->bitmap_clus = rd_le32(e + 20);
+            nv->bitmap_len = rd_le32(e + 24);
+            found = true;
+            break;
+        }
+        if (e[0] == ET_END)
+            break;
+    }
+    if (!found || nv->bitmap_clus < 2 || nv->bitmap_len == 0)
+        goto fail;
+    if (!bm_load())
+        goto fail;
+
+    nv->mounted = true;
+    return true;
+
+fail:
+    if (nv == &vols[nvol - 1])
+        nvol--;
+    return false;
+}
+
+bool fat_mount(void)
+{
+    nvol = 0;
+    cur = 0;
+    work = 0;
+
+    if (!ata_present_dev(0))
+        return false;
+    u8 mbr[SEC_SIZE];
+    work = 0;
+    if (!ata_read_dev(0, 0, 1, mbr))
+        return false;
+    if (mbr[510] != 0x55 || mbr[511] != 0xAA)
+        return false;
+
+    char l0 = gcfg.sys_drive ? gcfg.sys_drive : 'C';
+    for (int i = 0; i < 4; i++) {
+        const u8 *pe = mbr + 0x1BE + i * 16;
+        u32 lba = rd_le32(pe + 8);
+        u32 cnt = rd_le32(pe + 12);
+        if (pe[4] == 0 || lba == 0 || cnt == 0)
+            continue;
+        if (pe[4] != 0x07)               /* 优先 exFAT 分区类型 */
+            continue;
+        if (mount_part(0, l0, lba, cnt))
+            return true;
+    }
+    /* 分区类型不规范时按引导扇区探测 */
+    for (int i = 0; i < 4; i++) {
+        const u8 *pe = mbr + 0x1BE + i * 16;
+        u32 lba = rd_le32(pe + 8);
+        u32 cnt = rd_le32(pe + 12);
+        if (pe[4] == 0 || lba == 0 || cnt == 0)
+            continue;
+        if (mount_part(0, l0, lba, cnt))
+            return true;
+    }
+    return false;
+}
+
+u32 fat_total_clusters(void) { work = cur; return WOK ? V->cluster_count : 0; }
+
+u32 fat_free_clusters(void)
+{
+    work = cur;
+    if (!WOK)
+        return 0;
+    u32 free_n = 0;
+    for (u32 c = 2; c < V->cluster_count + 2; c++)
+        if (!bm_test(c))
+            free_n++;
+    return free_n;
+}
+
+/* ---------------------------------------------------------------- 列出 */
 int fat_list_dir(const char *path, struct fat_dirent *out, int max)
 {
     path = use_path(path);
     if (!path || !WOK)
         return -1;
-
-    /* 跳过前导分隔符: "C:\" 或 "\" 都表示根目录 */
     while (*path == '\\' || *path == '/')
         path++;
 
-    u32 dir_clus = root_dir_clus();
+    u32 dir_clus = V->root_clus;
     if (path[0]) {
-        struct raw_dir d;
-        if (!get_dirent(path, &d, 0, 0))
+        struct finfo fi;
+        if (!get_entry(path, &fi, 0))
             return -1;
-        if (!(d.attr & ATTR_DIR))
+        if (!(fi.attr & ATTR_DIR))
             return -1;
-        dir_clus = dirent_clus(&d);
+        dir_clus = fi.first;
     }
 
+    struct dload dl;
+    if (!dir_load(dir_clus, &dl))
+        return -1;
+
     int n = 0;
-    struct dir_iter it;
-    di_init(&it, dir_clus);
-    for (;;) {
-        const struct raw_dir *d = di_cur(&it);
-        if (!d)
+    u32 i = 0;
+    while (i < dl.nent) {
+        u8 *e = dir_cache + i * 32;
+        if (e[0] == ET_END)
             break;
-        if (d->name[0] == 0x00)
-            break;
-        if (d->name[0] != 0xE5 && !(d->attr & ATTR_VOL)) {
-            int dot = (d->name[0] == '.' &&
-                       (d->name[1] == ' ' ||
-                        (d->name[1] == '.' && d->name[2] == ' ')));
-            if (!dot && !show_all && (d->attr & (ATTR_HID | ATTR_SYS)))
-                ;                        /* 默认过滤隐藏/系统条目 */
-            else if (!dot && n < max) {
-                raw_to_name(d->name, out[n].name);
-                out[n].size = d->size;
-                out[n].first_cluster = (u16)dirent_clus(d);
-                out[n].attrs = d->attr;
-                out[n].is_dir = (d->attr & ATTR_DIR) != 0;
-                n++;
+        if (e[0] == ET_FILE) {
+            struct finfo fi;
+            if (set_parse((int)i, &fi)) {
+                if (!show_all && (fi.attr & (ATTR_HID | ATTR_SYS))) {
+                    /* 过滤隐藏/系统项 */
+                } else if (n < max) {
+                    int k = 0;
+                    while (fi.name[k] && k < FAT_NAME_LEN - 1) {
+                        out[n].name[k] = fi.name[k];
+                        k++;
+                    }
+                    out[n].name[k] = 0;
+                    u32 sz = (fi.xflags & GT_XFLAG_ENCRYPTED) ? fi.plain_size
+                                                              : (u32)fi.size;
+                    out[n].size = sz;
+                    out[n].first_cluster = (u16)fi.first;
+                    out[n].attrs = fi.attr;
+                    out[n].is_dir = (fi.attr & ATTR_DIR) != 0;
+                    n++;
+                }
+                i += (u32)fi.count;
+                continue;
             }
         }
-        if (!di_next(&it))
-            break;
+        i++;
     }
     return n;
 }
@@ -626,14 +970,57 @@ bool fat_find(const char *name, struct fat_dirent *out)
     name = use_path(name);
     if (!name || !WOK)
         return false;
-    struct raw_dir d;
-    if (!get_dirent(name, &d, 0, 0))
+    struct finfo fi;
+    if (!get_entry(name, &fi, 0))
         return false;
-    raw_to_name(d.name, out->name);
-    out->size = d.size;
-    out->first_cluster = (u16)dirent_clus(&d);
-    out->attrs = d.attr;
-    out->is_dir = (d.attr & ATTR_DIR) != 0;
+    int k = 0;
+    while (fi.name[k] && k < FAT_NAME_LEN - 1) {
+        out->name[k] = fi.name[k];
+        k++;
+    }
+    out->name[k] = 0;
+    out->size = (fi.xflags & GT_XFLAG_ENCRYPTED) ? fi.plain_size : (u32)fi.size;
+    out->first_cluster = (u16)fi.first;
+    out->attrs = fi.attr;
+    out->is_dir = (fi.attr & ATTR_DIR) != 0;
+    return true;
+}
+
+/* ---------------------------------------------------------------- 读取 */
+static bool read_data(const struct finfo *fi, void *buf, u32 max, u32 *out_len)
+{
+    u8 *dst = (u8 *)buf;
+    u64 remain = fi->size;
+    u32 got = 0;
+    u32 c = fi->first;
+
+    if (fi->size == 0 || fi->first < 2) {
+        if (out_len) *out_len = 0;
+        return true;
+    }
+
+    while (remain > 0 && c >= 2 && c < V->cluster_count + 2) {
+        u32 base = clus_to_sect(c);
+        for (u32 s = 0; s < (u32)V->sec_per_clus && remain > 0; s++) {
+            u32 chunk = (remain > SEC_SIZE) ? SEC_SIZE : (u32)remain;
+            if (got + chunk > max)
+                chunk = max - got;
+            if (chunk == 0) {
+                if (out_len) *out_len = got;
+                return true;
+            }
+            if (!read_sect(base + s, scratch_c))
+                return false;
+            memcpy(dst + got, scratch_c, chunk);
+            got += chunk;
+            remain -= ((remain > SEC_SIZE) ? SEC_SIZE : remain);
+        }
+        if (fi->no_fat)
+            c++;
+        else
+            c = fat_get(c);
+    }
+    if (out_len) *out_len = got;
     return true;
 }
 
@@ -642,25 +1029,15 @@ bool fat_read_file(const char *name, void *buf, u32 max, u32 *out_len)
     u32 got = 0;
     if (!fat_read_dir_file(0, name, buf, max, &got))
         return false;
-    /* 系统文件密文 -> 透明解密 */
     u8 *b = (u8 *)buf;
     if (got >= 8 && b[0] == 'G' && b[1] == 'T' && b[2] == 'E' && b[3] == '1') {
-        u32 plen = (u32)b[4] | ((u32)b[5] << 8) |
-                   ((u32)b[6] << 16) | ((u32)b[7] << 24);
+        u32 plen = rd_le32(b + 4);
         u32 dlen = gt_decrypt(b + 8, got - 8, b);
-        if (dlen) {
+        if (dlen)
             got = (plen < dlen) ? plen : dlen;
-        }
     }
     if (out_len) *out_len = got;
     return true;
-}
-
-bool fat_path_protected(const char *path)
-{
-    if (path && path[0] && path[1] == ':')   /* 跳过 "C:" 盘符 */
-        path += 2;
-    return path_protected(path);
 }
 
 bool fat_read_dir_file(const char *dir, const char *name, void *buf,
@@ -686,229 +1063,118 @@ bool fat_read_dir_file(const char *dir, const char *name, void *buf,
     if (!p || !WOK)
         return false;
 
-    struct raw_dir d;
-    if (!get_dirent(p, &d, 0, 0))
+    struct finfo fi;
+    if (!get_entry(p, &fi, 0))
         return false;
-    if (d.attr & ATTR_DIR)
+    if (fi.attr & ATTR_DIR)
         return false;
-
-    u32 c = dirent_clus(&d);
-    u32 remain = d.size;
-    u8 *dst = (u8 *)buf;
-    u32 got = 0;
-
-    if (c == 0 || remain == 0) {
-        if (out_len) *out_len = 0;
-        return true;
-    }
-
-    while (remain > 0) {
-        u32 base = clus_to_sect(c);
-        for (u32 s = 0; s < (u32)V->sec_per_clus && remain > 0; s++) {
-            u32 chunk = remain > SEC_SIZE ? SEC_SIZE : remain;
-            if (got + chunk > max)
-                chunk = max - got;
-            if (!read_sect(base + s, scratch_c))
-                return false;
-            memcpy(dst + got, scratch_c, chunk);
-            got += chunk;
-            remain -= chunk;
-            if (got >= max) {
-                if (out_len) *out_len = got;
-                return true;
-            }
-        }
-        u32 nxt = fat_get(c);
-        if (is_eoc(nxt) || nxt < 2)
-            break;
-        c = nxt;
-    }
-    if (out_len) *out_len = got;
-    return true;
+    return read_data(&fi, buf, max, out_len);
 }
 
-static u32 alloc_cluster(void)
-{
-    for (u32 c = 2; c < V->cluster_count + 2; c++)
-        if (fat_get(c) == 0)
-            return c;
-    return 0;
-}
-
-static void free_chain(u32 c)
-{
-    while (c >= 2) {
-        u32 nxt = fat_get(c);
-        fat_set(c, 0);
-        if (is_eoc(nxt) || nxt < 2)
-            break;
-        c = nxt;
-    }
-}
-
-static void dos_time(u8 t[2], u8 dt[2])
-{
-    int y, mo, d, h, mi, s;
-    rtc_read(&y, &mo, &d, &h, &mi, &s);
-    if (y < 1980) y = 1980;
-    if (mo < 1) mo = 1;
-    if (d < 1) d = 1;
-    u16 tt = (u16)((h << 11) | (mi << 5) | (s / 2));
-    u16 dd = (u16)(((y - 1980) << 9) | (mo << 5) | d);
-    wr_le16(t, tt);
-    wr_le16(dt, dd);
-}
-
-static bool find_free_slot(u32 dir_clus, u32 *lba, u32 *off)
-{
-    struct dir_iter it;
-    di_init(&it, dir_clus);
-    for (;;) {
-        const struct raw_dir *d = di_cur(&it);
-        if (!d)
-            return false;
-        if (d->name[0] == 0x00 || d->name[0] == 0xE5) {
-            *lba = it.lba;
-            *off = it.ent * 32;
-            return true;
-        }
-        if (!di_next(&it))
-            return false;
-    }
-}
-
-static bool append_dir_cluster(u32 dir_clus, u32 *new_clus)
-{
-    if (dir_clus == 0)
-        return false;
-    u32 c = dir_clus;
-    for (;;) {
-        u32 nxt = fat_get(c);
-        if (is_eoc(nxt) || nxt < 2)
-            break;
-        c = nxt;
-    }
-    u32 n = alloc_cluster();
-    if (n == 0)
-        return false;
-    fat_set(c, n);
-    fat_set(n, eoc_marker());
-    u8 zero[SEC_SIZE];
-    memset(zero, 0, sizeof(zero));
-    for (u32 s = 0; s < V->sec_per_clus; s++)
-        write_sect(clus_to_sect(n) + s, zero);
-    *new_clus = n;
-    return true;
-}
-
-static bool dir_write_entry(u32 dir_clus, const struct raw_dir *d)
-{
-    u32 lba, off;
-    if (!find_free_slot(dir_clus, &lba, &off)) {
-        u32 nclus;
-        if (!append_dir_cluster(dir_clus, &nclus))
-            return false;
-        if (!find_free_slot(nclus, &lba, &off))
-            return false;
-    }
-    if (!read_sect(lba, scratch_b))
-        return false;
-    memcpy(scratch_b + off, d, 32);
-    return write_sect(lba, scratch_b);
-}
+/* ---------------------------------------------------------------- 写入 */
+static u8 enc_buf[4200] __attribute__((section(".highbss")));
 
 bool fat_create(const char *name, const void *data, u32 len)
 {
     name = use_path(name);
     if (!name || !WOK)
         return false;
-    if (sys_write_denied(name)) return false;
-
-    /* 系统文件落盘前加密 (AES-128-CBC): 头部 "GTE1" + 明文长度, 其后为密文 */
-    static u8 enc_buf[4200] __attribute__((section(".highbss")));
-    if (path_protected(name)) {
-        if (len + 8 + 16 > sizeof(enc_buf))
-            return false;
-        enc_buf[0] = 'G'; enc_buf[1] = 'T'; enc_buf[2] = 'E'; enc_buf[3] = '1';
-        enc_buf[4] = (u8)(len & 0xFF);
-        enc_buf[5] = (u8)((len >> 8) & 0xFF);
-        enc_buf[6] = (u8)((len >> 16) & 0xFF);
-        enc_buf[7] = (u8)((len >> 24) & 0xFF);
-        u32 clen = gt_encrypt((const u8 *)data, len, enc_buf + 8);
-        data = enc_buf;
-        len = 8 + clen;
-    }
-
-    u8 raw[11];
-    u32 dir_clus = resolve_parent(name, raw);
-    if (dir_clus == 0xFFFFFFFFu)
+    if (sys_write_denied(name))
         return false;
 
-    struct raw_dir old;
-    u32 old_lba, old_off;
-    if (dir_find(dir_clus, raw, &old, &old_lba, &old_off)) {
+    char base[MAX_NAME + 1];
+    u32 parent = resolve_parent(name, base, sizeof(base));
+    if (parent == 0xFFFFFFFFu)
+        return false;
+
+    struct finfo old;
+    bool exists = false;
+    {
+        struct dload dl;
+        if (!dir_load(parent, &dl))
+            return false;
+        exists = dir_lookup(base, &old) != 0;
+    }
+    if (exists) {
         if (old.attr & ATTR_DIR)
             return false;
         if (old.attr & (ATTR_RO | ATTR_SYS))
             return false;
-        if (!read_sect(old_lba, scratch_b))
+        if (acl_denied(&old))
             return false;
-        scratch_b[old_off] = 0xE5;
-        if (!write_sect(old_lba, scratch_b))
-            return false;
-        free_chain(dirent_clus(&old));
     }
 
-    u32 c = 0, first = 0;
-    u32 remain = len;
-    u32 woff = 0;
+    u32 crc = gt_crc32(data, len);
     const u8 *src = (const u8 *)data;
+    u32 dlen = len;
+    u8 xflags = 0;
 
-    if (remain == 0) {
-        first = 0;
-    } else {
-        while (remain > 0) {
-            u32 n = alloc_cluster();
-            if (n == 0) {
-                if (first) free_chain(first);
+    if (path_protected(name)) {
+        if (len + 8 + 16 > sizeof(enc_buf))
+            return false;
+        enc_buf[0] = 'G'; enc_buf[1] = 'T'; enc_buf[2] = 'E'; enc_buf[3] = '1';
+        wr_le32(enc_buf + 4, len);
+        u32 clen = gt_encrypt((const u8 *)data, len, enc_buf + 8);
+        src = enc_buf;
+        dlen = 8 + clen;
+        xflags = GT_XFLAG_ENCRYPTED;
+    }
+
+    const char *owner = "SYSTEM";
+    u16 mode = 0;
+    const char *un = user_name();
+    if (!path_protected(name) && un && un[0]) {
+        owner = un;
+        mode = GT_ACL_OWNER_WRITE | GT_ACL_OTHER_READ;
+    }
+    if (exists && old.owner[0] && !allow_sys && !path_protected(name)) {
+        owner = old.owner;
+        mode = old.mode;
+    }
+
+    if (exists)
+        dir_remove(parent, old.idx, old.count);
+
+    u32 first = 0, last = 0;
+    u64 remain = dlen;
+    u32 woff = 0;
+    while (remain > 0) {
+        u32 c = alloc_cluster();
+        if (c == 0) {
+            if (first) free_chain(first);
+            return false;
+        }
+        fat_set(c, 0xFFFFFFFFu);
+        if (!first)
+            first = c;
+        else
+            fat_set(last, c);
+        last = c;
+
+        u32 chunk = (remain > CLUS_BYTES) ? CLUS_BYTES : (u32)remain;
+        u32 done = 0;
+        while (done < chunk) {
+            u32 this = chunk - done > SEC_SIZE ? SEC_SIZE : chunk - done;
+            memset(scratch_c, 0, SEC_SIZE);
+            memcpy(scratch_c, src + woff + done, this);
+            if (!write_sect(clus_to_sect(c) + done / SEC_SIZE, scratch_c)) {
+                free_chain(first);
                 return false;
             }
-            if (first == 0)
-                first = n;
-            else
-                fat_set(c, n);
-            c = n;
-
-            u32 csize = (u32)V->sec_per_clus * SEC_SIZE;
-            u32 chunk = remain > csize ? csize : remain;
-            u8 buf[SEC_SIZE];
-            u32 done = 0;
-            while (done < chunk) {
-                u32 this = chunk - done > SEC_SIZE ? SEC_SIZE : chunk - done;
-                memset(buf, 0, SEC_SIZE);
-                memcpy(buf, src + woff + done, this);
-                if (!write_sect(clus_to_sect(n) + done / SEC_SIZE, buf)) {
-                    free_chain(first);
-                    return false;
-                }
-                done += this;
-            }
-            woff += chunk;
-            remain -= chunk;
+            done += this;
         }
-        fat_set(c, eoc_marker());
+        woff += chunk;
+        remain -= chunk;
     }
 
-    struct raw_dir d;
-    memset(&d, 0, sizeof(d));
-    memcpy(d.name, raw, 11);
-    d.attr = ATTR_ARC;
-    d.size = len;
-    d.lo_clus = (u16)(first & 0xFFFF);
-    d.hi_clus = (u16)(first >> 16);
-    dos_time(d.wr_time, d.wr_date);
-    memcpy(d.crt_time, d.wr_time, 4);
-    if (!dir_write_entry(dir_clus, &d)) {
+    u8 ents[MAX_SET_ENTS * 32];
+    int n = build_set(ents, base, ATTR_ARC, first, dlen, len, owner, mode,
+                      xflags, crc);
+    if (n == 0) {
+        if (first) free_chain(first);
+        return false;
+    }
+    if (!dir_insert(parent, ents, n)) {
         if (first) free_chain(first);
         return false;
     }
@@ -920,22 +1186,23 @@ bool fat_delete(const char *name)
     name = use_path(name);
     if (!name || !name[0] || !WOK)
         return false;
-    if (sys_write_denied(name)) return false;
-    struct raw_dir d;
-    u32 lba, off;
-    if (!get_dirent(name, &d, &lba, &off))
+    if (sys_write_denied(name))
         return false;
-    if (d.attr & ATTR_DIR)
-        return false;
-    if (d.attr & (ATTR_RO | ATTR_SYS))
-        return false;                 /* 只读/系统文件保护 */
 
-    if (!read_sect(lba, scratch_b))
+    struct finfo fi;
+    u32 parent;
+    if (!get_entry(name, &fi, &parent))
         return false;
-    scratch_b[off] = 0xE5;
-    if (!write_sect(lba, scratch_b))
+    if (fi.attr & ATTR_DIR)
         return false;
-    free_chain(dirent_clus(&d));
+    if (fi.attr & (ATTR_RO | ATTR_SYS))
+        return false;
+    if (acl_denied(&fi))
+        return false;
+
+    if (!dir_remove(parent, fi.idx, fi.count))
+        return false;
+    free_chain(fi.first);
     return true;
 }
 
@@ -944,103 +1211,82 @@ bool fat_mkdir(const char *name)
     name = use_path(name);
     if (!name || !name[0] || !WOK)
         return false;
-    if (sys_write_denied(name)) return false;
-
-    u8 raw[11];
-    u32 dir_clus = resolve_parent(name, raw);
-    if (dir_clus == 0xFFFFFFFFu)
+    if (sys_write_denied(name))
         return false;
 
-    struct raw_dir exist;
-    if (dir_find(dir_clus, raw, &exist, 0, 0))
+    char base[MAX_NAME + 1];
+    u32 parent = resolve_parent(name, base, sizeof(base));
+    if (parent == 0xFFFFFFFFu)
         return false;
 
-    u32 n = alloc_cluster();
-    if (n == 0)
+    struct dload pl;
+    if (!dir_load(parent, &pl))
         return false;
-    fat_set(n, eoc_marker());
+    if (dir_lookup(base, 0))
+        return false;
 
-    u8 buf[SEC_SIZE];
-    memset(buf, 0, SEC_SIZE);
-    struct raw_dir *dot = (struct raw_dir *)buf;
-    memset(dot->name, ' ', 11);
-    dot->name[0] = '.';
-    dot->attr = ATTR_DIR;
-    dot->lo_clus = (u16)(n & 0xFFFF);
-    dot->hi_clus = (u16)(n >> 16);
-    struct raw_dir *dotdot = dot + 1;
-    memset(dotdot->name, ' ', 11);
-    dotdot->name[0] = '.';
-    dotdot->name[1] = '.';
-    dotdot->attr = ATTR_DIR;
-    dotdot->lo_clus = (u16)(dir_clus & 0xFFFF);
-    dotdot->hi_clus = (u16)(dir_clus >> 16);
-    dos_time(dot->wr_time, dot->wr_date);
-    memcpy(dotdot->wr_time, dot->wr_time, 4);
-    memcpy(dot->crt_time, dot->wr_time, 4);
-    memcpy(dotdot->crt_time, dot->wr_time, 4);
-    if (!write_sect(clus_to_sect(n), buf)) {
-        fat_set(n, 0);
+    u32 c = alloc_cluster();
+    if (c == 0)
         return false;
+    fat_set(c, 0xFFFFFFFFu);
+    memset(scratch_c, 0, SEC_SIZE);
+    for (u32 s = 0; s < (u32)V->sec_per_clus; s++)
+        if (!write_sect(clus_to_sect(c) + s, scratch_c)) {
+            free_chain(c);
+            return false;
+        }
+
+    const char *owner = "SYSTEM";
+    const char *un = user_name();
+    if (un && un[0] && !allow_sys) {
+        owner = un;
     }
-
-    struct raw_dir d;
-    memset(&d, 0, sizeof(d));
-    memcpy(d.name, raw, 11);
-    d.attr = ATTR_DIR;
-    d.size = 0;
-    d.lo_clus = (u16)(n & 0xFFFF);
-    d.hi_clus = (u16)(n >> 16);
-    dos_time(d.wr_time, d.wr_date);
-    if (!dir_write_entry(dir_clus, &d)) {
-        fat_set(n, 0);
+    u8 ents[MAX_SET_ENTS * 32];
+    int n = build_set(ents, base, ATTR_DIR, c, 0, 0, owner,
+                      GT_ACL_OWNER_WRITE | GT_ACL_OTHER_READ, 0,
+                      gt_crc32("", 0));
+    if (n == 0 || !dir_insert(parent, ents, n)) {
+        free_chain(c);
         return false;
     }
     return true;
 }
 
-/* rmdir: 目录必须为空 (只有 . 与 ..) */
 bool fat_rmdir(const char *name)
 {
     name = use_path(name);
     if (!name || !WOK)
         return false;
-    if (sys_write_denied(name)) return false;
-    if (!name[0])
-        return false;                 /* 不能删根 */
-    struct raw_dir d;
-    u32 lba, off;
-    if (!get_dirent(name, &d, &lba, &off))
+    if (sys_write_denied(name))
         return false;
-    if (!(d.attr & ATTR_DIR))
+    if (!name[0])
         return false;
 
-    u32 c = dirent_clus(&d);
-    struct dir_iter it;
-    di_init(&it, c);
-    for (;;) {
-        const struct raw_dir *e = di_cur(&it);
-        if (!e)
+    struct finfo fi;
+    u32 parent;
+    if (!get_entry(name, &fi, &parent))
+        return false;
+    if (!(fi.attr & ATTR_DIR))
+        return false;
+    if (acl_denied(&fi))
+        return false;
+
+    struct dload dl;
+    if (!dir_load(fi.first, &dl))
+        return false;
+    u32 i = 0;
+    while (i < dl.nent) {
+        u8 t = dir_cache[i * 32];
+        if (t == ET_END)
             break;
-        if (e->name[0] == 0x00)
-            break;
-        if (e->name[0] != 0xE5) {
-            int dot = (e->name[0] == '.' &&
-                       (e->name[1] == ' ' ||
-                        (e->name[1] == '.' && e->name[2] == ' ')));
-            if (!dot)
-                return false;         /* 非空 */
-        }
-        if (!di_next(&it))
-            break;
+        if (t & 0x80)
+            return false;                 /* 非空 */
+        i++;
     }
 
-    if (!read_sect(lba, scratch_b))
+    if (!dir_remove(parent, fi.idx, fi.count))
         return false;
-    scratch_b[off] = 0xE5;
-    if (!write_sect(lba, scratch_b))
-        return false;
-    free_chain(c);
+    free_chain(fi.first);
     return true;
 }
 
@@ -1049,15 +1295,23 @@ bool fat_setattr(const char *name, u8 attrs)
     name = use_path(name);
     if (!name || !name[0] || !WOK)
         return false;
-    if (sys_write_denied(name)) return false;
-    struct raw_dir d;
-    u32 lba, off;
-    if (!get_dirent(name, &d, &lba, &off))
+    if (sys_write_denied(name))
         return false;
-    if (!read_sect(lba, scratch_b))
+
+    struct finfo fi;
+    u32 parent;
+    if (!get_entry(name, &fi, &parent))
         return false;
-    scratch_b[off + 11] = attrs;
-    return write_sect(lba, scratch_b);
+    if (acl_denied(&fi))
+        return false;
+
+    struct dload dl;
+    if (!dir_load(parent, &dl))
+        return false;
+    u8 *e = dir_cache + (u32)fi.idx * 32;
+    wr_le16(e + 4, attrs);
+    wr_le16(e + 2, set_checksum(e, fi.count));
+    return dir_flush(&dl);
 }
 
 bool fat_getattr(const char *name, u8 *attrs)
@@ -1065,10 +1319,10 @@ bool fat_getattr(const char *name, u8 *attrs)
     name = use_path(name);
     if (!name || !name[0] || !WOK)
         return false;
-    struct raw_dir d;
-    if (!get_dirent(name, &d, 0, 0))
+    struct finfo fi;
+    if (!get_entry(name, &fi, 0))
         return false;
-    *attrs = d.attr;
+    *attrs = fi.attr;
     return true;
 }
 
@@ -1077,19 +1331,55 @@ bool fat_touch(const char *name)
     name = use_path(name);
     if (!name || !name[0] || !WOK)
         return false;
-    if (sys_write_denied(name)) return false;
-    struct raw_dir d;
-    u32 lba, off;
-    if (get_dirent(name, &d, &lba, &off)) {
-        u8 t[2], dt[2];
-        dos_time(t, dt);
-        if (!read_sect(lba, scratch_b))
+    if (sys_write_denied(name))
+        return false;
+
+    struct finfo fi;
+    u32 parent;
+    if (get_entry(name, &fi, &parent)) {
+        if (acl_denied(&fi))
             return false;
-        memcpy(scratch_b + off + 22, t, 2);
-        memcpy(scratch_b + off + 24, dt, 2);
-        return write_sect(lba, scratch_b);
+        struct dload dl;
+        if (!dir_load(parent, &dl))
+            return false;
+        u8 *e = dir_cache + (u32)fi.idx * 32;
+        u32 ts = exfat_stamp();
+        wr_le32(e + 12, ts);
+        wr_le16(e + 2, set_checksum(e, fi.count));
+        return dir_flush(&dl);
     }
     return fat_create(name, "", 0);
+}
+
+/* ------------------------------------------------------- 元数据 (公开) */
+int fat_stat_pub(const char *path, struct gt_stat *out)
+{
+    if (!path || !path[0] || !out) return -1;
+    struct fat_dirent d;
+    if (!fat_find(path, &d)) return -1;
+    out->size = d.size;
+    out->attr = d.attrs;
+    out->is_dir = d.is_dir ? 1 : 0;
+    return 0;
+}
+
+int fat_statx(const char *path, struct gt_statx *out)
+{
+    if (!path || !path[0] || !out) return -1;
+    path = use_path(path);
+    if (!path || !WOK) return -1;
+    struct finfo fi;
+    if (!get_entry(path, &fi, 0)) return -1;
+    memset(out, 0, sizeof(*out));
+    out->size = (fi.xflags & GT_XFLAG_ENCRYPTED) ? fi.plain_size : (u32)fi.size;
+    out->attr = fi.attr;
+    out->is_dir = (fi.attr & ATTR_DIR) ? 1 : 0;
+    out->flags = fi.xflags;
+    out->version = fi.version;
+    out->crc = fi.crc;
+    strncpy(out->owner, fi.owner, 15);
+    out->mode = fi.mode;
+    return 0;
 }
 
 /* ---------------------------------------------------- 文件描述符层 (INT 0x21) */
@@ -1127,7 +1417,7 @@ int fat_fd_open(const char *path, int flags)
     int n = 0;
     while (path[n] && n < 159) { fdtab[slot].path[n] = path[n]; n++; }
     fdtab[slot].path[n] = '\0';
-    return slot + 3;                    /* fd 3..10; 0/1/2 保留给控制台 */
+    return slot + 3;
 }
 
 int fat_fd_read(int fd, void *buf, u32 n)
@@ -1173,7 +1463,6 @@ int fat_fd_close(int fd)
     return rc;
 }
 
-/* whence: 0=SET, 1=CUR, 2=END */
 int fat_fd_seek(int fd, int offset, int whence)
 {
     if (fd < 3 || fd >= 3 + FD_MAX) return -1;
@@ -1190,10 +1479,9 @@ int fat_fd_seek(int fd, int offset, int whence)
 
 int fat_fd_opendir(const char *path)
 {
-    return fat_fd_open(path, O_RDONLY);   /* 目录 fd: isdir 由 open 判定 */
+    return fat_fd_open(path, O_RDONLY);
 }
 
-/* 读取下一个目录项: 1=有, 0=结束, -1=错误 */
 int fat_fd_readdir(int fd, struct fat_dirent *out)
 {
     if (fd < 3 || fd >= 3 + FD_MAX || !out) return -1;
@@ -1205,15 +1493,4 @@ int fat_fd_readdir(int fd, struct fat_dirent *out)
     if (e->dirpos >= (u32)n) return 0;
     *out = arr[e->dirpos++];
     return 1;
-}
-
-int fat_stat_pub(const char *path, struct gt_stat *out)
-{
-    if (!path || !path[0] || !out) return -1;
-    struct fat_dirent d;
-    if (!fat_find(path, &d)) return -1;
-    out->size = d.size;
-    out->attr = d.attrs;
-    out->is_dir = d.is_dir ? 1 : 0;
-    return 0;
 }

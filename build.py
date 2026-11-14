@@ -12,7 +12,7 @@ GT-DOS 构建脚本
 
 磁盘布局 (单 HDD 镜像, MBR 分区):
   LBA0        : MBR (boot/mbr.asm, 分区表由本脚本写入)
-  part1 C:    : FAT16 系统盘 (含 \GT-DOS\ 系统目录与 INCLUDE 头文件)
+  part1 C:    : exFAT 系统盘 (含 \GT-DOS\ 系统目录与 INCLUDE 头文件)
   part2 隐藏  : 盘尾启动分区 (type 0x11, bootable):
                 [boot.gtb | kernel.gtb | font.gtd | cpm.gtd]
 工具链: NASM + clang/LLVM + QEMU
@@ -91,161 +91,7 @@ def find_tools():
         sys.exit(1)
 
 
-# --------------------------------------------------------------------- FAT16 卷
-FAT_SECS_PER_CLUS = 4
-FAT_RESERVED = 1
-FAT_NUM_FATS = 2
-FAT_ROOT_ENTRIES = 512
-
-def _le16(v): return bytes([v & 0xFF, (v >> 8) & 0xFF])
 def _le32(v): return bytes([v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF])
-
-
-def make_fat16_volume(total, seed_files):
-    """生成 FAT16 卷 (分区内布局, 不含分区表), 返回 bytes.
-
-    seed_files: {名字: 内容}, 内容可为:
-      bytes            普通文件 (ATTR_ARC)
-      dict             目录
-      (attr, bytes)    带属性文件
-      (attr, dict)     带属性目录
-    """
-    root_sectors = (FAT_ROOT_ENTRIES * 32 + SECTOR - 1) // SECTOR
-    fat_secs = 1
-    for _ in range(8):
-        clusters = (total - FAT_RESERVED - FAT_NUM_FATS * fat_secs - root_sectors) // FAT_SECS_PER_CLUS
-        new_fat = max(1, (clusters * 2 + SECTOR + 1 + SECTOR - 1) // SECTOR)
-        if new_fat == fat_secs:
-            break
-        fat_secs = new_fat
-    clusters = (total - FAT_RESERVED - FAT_NUM_FATS * fat_secs - root_sectors) // FAT_SECS_PER_CLUS
-    if clusters < 4085 or clusters > 65524:
-        raise SystemExit(f"[!] FAT16 簇数异常: {clusters}")
-
-    bs = bytearray(SECTOR)
-    bs[0:3] = b"\xEB\x3C\x90"
-    bs[3:11] = b"GTDOSFAT"
-    bs[11:13] = _le16(512)
-    bs[13] = FAT_SECS_PER_CLUS
-    bs[14:16] = _le16(FAT_RESERVED)
-    bs[16] = FAT_NUM_FATS
-    bs[17:19] = _le16(FAT_ROOT_ENTRIES)
-    bs[19:21] = _le16(total if total < 65536 else 0)
-    bs[21] = 0xF8
-    bs[22:24] = _le16(fat_secs)
-    bs[24:26] = _le16(63)
-    bs[26:28] = _le16(255)
-    bs[28:32] = _le32(0)             # hidden sectors (fat.c 用分区表偏移)
-    bs[32:36] = _le32(total if total >= 65536 else 0)
-    bs[36] = 0x80
-    bs[38] = 0x29
-    bs[39:43] = _le32(0x12345678)
-    bs[43:54] = b"GT-DOS C   "[:11]
-    bs[54:62] = b"FAT16   "
-    bs[510] = 0x55
-    bs[511] = 0xAA
-
-    fat = bytearray(fat_secs * SECTOR)
-    fat[0:2] = _le16(0xFFF8)
-    fat[2:4] = _le16(0xFFFF)
-    fat_image = bytearray(fat) * FAT_NUM_FATS
-
-    root = bytearray(root_sectors * SECTOR)
-
-    def dir_slot(name83, attr, first_clus, size):
-        e = bytearray(32)
-        e[0:11] = name83
-        e[11] = attr
-        e[26:28] = _le16(first_clus)
-        e[28:32] = _le32(size)
-        return e
-
-    data_region = bytearray((total - FAT_RESERVED - FAT_NUM_FATS * fat_secs - root_sectors) * SECTOR)
-    next_cluster = [2]
-    root_entries = []
-
-    def alloc_chain(nbytes):
-        nclus = max(1, (nbytes + FAT_SECS_PER_CLUS * SECTOR - 1)
-                    // (FAT_SECS_PER_CLUS * SECTOR))
-        first = next_cluster[0]
-        for i in range(nclus):
-            c = first + i
-            nxt = c + 1 if i + 1 < nclus else 0xFFFF
-            off = c * 2
-            fat_image[off:off + 2] = _le16(nxt)
-            fat_image[(fat_secs * SECTOR) + off:(fat_secs * SECTOR) + off + 2] = _le16(nxt)
-        next_cluster[0] += nclus
-        return first, nclus
-
-    def write_data(first, content):
-        coff = (first - 2) * FAT_SECS_PER_CLUS * SECTOR
-        data_region[coff:coff + len(content)] = content
-
-    def name83(fname):
-        raw = bytearray(b" " * 11)
-        up = fname.upper().encode("ascii")
-        dot = up.find(b".")
-        if dot < 0:
-            raw[0:len(up)] = up
-        else:
-            raw[0:dot] = up[:dot]
-            raw[8:8 + len(up) - dot - 1] = up[dot + 1:]
-        return bytes(raw)
-
-    def split_attr(val):
-        """返回 (attr, payload)."""
-        if isinstance(val, tuple):
-            return val
-        if isinstance(val, dict):
-            return 0x10, val
-        return 0x20, val
-
-    def build_dir_entries(items, first_clus, self_name, parent_clus):
-        dsect = bytearray(FAT_SECS_PER_CLUS * SECTOR)
-        idx = 0
-        e = bytearray(32); e[0:11] = b"." + b" " * 10
-        e[11] = 0x10; e[26:28] = _le16(first_clus & 0xFFFF)
-        e[28:32] = _le32(0); dsect[idx:idx+32] = e; idx += 32
-        e = bytearray(32); e[0:11] = b".." + b" " * 9
-        e[11] = 0x10; e[26:28] = _le16(parent_clus & 0xFFFF)
-        e[28:32] = _le32(0); dsect[idx:idx+32] = e; idx += 32
-        for name, val in items.items():
-            attr, payload = split_attr(val)
-            if isinstance(payload, dict):
-                sub_first, _ = alloc_chain(0)
-                build_dir_entries(payload, sub_first, name, first_clus)
-                e = dir_slot(name83(name), attr | 0x10, sub_first, 0)
-            else:
-                f_first, _ = alloc_chain(len(payload))
-                write_data(f_first, payload)
-                e = dir_slot(name83(name), attr & ~0x10, f_first, len(payload))
-            dsect[idx:idx+32] = e; idx += 32
-        coff = (first_clus - 2) * FAT_SECS_PER_CLUS * SECTOR
-        data_region[coff:coff + len(dsect)] = dsect
-
-    root_entries.append(dir_slot(b"GT-DOS C  ", 0x08, 0, 0))
-
-    for fname, val in seed_files.items():
-        attr, payload = split_attr(val)
-        if isinstance(payload, dict):
-            d_first, _ = alloc_chain(0)
-            build_dir_entries(payload, d_first, fname, 0)
-            root_entries.append(dir_slot(name83(fname), attr | 0x10, d_first, 0))
-        else:
-            f_first, _ = alloc_chain(len(payload))
-            write_data(f_first, payload)
-            root_entries.append(dir_slot(name83(fname), attr & ~0x10, f_first, len(payload)))
-
-    for i, e in enumerate(root_entries):
-        root[i * 32:(i + 1) * 32] = e
-
-    img = bytearray()
-    img += bs
-    img += fat_image
-    img += root
-    img += data_region
-    assert len(img) == total * SECTOR, f"{len(img)} != {total * SECTOR}"
-    return bytes(img), clusters
 
 
 # --------------------------------------------------------------------- 构建步骤
@@ -402,18 +248,6 @@ def patch_at(data, marker, value, skip=0):
     return bytes(patched)
 
 
-def load_include_seed():
-    """kernel/include/*.h -> {名字: bytes}, 写入 C:\\GT-DOS\\INCLUDE\\."""
-    inc_dir = os.path.join(ROOT, "kernel", "include")
-    files = {}
-    if os.path.isdir(inc_dir):
-        for fn in sorted(os.listdir(inc_dir)):
-            if fn.endswith(".h"):
-                with open(os.path.join(inc_dir, fn), "rb") as f:
-                    files[fn.upper()] = f.read()
-    return files
-
-
 def build_asm_asset(src_name, out_name):
     """汇编 tools/<src_name> -> build/<out_name>, 返回字节内容."""
     src = os.path.join(ROOT, "tools", src_name)
@@ -432,9 +266,9 @@ def build_demo_assets():
     }
 
 
-# --------------------------------------------------------- 系统文件加密 (AES-128-CBC)
-# 加密实现只在 C 侧 (kernel/crypto.c). 构建时用主机编译器生成 tools/encsys 工具,
-# 内核与镜像种子因此共用同一份算法.
+# ------------------------------------------------------- 构建期 exFAT 工具 (纯 C)
+# 卷格式化、系统文件加密、目录项与厂商扩展全部由 tools/gtmkfs.c 完成;
+# 本脚本只生成清单并调用一次该工具, 不参与任何加密或文件系统逻辑.
 
 def _host_cc():
     for c in (os.path.join(ROOT, "mingw64", "bin", "gcc.exe"),
@@ -449,26 +283,36 @@ def _host_cc():
     return "gcc"
 
 
-def build_enc_tool():
-    """编译构建期加密工具 build/encsys.exe (复用 kernel/crypto.c)."""
-    out = os.path.join(BUILD, "encsys.exe")
-    src = os.path.join(ROOT, "tools", "encsys.c")
-    run([_host_cc(), "-I", os.path.join(ROOT, "kernel"), src,
+def build_mkfs_tool():
+    """编译独立 exFAT 工具 build/gtmkfs.exe (复用 kernel/crypto.c)."""
+    out = os.path.join(BUILD, "gtmkfs.exe")
+    run([_host_cc(), "-O2", "-I", os.path.join(ROOT, "kernel"),
+         os.path.join(ROOT, "tools", "gtmkfs.c"),
          os.path.join(ROOT, "kernel", "crypto.c"), "-o", out])
     return out
 
 
-def enc_sys_file(data, tool):
-    """系统文件密文格式: GTE1 + u32 明文长 + AES-128-CBC 密文."""
-    r = subprocess.run([tool], input=data, capture_output=True)
-    if r.returncode != 0:
-        print("[!] 系统文件加密失败")
-        sys.exit(1)
-    return r.stdout
+def write_manifest(assets):
+    """生成种子清单: 系统头文件加密, 示例程序/库/数据保持明文."""
+    inc_dir = os.path.join(ROOT, "kernel", "include")
+    lines = ["D \\gt-dos 0x10 SYSTEM", "D \\gt-dos\\include 0x10 SYSTEM"]
+    for fn in sorted(os.listdir(inc_dir)):
+        if fn.endswith(".h"):
+            host = os.path.join(inc_dir, fn)
+            lines.append(f"F \\gt-dos\\include\\{fn.lower()} {host} 0x25 SYSTEM 1")
+    for name, payload in assets.items():
+        host = os.path.join(BUILD, name.lower())
+        with open(host, "wb") as f:
+            f.write(payload)
+        lines.append(f"F \\{name.lower()} {host} 0x20 SYSTEM 0")
+    mf = os.path.join(BUILD, "mkfs.txt")
+    with open(mf, "w", encoding="ascii") as f:
+        f.write("\n".join(lines) + "\n")
+    return mf
 
 
-def make_hd_image(mbr, boot2, kernel, font, cpm, assets, enc_tool):
-    """组装单 HDD 镜像: MBR + C: FAT16 + 盘尾启动分区."""
+def make_hd_image(mbr, boot2, kernel, font, cpm, assets, mkfs_tool):
+    """组装单 HDD 镜像: MBR + C: exFAT + 盘尾启动分区."""
     boot_secs = 16
     kern_secs = (len(kernel) + SECTOR - 1) // SECTOR
     font_secs = (len(font) + SECTOR - 1) // SECTOR
@@ -494,20 +338,6 @@ def make_hd_image(mbr, boot2, kernel, font, cpm, assets, enc_tool):
     # 补丁 MBR: 启动分区起始 LBA (标记末尾 +8 = DAP 的 LBA low 字段)
     mbr = patch_at(mbr, b"GTD0", BOOT_PART_LBA, skip=8)
 
-    # C: 分区 FAT16 卷
-    attr_hdr = 0x01 | 0x04 | 0x20                # R|S|A (系统头文件, 受保护)
-    include = load_include_seed()
-    seed = {
-        "GT-DOS": {                              # 系统目录 (可见, 名称保护)
-            "INCLUDE": {
-                n: (attr_hdr, enc_sys_file(d, enc_tool)) for n, d in include.items()
-            },
-        },
-    }
-    for name, payload in assets.items():         # 示例程序/库/数据
-        seed[name] = payload
-    fat_img, clusters = make_fat16_volume(PART1_SECTORS, seed)
-
     # 启动分区 raw 内容
     bootpart = bytearray(BOOT_PART_SECTORS * SECTOR)
     def put(off_sect, data):
@@ -529,20 +359,30 @@ def make_hd_image(mbr, boot2, kernel, font, cpm, assets, enc_tool):
         return e
 
     mbr = bytearray(mbr)
-    mbr[0x1BE:0x1CE] = pe(0x00, 0x06, PART1_LBA, PART1_SECTORS)
+    mbr[0x1BE:0x1CE] = pe(0x00, 0x07, PART1_LBA, PART1_SECTORS)
     mbr[0x1CE:0x1DE] = pe(0x80, 0x11, BOOT_PART_LBA, BOOT_PART_SECTORS)
 
     img = bytearray(DISK_SECTORS * SECTOR)
     img[0:SECTOR] = mbr
-    img[PART1_LBA * SECTOR:PART1_LBA * SECTOR + len(fat_img)] = fat_img
     img[BOOT_PART_LBA * SECTOR:] = bootpart
 
     path = os.path.join(BUILD, "gt-dos-hd.img")
     with open(path, "wb") as f:
         f.write(img)
+
+    mf = write_manifest(assets)
+    r = subprocess.run([mkfs_tool, path, str(PART1_LBA), str(PART1_SECTORS), mf],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        print(r.stdout)
+        print(r.stderr)
+        print("[!] exFAT 格式化失败")
+        sys.exit(1)
+    if r.stdout.strip():
+        print(r.stdout.rstrip())
+
     print(f"    硬盘镜像 : {path} ({DISK_SECTORS * SECTOR} 字节)")
-    print(f"    C: 分区  : LBA {PART1_LBA} + {PART1_SECTORS} 扇区 "
-          f"({clusters} 簇 FAT16)")
+    print(f"    C: 分区  : LBA {PART1_LBA} + {PART1_SECTORS} 扇区 (exFAT)")
     print(f"    启动分区 : LBA {BOOT_PART_LBA} + {BOOT_PART_SECTORS} 扇区 "
           f"(boot16/kern{kern_secs}/font{font_secs}/cpm{cpm_secs})")
     return path
@@ -558,10 +398,10 @@ def build():
     ensure_font()
     font = open(os.path.join(BUILD, "font.gtd"), "rb").read()
     cpm = open(os.path.join(BUILD, "cpm.gtd"), "rb").read()
-    hello = build_demo_assets()
-    enc_tool = build_enc_tool()
-    print("==> 组装单硬盘镜像 (MBR + C: FAT16 + 隐藏启动分区)")
-    hd = make_hd_image(mbr, boot2, kernel, font, cpm, hello, enc_tool)
+    assets = build_demo_assets()
+    mkfs_tool = build_mkfs_tool()
+    print("==> 组装单硬盘镜像 (MBR + C: exFAT + 隐藏启动分区)")
+    hd = make_hd_image(mbr, boot2, kernel, font, cpm, assets, mkfs_tool)
     return hd
 
 

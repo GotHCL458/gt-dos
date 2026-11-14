@@ -25,9 +25,14 @@
  *   16  SYS_SLEEP   ms                                     0
  *   17  SYS_LIBLOAD path (.gtl)                            句柄或 -1
  *   18  SYS_LIBSYM  handle, name                           地址或 0
+ *   19  SYS_STATX   path, gt_statx*                        0 或 -1
+ *
+ * SYS_STAT 返回 {size, attr, is_dir}; SYS_STATX 额外带 exFAT 厂商扩展:
+ * flags (0x01 = 内容加密), version, crc32, owner[16], mode.
  *
  * fd 0/1/2 为控制台(stdin/stdout/stderr), 文件 fd 从 3 起.
- * 配套头: unistd.h / stat.h / dirent.h / gtlib.h / time.h / stdint.h / ctype.h.
+ * 文件系统为 exFAT; 配套头: unistd.h / stat.h / dirent.h / gtlib.h /
+ * time.h / stdint.h / ctype.h / stdio.h / string.h / stdlib.h.
  */
 #ifndef _GT_GTOS_H
 #define _GT_GTOS_H

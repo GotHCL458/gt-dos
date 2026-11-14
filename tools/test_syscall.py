@@ -89,6 +89,7 @@ def main():
           vm.expect("GTD-DATA", 4000), vm.buf[-300:])
     check("seek + read", vm.expect("[DATA]", 3000), vm.buf[-300:])
     check("gtl shared library call", vm.expect("LIB OK", 3000), vm.buf[-300:])
+    check("exfat xattr via statx", vm.expect("XATTR OK", 3000), vm.buf[-300:])
     check("demo exit code", vm.expect("exited with code 0", 3000), vm.buf[-300:])
 
     vm.buf = ""

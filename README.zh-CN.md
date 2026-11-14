@@ -22,7 +22,7 @@ FAT16 文件系统、用户账户与中英双语 Shell。
 - 16 字节 x64 门描述符的 IDT、中断桩、符合 SysV 约定的寄存器保存/恢复
 - APIC + IO-APIC，具备中断优先级（TPR）与向量分级
 - 软中断模式：上半部只负责缓存输入，下半部在空闲循环中解码
-- ATA PIO 驱动、FAT16 文件系统、串口控制台（UTF-8）
+- ATA PIO 驱动、exFAT 文件系统（长文件名、分配位图、FAT 链）、串口控制台（UTF-8）
 
 **图形**
 - Bochs VBE 线性帧缓冲，LFB 地址通过 PCI 配置空间探测获得
@@ -56,9 +56,9 @@ FAT16 文件系统、用户账户与中英双语 Shell。
 | 6 | `SYS_CLOSE` | 16 | `SYS_SLEEP` |
 | 7 | `SYS_UPTIME` | 17 | `SYS_LIBLOAD` |
 | 8 | `SYS_REBOOT` | 18 | `SYS_LIBSYM` |
-| 9 | `SYS_SHUTDOWN` | | |
+| 9 | `SYS_SHUTDOWN` | 19 | `SYS_STATX` |
 
-- 基于 FAT 的 `open/read/write/close/seek` fd 层（fd 0/1/2 为控制台），
+- 基于 exFAT 的 `open/read/write/close/seek` fd 层（fd 0/1/2 为控制台），
   目录句柄经 `SYS_OPENDIR`/`SYS_READDIR` 遍历
 - `RUN <文件.gtp>` 将平面二进制载入暂存区并跳转执行；程序经 `SYS_EXIT` 返回 shell
 - `.gtl` 共享库：加载器把镜像映射到 `LIB_BASE`（0x500000），
@@ -68,8 +68,17 @@ FAT16 文件系统、用户账户与中英双语 Shell。
   `time.h`、`stdint.h`、`ctype.h`、`stdio.h`、`string.h`、`stdlib.h`）
   被种子写入磁盘的 `INCLUDE` 目录
 
+**exFAT 厂商扩展**
+- 每个文件/目录的目录项集附带 3 个厂商扩展项（类型 `0xE0`）：
+  加密元数据（标志、算法、明文长度、CRC32）、ACL（所有者与权限位）、版本与 CRC32
+- `SYS_STATX` 把它们暴露给程序（`flags`/`version`/`crc`/`owner`/`mode`）；
+  非管理员写入时内核按所有者校验
+
 **安全**
-- `\GT-DOS\` 下所有文件以 AES-128-CBC（PKCS#7 填充）密文存储；内核内部读取时透明解密
+- `\GT-DOS\` 下所有文件以 AES-128-CBC（PKCS#7 填充，T 表高速路径）密文存储；
+  内核内部读取时透明解密
+- 镜像格式化与加密完全由独立 C 工具 `tools/gtmkfs.c` 完成（与内核链接同一份
+  `kernel/crypto.c`）；构建脚本只生成种子清单并调用一次该工具
 - 系统文件严格保护：任何账户（包括 `admin`）都不可读、不可改、不可删
   （`TYPE`/`HEAD`/`WC`/`CP`/`MV` 拒绝，写入与删除被拦截）
 - 非管理员仅可写自己家目录（`\USERS\<名>\`）内的文件
@@ -121,7 +130,7 @@ qemu-system-x86_64 -hda gt-dos-hd.img -boot c
 | 区域 | 位置 | 内容 |
 | --- | --- | --- |
 | MBR | LBA 0 | `boot/mbr.asm`，分区表由 `build.py` 写入 |
-| 分区 1（C:） | LBA 2048，120832 扇区 | FAT16 系统盘，含 `\GT-DOS\` 目录与 `INCLUDE` 头文件 |
+| 分区 1（C:） | LBA 2048，120832 扇区 | exFAT 系统盘，含 `\GT-DOS\` 目录与 `INCLUDE` 头文件 |
 | 分区 2（隐藏） | 盘尾 8192 扇区 | 启动分区，类型 `0x11`，带可引导标志：`boot.gtb` + `kernel.gtb` + `font.gtd` + `cpm.gtd` |
 
 启动分区位于磁盘末尾并携带可引导标志；内核在启动时通过 ATA 从中读取 `font.gtd` 与 `cpm.gtd`。
@@ -168,15 +177,16 @@ kernel/
   syscall.c          INT 0x21 系统调用分派
   exec.c             RUN 程序加载器 (把 .gtp 载入 PROG_BASE)
   gtlib.c            .gtl 共享库加载器与符号表
-  crypto.c           系统文件加密 (AES-128-CBC)
+  crypto.c           系统文件加密 (AES-128-CBC, T 表) + CRC32
   timer.c keyboard.c mouse.c serial.c    设备驱动
   softirq.c          输入下半部的延迟处理
-  ata.c fat.c cfg.c user.c               存储, 文件系统(含 fd 层), 配置, 账户
+  ata.c fat.c cfg.c user.c               存储, exFAT 驱动(含 fd 层), 配置, 账户
   gfx.c vga.c tui.c console.c ui.c       图形层, 文本控制台, 启动画面
   shell.c            命令解释器
   i18n.c power.c oobe.c lib.c            文案, 复位/关机, 首次启动向导, libc 桩
 tools/
   mkfont.py          字模生成器 (GDI -> 4bit 灰度 font.gtd + cpm.gtd)
+  gtmkfs.c           独立 exFAT 格式化/填充 + AES 加密工具 (纯 C)
   hello.asm          示例程序 (INT 0x21 SYS_WRITE/SYS_EXIT), 种子为 HELLO.GTP
   demo.asm           示例程序: .gtd 读取/seek、stat、.gtl 库调用 (DEMO.GTP)
   sample_lib.asm     示例共享库, 导出 add/mul (SAMPLE.GTL)
@@ -191,7 +201,7 @@ build.py             构建脚本与镜像组装
 
 ## 说明与限制
 
-- 内核目前为 202 扇区（103,000 字节），加载区间为 `0x10000` 到 `0x80000`。
+- 内核目前为 207 扇区（105,944 字节），加载区间为 `0x10000` 到 `0x80000`。
   若要继续增大，需要调整加载地址。
 - 大块零初始化缓冲（`font_buf`、码点表、后台缓冲）被放置在 1 MB 以上、
   标记为 `NOLOAD` 的 `.highbss` 段。若放在普通 `.bss` 中，会与 `0xA0000`

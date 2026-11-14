@@ -220,6 +220,7 @@ bool     fat_read_dir_file(const char *dir, const char *name, void *buf,
                            u32 max, u32 *out_len);
 u32      gt_encrypt(const u8 *in, u32 len, u8 *out);  /* AES-128-CBC, 返回密文长 */
 u32      gt_decrypt(const u8 *in, u32 clen, u8 *out); /* 返回明文长, 失败 0 */
+u32      gt_crc32(const void *data, u32 len);         /* IEEE CRC32 */
 bool     fat_path_protected(const char *path);/* \GT-DOS\ 下的路径 */
 
 /* 文件描述符层 (供 INT 0x21 系统调用): fd 0/1/2 = 控制台 */
@@ -241,6 +242,31 @@ int  fat_fd_readdir(int fd, struct fat_dirent *out);
 struct gt_stat   { u32 size; u32 attr; u32 is_dir; };
 struct gt_dirent { char name[16]; u32 size; u32 attr; u32 is_dir; };
 int  fat_stat_pub(const char *path, struct gt_stat *out);
+
+/* ------------------------------------------- exFAT 厂商扩展目录项 (0xE0) */
+#define GT_XTYPE_ENCRYPT 1           /* 加密元数据 */
+#define GT_XTYPE_ACL     2           /* 所有者与权限 */
+#define GT_XTYPE_VERSION 3           /* 版本与 CRC32 校验 */
+
+#define GT_XFLAG_ENCRYPTED 0x01      /* 文件内容为 GTE1 密文 */
+
+#define GT_ACL_OWNER_WRITE 0x01
+#define GT_ACL_OTHER_WRITE 0x02
+#define GT_ACL_OTHER_READ  0x04
+
+/* 扩展元数据 (SYS_STATX = 19) */
+struct gt_statx {
+    u32 size;
+    u32 attr;
+    u32 is_dir;
+    u32 flags;                       /* GT_XFLAG_* */
+    u32 version;
+    u32 crc;                         /* 明文 CRC32 */
+    char owner[16];
+    u16 mode;                        /* GT_ACL_* */
+    u16 reserved;
+};
+int  fat_statx(const char *path, struct gt_statx *out);
 
 /* ------------------------------------------------------------------ 控制台 */
 void console_init(void);
@@ -291,7 +317,7 @@ enum {
     SYS_OPEN = 5, SYS_CLOSE = 6, SYS_UPTIME = 7, SYS_REBOOT = 8,
     SYS_SHUTDOWN = 9, SYS_GETTIME = 10, SYS_PUTS = 11,
     SYS_SEEK = 12, SYS_STAT = 13, SYS_OPENDIR = 14, SYS_READDIR = 15,
-    SYS_SLEEP = 16, SYS_LIBLOAD = 17, SYS_LIBSYM = 18
+    SYS_SLEEP = 16, SYS_LIBLOAD = 17, SYS_LIBSYM = 18, SYS_STATX = 19
 };
 void syscall_handle(struct regs *r);    /* 由 isr_handler 分派 */
 

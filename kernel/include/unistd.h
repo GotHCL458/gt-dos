@@ -34,6 +34,7 @@
 #define GT_SYS_SLEEP    16
 #define GT_SYS_LIBLOAD  17
 #define GT_SYS_LIBSYM   18
+#define GT_SYS_STATX    19
 
 static inline long gt_syscall3(long nr, long a, long b, long c)
 {
