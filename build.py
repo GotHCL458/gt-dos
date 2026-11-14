@@ -156,6 +156,7 @@ C_SOURCES = [
     "tc.c",
     "net.c",
     "tcp.c",
+    "netapp.c",
     "ata.c",
     "fat.c",
     "cfg.c",

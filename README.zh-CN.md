@@ -66,6 +66,9 @@ FAT16 文件系统、用户账户与中英双语 Shell。
 | | | 26 | `SYS_TCP_LISTEN` |
 | | | 27 | `SYS_TCP_ACCEPT` |
 | | | 28 | `SYS_DHCP` |
+| | | 29 | `SYS_DNS` |
+| | | 30 | `SYS_TFTP_GET` |
+| | | 31 | `SYS_HTTP_GET` |
 
 - 基于 exFAT 的 `open/read/write/close/seek` fd 层（fd 0/1/2 为控制台），
   目录句柄经 `SYS_OPENDIR`/`SYS_READDIR` 遍历
@@ -83,8 +86,12 @@ FAT16 文件系统、用户账户与中英双语 Shell。
 - UDP 与 DHCP 客户端（`NET` / `DHCP`）；显示链路、MAC、IP、掩码、网关与 DNS
 - TCP：主动/被动连接、MSS 选项、序号/确认、接收窗口、超时重传、按序缓存，
   以及 FIN 四次挥手（`FIN_WAIT_1/2`、`CLOSE_WAIT`、`LAST_ACK`、`CLOSING`）
-- 系统调用 21–28，以及 TC 内置 `ip4`、`tcp_connect`、`tcp_send`、`tcp_recv`、
+- 系统调用 21–31，以及 TC 内置 `ip4`、`tcp_connect`、`tcp_send`、`tcp_recv`、
   `tcp_close`；Shell 客户端 `TCP <ip> <端口> [文本]`
+- UDP socket 表与应用协议：DNS A 记录解析（含名称压缩指针）、TFTP 客户端
+  （`RRQ`/`DATA`/`ACK` 与超时重传）、HTTP/1.0 `GET` 下载；下载内容写入 exFAT
+- Shell 文件传输：`TFTP GET <ip[:端口]> <远程> [本地]` 与
+  `HTTP GET <主机[:端口]> <路径> [本地]`
 - QEMU 用户网络默认地址 `10.0.2.15/24`，网关 `10.0.2.2`
 
 **内置 C 编译器 (TC) 与 SDK**
@@ -96,7 +103,7 @@ FAT16 文件系统、用户账户与中英双语 Shell。
 - 内置函数（`\SDK\TC.H`）：`putc`、`print`、`puts`、`print_int`、`getc`、`exit`、
   `sleep`、`uptime`、`open`、`read`、`write`、`close`、`seek`、`stat`、`statx`、
   `reboot`、`shutdown`；`\SDK\NET.H` 另含 `ip4`、`tcp_connect`、`tcp_send`、
-  `tcp_recv`、`tcp_close`
+  `tcp_recv`、`tcp_close`、`dns`、`tftp_get`、`http_get`
 - `\SDK\` 提供明文只读 SDK：`TC.H`、`HELLO.C`、`FIB.C`、`README.TXT`；
   配合 `PUT` 与 `APPEND` 可在系统内逐行编写源码
 - 程序布局：代码 64KB 位于 `0x600000`，数据/全局区位于 `0x610000`
@@ -188,7 +195,8 @@ qemu-system-x86_64 -hda gt-dos-hd.img -boot c
 
 **显示与硬件** — `APIC`、`IRQSTAT`
 
-**网络** — `NET`、`DHCP`、`PING <ip> [次数]`、`TCP <ip> <端口> [文本]`
+**网络** — `NET`、`DHCP`、`PING <ip> [次数]`、`TCP <ip> <端口> [文本]`、
+`DNS <域名>`、`TFTP GET <ip[:端口]> <远程> [本地]`、`HTTP GET <主机[:端口]> <路径> [本地]`
 
 **程序** — `RUN <文件.gtp>`（需要管理员权限）、`TC <源.c> [-o 输出.gtp]`（C 子集编译器）
 
@@ -215,6 +223,7 @@ kernel/
   tc.c               内置 C 子集编译器 (x86-64 代码生成)
   net.c              RTL8139 驱动 + ARP/IPv4/ICMP/UDP/DHCP
   tcp.c              TCP socket (握手/收发/重传/挥手)
+  netapp.c           DNS 解析、TFTP 客户端、HTTP GET 下载
   crypto.c           系统文件加密 (AES-128-CBC, T 表) + CRC32
   timer.c keyboard.c mouse.c serial.c    设备驱动
   softirq.c          输入下半部的延迟处理
@@ -241,7 +250,7 @@ build.py             构建脚本与镜像组装
 
 ## 说明与限制
 
-- 内核目前为 314 扇区（160,364 字节），加载区间为 `0x10000` 到 `0x80000`。
+- 内核目前为 327 扇区（167,184 字节），加载区间为 `0x10000` 到 `0x80000`。
   若要继续增大，需要调整加载地址。
 - 大块零初始化缓冲（`font_buf`、码点表、后台缓冲）被放置在 1 MB 以上、
   标记为 `NOLOAD` 的 `.highbss` 段。若放在普通 `.bss` 中，会与 `0xA0000`
@@ -251,6 +260,7 @@ build.py             构建脚本与镜像组装
 - Shell 文件命令（`TYPE`/`CP`/`MV`/`HEAD`/`WC`/`APPEND`）处理不超过 64KB 的文件。
 - 网络栈仅支持 IPv4，不做 IP 分片重组；TCP 未实现拥塞控制、SACK 与窗口缩放，
   `TCP_ACCEPT` 一次只处理一个连接。
+- TFTP/HTTP 下载先缓存在内存，单个文件上限 64KB。
 - 构建过程需要 Windows；但内核本身是完全独立的，不依赖宿主平台。
 
 ## 许可证

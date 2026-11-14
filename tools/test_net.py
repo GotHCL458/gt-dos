@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""GT-DOS 网络栈验证: RTL8139 + ARP/IPv4/ICMP/UDP(DHCP)/TCP.
-   宿主机在 127.0.0.1:PORT 启动回显服务, 来宾通过 QEMU 用户网络
-   (10.0.2.2 = 宿主机) 连接, 验证 shell 与 TC 用户程序两条路径."""
-import os, shutil, socket, subprocess, sys, threading, time
+"""GT-DOS 网络栈验证: RTL8139 + ARP/IPv4/ICMP/UDP(DHCP)/TCP/DNS/TFTP/HTTP.
+   宿主机启动 TCP 回显、TFTP 与 HTTP 服务, 来宾通过 QEMU 用户网络
+   (10.0.2.2 = 宿主机) 访问, 验证 shell、TC 用户程序与文件下载."""
+import os, shutil, socket, struct, subprocess, sys, threading, time
 
 QEMU = r"D:\GT-DOS\qemu\qemu-system-x86_64.exe"
 SRC = r"D:\GT-DOS\build"
@@ -11,6 +11,10 @@ TMP = r"D:\GT-DOS\build\testrun"
 SPORT = 4800 + (os.getpid() % 80)
 MPORT = SPORT + 1
 TPORT = 20000 + (os.getpid() % 2000)
+TFTP_PORT = 21000 + (os.getpid() % 1000)
+HTTP_PORT = 22000 + (os.getpid() % 1000)
+TFTP_BODY = b"TFTP-FILE-START\n" + b"A" * 1100 + b"TFTP-FILE-END\n"
+HTTP_BODY = b"HTTP-FILE-START\n" + b"B" * 3000 + b"HTTP-FILE-END\n"
 FAILURES = []
 
 def check(name, cond, detail=""):
@@ -30,6 +34,48 @@ def echo_server(srv):
                 c.sendall(b"NET OK\n")
             else:
                 c.sendall(b"ECHO: " + data + b"\n")
+        except OSError:
+            pass
+        finally:
+            c.close()
+
+def tftp_server(sock):
+    while True:
+        try:
+            data, addr = sock.recvfrom(1024)
+        except OSError:
+            return
+        if len(data) < 4 or struct.unpack("!H", data[:2])[0] != 1:
+            continue
+        block, off = 1, 0
+        while True:
+            chunk = TFTP_BODY[off:off + 512]
+            pkt = struct.pack("!HH", 3, block) + chunk
+            for _ in range(5):
+                sock.sendto(pkt, addr)
+                sock.settimeout(1.0)
+                try:
+                    ack, _ = sock.recvfrom(64)
+                except socket.timeout:
+                    continue
+                if len(ack) >= 4 and struct.unpack("!HH", ack[:4]) == (4, block):
+                    break
+            off += len(chunk)
+            block = (block + 1) & 0xFFFF
+            if len(chunk) < 512:
+                break
+
+def http_server(sock):
+    while True:
+        try:
+            c, _ = sock.accept()
+        except OSError:
+            return
+        try:
+            c.recv(2048)
+            hdr = (b"HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n"
+                   b"Content-Length: %d\r\nConnection: close\r\n\r\n" % len(HTTP_BODY))
+            c.sendall(hdr + HTTP_BODY)
         except OSError:
             pass
         finally:
@@ -94,6 +140,16 @@ def main():
     srv.listen(8)
     threading.Thread(target=echo_server, args=(srv,), daemon=True).start()
 
+    tsrv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    tsrv.bind(("127.0.0.1", TFTP_PORT))
+    threading.Thread(target=tftp_server, args=(tsrv,), daemon=True).start()
+
+    hsrv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    hsrv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    hsrv.bind(("127.0.0.1", HTTP_PORT))
+    hsrv.listen(8)
+    threading.Thread(target=http_server, args=(hsrv,), daemon=True).start()
+
     vm = VM(); vm.feed(3000)
     vm.expect("Language", 6000)
     vm.cmd("1"); vm.cmd("SBOX"); vm.cmd("admin"); vm.cmd("")
@@ -138,9 +194,22 @@ def main():
     check("tc net program connected", vm.expect("CONNECTED", 12000), vm.buf[-400:])
     check("tc net program received", vm.expect("NET OK", 12000), vm.buf[-400:])
 
+    vm.buf = ""
+    vm.cmd(f"tftp get 10.0.2.2:{TFTP_PORT} remote.txt got.txt", 5000)
+    check("tftp download", vm.expect(f"TFTP: {len(TFTP_BODY)} bytes", 15000), vm.buf[-400:])
+    vm.cmd("cat got.txt", 2500)
+    check("tftp file content", vm.expect("TFTP-FILE-END", 10000), vm.buf[-400:])
+
+    vm.buf = ""
+    vm.cmd(f"http get 10.0.2.2:{HTTP_PORT} /x.txt got2.txt", 5000)
+    check("http download", vm.expect(f"HTTP: {len(HTTP_BODY)} bytes", 15000), vm.buf[-400:])
+    vm.cmd("cat got2.txt", 2500)
+    check("http file content", vm.expect("HTTP-FILE-END", 12000), vm.buf[-400:])
+
     vm.cmd("shutdown"); vm.feed(800); vm.close()
-    try: srv.close()
-    except Exception: pass
+    for s in (srv, tsrv, hsrv):
+        try: s.close()
+        except Exception: pass
 
     print()
     if FAILURES:

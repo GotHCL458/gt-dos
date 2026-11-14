@@ -67,6 +67,9 @@ a FAT16 file system, user accounts and a bilingual (Chinese/English) shell.
 | | | 26 | `SYS_TCP_LISTEN` |
 | | | 27 | `SYS_TCP_ACCEPT` |
 | | | 28 | `SYS_DHCP` |
+| | | 29 | `SYS_DNS` |
+| | | 30 | `SYS_TFTP_GET` |
+| | | 31 | `SYS_HTTP_GET` |
 
 - A small `open/read/write/close/seek` fd layer over exFAT (fds 0/1/2 are the console),
   plus directory handles through `SYS_OPENDIR`/`SYS_READDIR`
@@ -87,8 +90,13 @@ a FAT16 file system, user accounts and a bilingual (Chinese/English) shell.
 - TCP: active and passive open, MSS option, sequence/ACK, receive window,
   retransmission, in-order buffering, and FIN teardown
   (`FIN_WAIT_1/2`, `CLOSE_WAIT`, `LAST_ACK`, `CLOSING`)
-- Socket syscalls 21–28, plus TC builtins `ip4`, `tcp_connect`, `tcp_send`,
+- Socket syscalls 21–31, plus TC builtins `ip4`, `tcp_connect`, `tcp_send`,
   `tcp_recv`, `tcp_close`; shell client `TCP <ip> <port> [text]`
+- UDP socket table plus application protocols: DNS A-record resolver (with name
+  compression), TFTP client (`RRQ`/`DATA`/`ACK` with retransmission) and an HTTP/1.0
+  `GET` downloader; downloads are written into the exFAT file system
+- Shell file transfer: `TFTP GET <ip[:port]> <remote> [local]` and
+  `HTTP GET <host[:port]> <path> [local]`
 - Default QEMU user-network address is `10.0.2.15/24`, gateway `10.0.2.2`
 
 **Built-in C compiler (TC) & SDK**
@@ -99,7 +107,8 @@ a FAT16 file system, user accounts and a bilingual (Chinese/English) shell.
   arithmetic/bitwise/comparison operators, `&& || !`, string literals and comments
 - Builtins (`\SDK\TC.H`): `putc`, `print`, `puts`, `print_int`, `getc`, `exit`, `sleep`,
   `uptime`, `open`, `read`, `write`, `close`, `seek`, `stat`, `statx`, `reboot`, `shutdown`;
-  `\SDK\NET.H` adds `ip4`, `tcp_connect`, `tcp_send`, `tcp_recv`, `tcp_close`
+  `\SDK\NET.H` adds `ip4`, `tcp_connect`, `tcp_send`, `tcp_recv`, `tcp_close`,
+  `dns`, `tftp_get`, `http_get`
 - SDK at `\SDK\` (plain, read-only): `TC.H`, `HELLO.C`, `FIB.C`, `README.TXT`;
   `PUT` + `APPEND` let you author sources line by line inside GT-DOS
 - Program layout: 64 KB code at `0x600000`, data/globals at `0x610000`
@@ -196,7 +205,8 @@ Type `HELP` (or `?`) inside GT-DOS for the full list. Commands support both long
 
 **Display and hardware** — `APIC`, `IRQSTAT`
 
-**Network** — `NET`, `DHCP`, `PING <ip> [count]`, `TCP <ip> <port> [text]`
+**Network** — `NET`, `DHCP`, `PING <ip> [count]`, `TCP <ip> <port> [text]`,
+`DNS <name>`, `TFTP GET <ip[:port]> <remote> [local]`, `HTTP GET <host[:port]> <path> [local]`
 
 **Programs** — `RUN <file.gtp>` (administrator privileges required),
 `TC <src.c> [-o out.gtp]` (C subset compiler)
@@ -224,6 +234,7 @@ kernel/
   tc.c               built-in C subset compiler (x86-64 code generator)
   net.c              RTL8139 driver + ARP/IPv4/ICMP/UDP/DHCP
   tcp.c              TCP sockets (handshake, data, retransmit, close)
+  netapp.c           DNS resolver, TFTP client, HTTP GET downloader
   crypto.c           AES-128-CBC (T-table fast path) + CRC32
   timer.c keyboard.c mouse.c serial.c    devices
   softirq.c          deferred work for input bottom halves
@@ -250,7 +261,7 @@ assert on real boot output rather than on mocks.
 
 ## Notes and Limitations
 
-- The kernel currently fits in 314 sectors (160,364 bytes), loaded between `0x10000` and `0x80000`.
+- The kernel currently fits in 327 sectors (167,184 bytes), loaded between `0x10000` and `0x80000`.
   Growing past that window requires relocating the load address.
 - Large zero-initialised buffers (`font_buf`, the code page table, the back buffer) are placed in
   a `NOLOAD` `.highbss` section above 1 MB. If they were in ordinary `.bss` they would overlap the
@@ -260,6 +271,7 @@ assert on real boot output rather than on mocks.
 - Shell file commands (`TYPE`/`CP`/`MV`/`HEAD`/`WC`/`APPEND`) operate on files up to 64 KB.
 - The network stack is IPv4-only and does not reassemble IP fragments; TCP has no
   congestion control, SACK or window scaling, and `TCP_ACCEPT` handles one connection.
+- TFTP/HTTP downloads are buffered in RAM and limited to 64 KB per file.
 - Building requires Windows; the kernel itself is fully freestanding and does not depend on the
   host platform.
 

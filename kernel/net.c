@@ -145,6 +145,10 @@ static bool rtl_send(const u8 *data, u32 len)
     int i = tx_idx;
     tx_idx = (tx_idx + 1) & 3;
     memcpy(tx_buf[i], data, len);
+    if (len < 60) {                     /* Ethernet 最小帧 */
+        memset(tx_buf[i] + len, 0, 60 - len);
+        len = 60;
+    }
     __asm__ __volatile__("" ::: "memory");
     outl(io_base + RTL_TSAD0 + i * 4, (u32)(u64)tx_buf[i]);
     outl(io_base + RTL_TSD0 + i * 4, len & 0x1FFF);
@@ -166,14 +170,15 @@ static void rtl_poll(void)
         u16 len = (u16)(rx_buf[off + 2] | (rx_buf[off + 3] << 8));
         if (!(status & 0x01) || len < 4 || len > 1600) {
             rx_off = 0;
-            outl(io_base + RTL_CAPR, 0);
+            outw(io_base + RTL_CAPR, 0);
             break;
         }
+        /* RxNoWrap=1: 包不会在 8K 边界拆分, 尾部连续写在缓冲区内 */
         net_handle_frame(rx_buf + off + 4, (u32)(len - 4));
         rx_off = (off + (u32)len + 4 + 3) & ~3u;
         if (rx_off >= RX_RING)
             rx_off -= RX_RING;
-        outl(io_base + RTL_CAPR, (rx_off - RX_PAD) & 0xFFFF);
+        outw(io_base + RTL_CAPR, (u16)((rx_off - RX_PAD) & 0xFFFF));
     }
 }
 
@@ -434,6 +439,117 @@ int net_ping_one(u32 ip, u16 seq, u32 *rtt_ms)
     return 1;
 }
 
+/* ------------------------------------------------------ UDP socket */
+#define UDP_MAX   6
+#define UDP_RXBUF 2048
+
+struct udp_sock {
+    bool used;
+    u16  lport;
+    bool got;
+    u32  src;
+    u16  sport;
+    u32  len;
+    u8   buf[UDP_RXBUF];
+};
+
+static struct udp_sock usocks[UDP_MAX];
+static u16 udp_eph = 53000;
+static u8  udp_tx[1600] __attribute__((section(".highbss")));
+
+static u64 net_irq_save(void)
+{
+    u64 f;
+    __asm__ __volatile__("pushfq\n\tpopq %0\n\tcli" : "=r"(f) :: "memory");
+    return f;
+}
+
+static void net_irq_restore(u64 f)
+{
+    if (f & 0x200)
+        __asm__ __volatile__("sti" ::: "memory");
+    else
+        __asm__ __volatile__("cli" ::: "memory");
+}
+
+int udp_open(u16 port)
+{
+    int slot = -1;
+    for (int i = 0; i < UDP_MAX; i++)
+        if (!usocks[i].used) { slot = i; break; }
+    if (slot < 0)
+        return -1;
+    if (port == 0) {
+        for (int n = 0; n < 1000; n++) {
+            u16 p = (u16)(udp_eph++ | 0xC000);
+            if (p == 0)
+                continue;
+            bool busy = false;
+            for (int i = 0; i < UDP_MAX; i++)
+                if (usocks[i].used && usocks[i].lport == p) { busy = true; break; }
+            if (!busy) { port = p; break; }
+        }
+    }
+    if (port == 0)
+        return -1;
+    memset(&usocks[slot], 0, sizeof(usocks[slot]));
+    usocks[slot].used = true;
+    usocks[slot].lport = port;
+    return slot + 1;
+}
+
+void udp_close(int fd)
+{
+    if (fd < 1 || fd > UDP_MAX)
+        return;
+    usocks[fd - 1].used = false;
+}
+
+int udp_sendto(int fd, u32 ip, u16 dport, const void *data, u32 len)
+{
+    if (fd < 1 || fd > UDP_MAX || !usocks[fd - 1].used)
+        return -1;
+    if (len > sizeof(udp_tx) - 8)
+        return -1;
+    net_wr_be16(udp_tx, usocks[fd - 1].lport);
+    net_wr_be16(udp_tx + 2, dport);
+    net_wr_be16(udp_tx + 4, (u16)(8 + len));
+    net_wr_be16(udp_tx + 6, 0);
+    if (len)
+        memcpy(udp_tx + 8, data, len);
+    return net_send_ip(ip, 17, udp_tx, 8 + len) ? (int)len : -1;
+}
+
+int udp_recvfrom(int fd, void *buf, u32 cap, u32 timeout_ms,
+                 u32 *src, u16 *sport)
+{
+    if (fd < 1 || fd > UDP_MAX || !usocks[fd - 1].used || !buf)
+        return -1;
+    struct udp_sock *s = &usocks[fd - 1];
+    u64 fl = net_irq_save();
+    cpu_sti();
+    u32 t0 = timer_uptime_ms();
+    while (!s->got && timer_uptime_ms() - t0 < timeout_ms) {
+        net_poll();
+        if (s->got)
+            break;
+        cpu_halt();
+    }
+    int rc = -1;
+    if (s->got) {
+        u32 n = s->len;
+        if (n > cap)
+            n = cap;
+        memcpy(buf, s->buf, n);
+        if (src) *src = s->src;
+        if (sport) *sport = s->sport;
+        s->got = false;
+        rc = (int)n;
+    }
+    net_irq_restore(fl);
+    return rc;
+}
+
 /* ------------------------------------------------------ UDP / DHCP */
 static bool dhcp_active;
 static u32 dhcp_xid;
@@ -479,14 +595,28 @@ static void dhcp_input(const u8 *p, u32 n, u16 dport)
 
 static void udp_input(u32 src, const u8 *p, u32 n)
 {
-    (void)src;
     if (n < 8)
         return;
+    u16 sport = net_be16(p);
     u16 dport = net_be16(p + 2);
     u32 len = net_be16(p + 4);
     if (len < 8 || len > n)
         len = n;
-    dhcp_input(p + 8, len - 8, dport);
+    const u8 *data = p + 8;
+    u32 dlen = len - 8;
+    dhcp_input(data, dlen, dport);
+
+    for (int i = 0; i < UDP_MAX; i++) {
+        struct udp_sock *s = &usocks[i];
+        if (!s->used || s->lport != dport)
+            continue;
+        u32 k = dlen > UDP_RXBUF ? UDP_RXBUF : dlen;
+        memcpy(s->buf, data, k);
+        s->len = k;
+        s->src = src;
+        s->sport = sport;
+        s->got = true;
+    }
 }
 
 static bool dhcp_send(u8 type, u32 req_ip)

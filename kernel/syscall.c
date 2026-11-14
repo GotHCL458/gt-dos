@@ -84,6 +84,19 @@ void syscall_handle(struct regs *r)
         r->rax = (u64)net_dhcp();
         cpu_cli();
         break;
+    case SYS_DNS: {
+        u32 ip = 0;
+        r->rax = net_dns_resolve((const char *)r->rdi, &ip) == 0 ? (u64)ip : 0;
+        break;
+    }
+    case SYS_TFTP_GET:
+        r->rax = (u64)net_tftp_fetch((u32)r->rdi, 69,
+                                     (const char *)r->rsi, (const char *)r->rdx);
+        break;
+    case SYS_HTTP_GET:
+        r->rax = (u64)net_http_fetch((const char *)r->rdi,
+                                     (const char *)r->rsi, (const char *)r->rdx);
+        break;
     case SYS_OPENDIR:
         r->rax = (u64)fat_fd_opendir((const char *)r->rdi);
         break;

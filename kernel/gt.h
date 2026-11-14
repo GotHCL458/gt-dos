@@ -303,6 +303,18 @@ void net_wr_be32(u8 *p, u32 v);
 u16  net_csum(const u8 *p, u32 len, u32 sum);
 bool net_send_ip(u32 dst, u8 proto, const void *payload, u32 len);
 
+/* UDP socket (内部 / DNS / TFTP) */
+int  udp_open(u16 port);
+void udp_close(int fd);
+int  udp_sendto(int fd, u32 ip, u16 dport, const void *data, u32 len);
+int  udp_recvfrom(int fd, void *buf, u32 cap, u32 timeout_ms,
+                  u32 *src, u16 *sport);
+
+/* 应用层: DNS / TFTP / HTTP 文件传输 */
+int  net_dns_resolve(const char *name, u32 *out);
+int  net_tftp_fetch(u32 server, u16 port, const char *remote, const char *local);
+int  net_http_fetch(const char *hostport, const char *path, const char *local);
+
 /* TCP (tcp.c) */
 int  tcp_connect(u32 ip, u16 port);
 int  tcp_send(int fd, const void *buf, u32 len);
@@ -367,7 +379,8 @@ enum {
     SYS_IPRINT = 20,
     SYS_NETINFO = 21, SYS_TCP_CONNECT = 22, SYS_TCP_SEND = 23,
     SYS_TCP_RECV = 24, SYS_TCP_CLOSE = 25, SYS_TCP_LISTEN = 26,
-    SYS_TCP_ACCEPT = 27, SYS_DHCP = 28
+    SYS_TCP_ACCEPT = 27, SYS_DHCP = 28, SYS_DNS = 29,
+    SYS_TFTP_GET = 30, SYS_HTTP_GET = 31
 };
 void syscall_handle(struct regs *r);    /* 由 isr_handler 分派 */
 

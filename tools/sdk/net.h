@@ -30,5 +30,8 @@ int  tcp_close(int fd);                   /* SYS_TCP_CLOSE (25) */
 int  tcp_listen(int port);                /* SYS_TCP_LISTEN (26) */
 int  tcp_accept(int fd);                  /* SYS_TCP_ACCEPT (27) */
 int  dhcp(void);                          /* SYS_DHCP (28) */
+int  dns(char *name);                     /* SYS_DNS (29), 返回 IPv4 或 0 */
+int  tftp_get(int ip, char *remote, char *local); /* SYS_TFTP_GET (30) */
+int  http_get(char *hostport, char *path, char *local); /* SYS_HTTP_GET (31) */
 
 #endif /* _GT_NET_H */

@@ -35,6 +35,9 @@
  *   26  SYS_TCP_LISTEN port                                socket 或 -1
  *   27  SYS_TCP_ACCEPT fd                                  0 或 -1
  *   28  SYS_DHCP    -                                      0 或 -1
+ *   29  SYS_DNS     name                                   IPv4 或 0
+ *   30  SYS_TFTP_GET server, remote, local                 字节数或 -1
+ *   31  SYS_HTTP_GET hostport, path, local                 字节数或 -1
  *
  * SYS_STAT 返回 {size, attr, is_dir}; SYS_STATX 额外带 exFAT 厂商扩展:
  * flags (0x01 = 内容加密), version, crc32, owner[16], mode.

@@ -588,6 +588,8 @@ static void p_primary(void)
                 { "tcp_send", 23, 3 }, { "tcp_recv", 24, 3 },
                 { "tcp_close", 25, 1 }, { "tcp_listen", 26, 1 },
                 { "tcp_accept", 27, 1 }, { "dhcp", 28, 0 },
+                { "dns", 29, 1 }, { "tftp_get", 30, 3 },
+                { "http_get", 31, 3 },
                 { NULL, 0, 0 }
             };
             int nr = -1;

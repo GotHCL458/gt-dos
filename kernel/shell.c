@@ -754,6 +754,82 @@ static void cmd_tcp(int argc, char **argv)
     tcp_close(fd);
 }
 
+static const char *base_name(const char *p)
+{
+    const char *b = p;
+    for (; *p; p++)
+        if (*p == '\\' || *p == '/')
+            b = p + 1;
+    return b;
+}
+
+static void cmd_dns(int argc, char **argv)
+{
+    if (argc < 2) { err("Usage: DNS <name>\n"); return; }
+    u32 ip = 0;
+    if (net_dns_resolve(argv[1], &ip) == 0) {
+        char s[20];
+        net_ip_str(ip, s);
+        ok("%s = %s\n", argv[1], s);
+    } else {
+        err("DNS lookup failed: %s\n", argv[1]);
+    }
+}
+
+static void cmd_tftp(int argc, char **argv)
+{
+    if (argc < 4 || strcasecmp(argv[1], "get")) {
+        err("Usage: TFTP GET <ip[:port]> <remote> [local]\n");
+        return;
+    }
+    char host[64];
+    u16 port = 69;
+    int k = 0;
+    const char *p = argv[2];
+    while (*p && *p != ':' && k < 63)
+        host[k++] = *p++;
+    host[k] = 0;
+    if (*p == ':')
+        port = (u16)atoi_dec(p + 1);
+    u32 ip;
+    if (!net_parse_ip(host, &ip) || port == 0) {
+        err("Bad server address.\n");
+        return;
+    }
+    const char *remote = argv[3];
+    const char *lname = argc > 4 ? argv[4] : base_name(remote);
+    if (!lname[0])
+        lname = "download.bin";
+    char loc[PATHMAX];
+    resolve_path(lname, loc);
+
+    int n = net_tftp_fetch(ip, port, remote, loc);
+    if (n < 0)
+        err("TFTP download failed.\n");
+    else
+        ok("TFTP: %d bytes -> %s\n", n, loc);
+}
+
+static void cmd_http(int argc, char **argv)
+{
+    if (argc < 4 || strcasecmp(argv[1], "get")) {
+        err("Usage: HTTP GET <host[:port]> <path> [local]\n");
+        return;
+    }
+    const char *path = argv[3];
+    const char *lname = argc > 4 ? argv[4] : base_name(path);
+    if (!lname[0])
+        lname = "index.html";
+    char loc[PATHMAX];
+    resolve_path(lname, loc);
+
+    int n = net_http_fetch(argv[2], path, loc);
+    if (n < 0)
+        err("HTTP download failed.\n");
+    else
+        ok("HTTP: %d bytes -> %s\n", n, loc);
+}
+
 static void cmd_df(void)
 {
     if (!fat_ready()) {
@@ -1321,6 +1397,12 @@ static void execute(char *line)
         cmd_ping(argc, argv);
     } else if (!strcasecmp(cmd, "tcp")) {
         cmd_tcp(argc, argv);
+    } else if (!strcasecmp(cmd, "dns")) {
+        cmd_dns(argc, argv);
+    } else if (!strcasecmp(cmd, "tftp")) {
+        cmd_tftp(argc, argv);
+    } else if (!strcasecmp(cmd, "http")) {
+        cmd_http(argc, argv);
     } else if (!strcasecmp(cmd, "tc")) {
         cmd_tc(argc, argv);
     } else if (!strncasecmp(cmd, "run", 8)) {
