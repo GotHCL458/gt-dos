@@ -37,4 +37,11 @@ int  statx(char *path, void *st);      /* SYS_STATX (19) */
 void reboot(void);
 void shutdown(void);
 
+/* TCP/IP (see NET.H) */
+int  ip4(int a, int b, int c, int d);
+int  tcp_connect(int ip, int port);
+int  tcp_send(int fd, void *buf, int n);
+int  tcp_recv(int fd, void *buf, int n);
+int  tcp_close(int fd);
+
 #endif /* _GT_TC_H */

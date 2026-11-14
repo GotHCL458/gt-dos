@@ -273,6 +273,47 @@ int  fat_statx(const char *path, struct gt_statx *out);
 const u8  *tc_compile(const char *src, u32 len, u32 *out_len);
 const char *tc_error(void);
 
+/* ------------------------------------------------------- 网络 (TCP/IP) */
+#define IP4(a, b, c, d) (((u32)(a) << 24) | ((u32)(b) << 16) | \
+                         ((u32)(c) << 8) | (u32)(d))
+
+struct net_info {
+    u32 ip, mask, gw, dns;
+    u8  mac[6];
+    u8  link;
+    u16 mtu;
+};
+
+bool net_init(void);
+void net_poll(void);
+bool net_link_up(void);
+void net_get_info(struct net_info *out);
+u32  net_ip(void);
+u32  net_mask(void);
+u32  net_gw(void);
+u32  net_dns(void);
+int  net_dhcp(void);
+int  net_ping_one(u32 ip, u16 seq, u32 *rtt_ms);
+bool net_parse_ip(const char *s, u32 *out);
+void net_ip_str(u32 ip, char *buf);
+u16  net_be16(const u8 *p);
+u32  net_be32(const u8 *p);
+void net_wr_be16(u8 *p, u16 v);
+void net_wr_be32(u8 *p, u32 v);
+u16  net_csum(const u8 *p, u32 len, u32 sum);
+bool net_send_ip(u32 dst, u8 proto, const void *payload, u32 len);
+
+/* TCP (tcp.c) */
+int  tcp_connect(u32 ip, u16 port);
+int  tcp_send(int fd, const void *buf, u32 len);
+int  tcp_recv(int fd, void *buf, u32 len);
+int  tcp_close(int fd);
+int  tcp_listen(u16 port);
+int  tcp_accept(int fd);
+void tcp_input(u32 src, u32 dst, const u8 *seg, u32 len);
+void tcp_poll(u32 now);
+int  tcp_socket_count(void);
+
 /* ------------------------------------------------------------------ 控制台 */
 void console_init(void);
 void console_putc(char c);
@@ -323,7 +364,10 @@ enum {
     SYS_SHUTDOWN = 9, SYS_GETTIME = 10, SYS_PUTS = 11,
     SYS_SEEK = 12, SYS_STAT = 13, SYS_OPENDIR = 14, SYS_READDIR = 15,
     SYS_SLEEP = 16, SYS_LIBLOAD = 17, SYS_LIBSYM = 18, SYS_STATX = 19,
-    SYS_IPRINT = 20
+    SYS_IPRINT = 20,
+    SYS_NETINFO = 21, SYS_TCP_CONNECT = 22, SYS_TCP_SEND = 23,
+    SYS_TCP_RECV = 24, SYS_TCP_CLOSE = 25, SYS_TCP_LISTEN = 26,
+    SYS_TCP_ACCEPT = 27, SYS_DHCP = 28
 };
 void syscall_handle(struct regs *r);    /* 由 isr_handler 分派 */
 
@@ -425,6 +469,7 @@ int    strncmp(const char *a, const char *b, size_t n);
 char  *strcpy(char *dst, const char *src);
 char  *strncpy(char *dst, const char *src, size_t n);
 int    strncasecmp(const char *a, const char *b, size_t n);
+int    strcasecmp(const char *a, const char *b);
 void   itoa_base(u32 value, char *buf, int base, bool sign);
 int    fmt_uint(u32 value, char *buf);  /* 写十进制, 返回字符数 */
 int    atoi_dec(const char *s);         /* 解析十进制 (可含前导空格) */

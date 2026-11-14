@@ -27,6 +27,14 @@
  *   18  SYS_LIBSYM  handle, name                           地址或 0
  *   19  SYS_STATX   path, gt_statx*                        0 或 -1
  *   20  SYS_IPRINT  value                                  0 (打印十进制)
+ *   21  SYS_NETINFO net_info*                              0 或 -1
+ *   22  SYS_TCP_CONNECT ip, port                           socket 或 -1
+ *   23  SYS_TCP_SEND fd, buf, n                            发送字节数
+ *   24  SYS_TCP_RECV fd, buf, n                            接收字节数 (0=EOF)
+ *   25  SYS_TCP_CLOSE fd                                   0
+ *   26  SYS_TCP_LISTEN port                                socket 或 -1
+ *   27  SYS_TCP_ACCEPT fd                                  0 或 -1
+ *   28  SYS_DHCP    -                                      0 或 -1
  *
  * SYS_STAT 返回 {size, attr, is_dir}; SYS_STATX 额外带 exFAT 厂商扩展:
  * flags (0x01 = 内容加密), version, crc32, owner[16], mode.
@@ -35,6 +43,7 @@
  * 文件系统为 exFAT; 配套头: unistd.h / stat.h / dirent.h / gtlib.h /
  * time.h / stdint.h / ctype.h / stdio.h / string.h / stdlib.h.
  * 系统内 C 编译器 TC: TC <源.c> [-o 输出.gtp], SDK 位于 \SDK\.
+ * 网络: RTL8139 + ARP/IPv4/ICMP/UDP/DHCP/TCP; 默认 10.0.2.15/24.
  */
 #ifndef _GT_GTOS_H
 #define _GT_GTOS_H

@@ -629,6 +629,131 @@ static void cmd_tc(int argc, char **argv)
         err("Cannot write %s (use -o in your home directory)\n", out);
 }
 
+/* ------------------------------------------------------------ 网络命令 */
+static void mac_str(const u8 *mac, char *out)
+{
+    static const char *hx = "0123456789abcdef";
+    int k = 0;
+    for (int i = 0; i < 6; i++) {
+        out[k++] = hx[mac[i] >> 4];
+        out[k++] = hx[mac[i] & 15];
+        if (i != 5)
+            out[k++] = ':';
+    }
+    out[k] = 0;
+}
+
+static void cmd_net(void)
+{
+    if (!net_init()) {
+        err("No supported NIC (RTL8139) found.\n");
+        return;
+    }
+    struct net_info ni;
+    net_get_info(&ni);
+    char m[20], a[20], b[20], c[20], d[20];
+    mac_str(ni.mac, m);
+    net_ip_str(ni.ip, a);
+    net_ip_str(ni.mask, b);
+    net_ip_str(ni.gw, c);
+    net_ip_str(ni.dns, d);
+    kprintf("Link      : %s (RTL8139)\n", ni.link ? "up" : "down");
+    kprintf("MAC       : %s\n", m);
+    kprintf("IPv4      : %s\n", a);
+    kprintf("Mask      : %s\n", b);
+    kprintf("Gateway   : %s\n", c);
+    kprintf("DNS       : %s\n", d);
+    kprintf("MTU       : %u\n", ni.mtu);
+    kprintf("TCP socks : %d\n", tcp_socket_count());
+}
+
+static void cmd_dhcp(void)
+{
+    if (!net_init()) {
+        err("No supported NIC (RTL8139) found.\n");
+        return;
+    }
+    if (net_dhcp() == 0) {
+        char a[20];
+        net_ip_str(net_ip(), a);
+        ok("DHCP: %s\n", a);
+    } else {
+        err("DHCP failed (no server reply).\n");
+    }
+}
+
+static void cmd_ping(int argc, char **argv)
+{
+    if (argc < 2) { err("Usage: PING <a.b.c.d> [count]\n"); return; }
+    u32 ip;
+    if (!net_parse_ip(argv[1], &ip)) { err("Bad IPv4 address.\n"); return; }
+    if (!net_init()) { err("No supported NIC (RTL8139) found.\n"); return; }
+    int count = argc > 2 ? atoi_dec(argv[2]) : 4;
+    if (count < 1) count = 1;
+    if (count > 10) count = 10;
+
+    char s[20];
+    net_ip_str(ip, s);
+    kprintf("PING %s:\n", s);
+    int ok_n = 0;
+    for (int i = 0; i < count; i++) {
+        u32 rtt = 0;
+        if (net_ping_one(ip, (u16)i, &rtt)) {
+            ok_n++;
+            kprintf("  reply from %s seq=%d time=%u ms\n", s, i, rtt);
+        } else {
+            kprintf("  request timed out (seq=%d)\n", i);
+        }
+    }
+    kprintf("  %d/%d replies\n", ok_n, count);
+}
+
+static void cmd_tcp(int argc, char **argv)
+{
+    if (argc < 3) {
+        err("Usage: TCP <a.b.c.d> <port> [text]\n");
+        return;
+    }
+    u32 ip;
+    if (!net_parse_ip(argv[1], &ip)) { err("Bad IPv4 address.\n"); return; }
+    int port = atoi_dec(argv[2]);
+    if (port < 1 || port > 65535) { err("Bad port.\n"); return; }
+    if (!net_init()) { err("No supported NIC (RTL8139) found.\n"); return; }
+
+    char text[512];
+    size_t used = 0;
+    text[0] = 0;
+    for (int i = 3; i < argc; i++) {
+        size_t l = strlen(argv[i]);
+        if (used + l + 2 >= sizeof(text))
+            break;
+        if (used)
+            text[used++] = ' ';
+        memcpy(text + used, argv[i], l);
+        used += l;
+        text[used] = 0;
+    }
+
+    int fd = tcp_connect(ip, (u16)port);
+    if (fd < 0) {
+        err("TCP connect failed.\n");
+        return;
+    }
+    ok("Connected, sending %u byte(s).\n", (u32)used);
+    if (used)
+        tcp_send(fd, text, (u32)used);
+    int n = tcp_recv(fd, file_buf, 4096);
+    if (n > 0) {
+        kprintf("Received %d bytes:\n", n);
+        console_write((const char *)file_buf, (u32)n);
+        if (file_buf[n - 1] != '\n')
+            console_putc('\n');
+    } else {
+        kprintf("No data received.\n");
+    }
+    tcp_close(fd);
+}
+
 static void cmd_df(void)
 {
     if (!fat_ready()) {
@@ -1188,7 +1313,15 @@ static void execute(char *line)
         cmd_config(argc, argv);
     } else if (!strncasecmp(cmd, "oobe", 8)) {
         cmd_oobe();
-    } else if (!strncasecmp(cmd, "tc", 8)) {
+    } else if (!strcasecmp(cmd, "net")) {
+        cmd_net();
+    } else if (!strcasecmp(cmd, "dhcp")) {
+        cmd_dhcp();
+    } else if (!strcasecmp(cmd, "ping")) {
+        cmd_ping(argc, argv);
+    } else if (!strcasecmp(cmd, "tcp")) {
+        cmd_tcp(argc, argv);
+    } else if (!strcasecmp(cmd, "tc")) {
         cmd_tc(argc, argv);
     } else if (!strncasecmp(cmd, "run", 8)) {
         cmd_run(argc, argv);

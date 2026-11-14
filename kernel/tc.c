@@ -584,6 +584,10 @@ static void p_primary(void)
                 { "close", 6, 1 }, { "seek", 12, 3 },
                 { "stat", 13, 2 }, { "statx", 19, 2 },
                 { "reboot", 8, 0 }, { "shutdown", 9, 0 },
+                { "netinfo", 21, 1 }, { "tcp_connect", 22, 2 },
+                { "tcp_send", 23, 3 }, { "tcp_recv", 24, 3 },
+                { "tcp_close", 25, 1 }, { "tcp_listen", 26, 1 },
+                { "tcp_accept", 27, 1 }, { "dhcp", 28, 0 },
                 { NULL, 0, 0 }
             };
             int nr = -1;
@@ -593,6 +597,20 @@ static void p_primary(void)
                     nr = bi[i].nr;
                     break;
                 }
+            }
+            if (!strcmp(name, "ip4")) {
+                if (nargs != 4) { fail("ip4 needs 4 arguments"); return; }
+                e8(0x5A); e8(0x59); e8(0x5E); e8(0x5F);   /* d,c,b,a */
+                e8(0x48); e8(0x89); e8(0xF8);             /* mov rax,rdi */
+                e8(0x48); e8(0xC1); e8(0xE0); e8(0x18);   /* shl rax,24 */
+                e8(0x49); e8(0x89); e8(0xF0);             /* mov r8,rsi */
+                e8(0x49); e8(0xC1); e8(0xE0); e8(0x10);   /* shl r8,16 */
+                e8(0x4C); e8(0x09); e8(0xC0);             /* or rax,r8 */
+                e8(0x49); e8(0x89); e8(0xC8);             /* mov r8,rcx */
+                e8(0x49); e8(0xC1); e8(0xE0); e8(0x08);   /* shl r8,8 */
+                e8(0x4C); e8(0x09); e8(0xC0);             /* or rax,r8 */
+                e8(0x48); e8(0x09); e8(0xD0);             /* or rax,rdx */
+                return;
             }
             if (nr >= 0) {
                 /* 参数按 rdi,rsi,rdx,rcx,r8,r9 反向弹出 */

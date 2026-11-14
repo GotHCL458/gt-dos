@@ -59,6 +59,14 @@ a FAT16 file system, user accounts and a bilingual (Chinese/English) shell.
 | 8 | `SYS_REBOOT` | 18 | `SYS_LIBSYM` |
 | 9 | `SYS_SHUTDOWN` | 19 | `SYS_STATX` |
 | | | 20 | `SYS_IPRINT` |
+| | | 21 | `SYS_NETINFO` |
+| | | 22 | `SYS_TCP_CONNECT` |
+| | | 23 | `SYS_TCP_SEND` |
+| | | 24 | `SYS_TCP_RECV` |
+| | | 25 | `SYS_TCP_CLOSE` |
+| | | 26 | `SYS_TCP_LISTEN` |
+| | | 27 | `SYS_TCP_ACCEPT` |
+| | | 28 | `SYS_DHCP` |
 
 - A small `open/read/write/close/seek` fd layer over exFAT (fds 0/1/2 are the console),
   plus directory handles through `SYS_OPENDIR`/`SYS_READDIR`
@@ -72,6 +80,17 @@ a FAT16 file system, user accounts and a bilingual (Chinese/English) shell.
   `gtlib.h`, `time.h`, `stdint.h`, `ctype.h`, `stdio.h`, `string.h`, `stdlib.h`)
   are seeded onto the disk's `INCLUDE` directory
 
+**Networking**
+- RTL8139 PCI NIC driver with polled RX/TX rings (no NIC interrupts)
+- Ethernet II + ARP cache; IPv4 with header checksums; ICMP echo (`PING`)
+- UDP with a DHCP client (`NET` / `DHCP`); link, MAC, IP, mask, gateway and DNS are reported
+- TCP: active and passive open, MSS option, sequence/ACK, receive window,
+  retransmission, in-order buffering, and FIN teardown
+  (`FIN_WAIT_1/2`, `CLOSE_WAIT`, `LAST_ACK`, `CLOSING`)
+- Socket syscalls 21–28, plus TC builtins `ip4`, `tcp_connect`, `tcp_send`,
+  `tcp_recv`, `tcp_close`; shell client `TCP <ip> <port> [text]`
+- Default QEMU user-network address is `10.0.2.15/24`, gateway `10.0.2.2`
+
 **Built-in C compiler (TC) & SDK**
 - `TC <src.c> [-o out.gtp]` compiles a C subset straight to x86-64 machine code and
   writes a `.gtp` program that `RUN` can execute — no external toolchain involved
@@ -79,7 +98,8 @@ a FAT16 file system, user accounts and a bilingual (Chinese/English) shell.
   up to 6 parameters, recursion, `if/else`, `while`, `for`, `break`/`continue`/`return`,
   arithmetic/bitwise/comparison operators, `&& || !`, string literals and comments
 - Builtins (`\SDK\TC.H`): `putc`, `print`, `puts`, `print_int`, `getc`, `exit`, `sleep`,
-  `uptime`, `open`, `read`, `write`, `close`, `seek`, `stat`, `statx`, `reboot`, `shutdown`
+  `uptime`, `open`, `read`, `write`, `close`, `seek`, `stat`, `statx`, `reboot`, `shutdown`;
+  `\SDK\NET.H` adds `ip4`, `tcp_connect`, `tcp_send`, `tcp_recv`, `tcp_close`
 - SDK at `\SDK\` (plain, read-only): `TC.H`, `HELLO.C`, `FIB.C`, `README.TXT`;
   `PUT` + `APPEND` let you author sources line by line inside GT-DOS
 - Program layout: 64 KB code at `0x600000`, data/globals at `0x610000`
@@ -176,6 +196,8 @@ Type `HELP` (or `?`) inside GT-DOS for the full list. Commands support both long
 
 **Display and hardware** — `APIC`, `IRQSTAT`
 
+**Network** — `NET`, `DHCP`, `PING <ip> [count]`, `TCP <ip> <port> [text]`
+
 **Programs** — `RUN <file.gtp>` (administrator privileges required),
 `TC <src.c> [-o out.gtp]` (C subset compiler)
 
@@ -200,6 +222,8 @@ kernel/
   exec.c             RUN program loader (loads a .gtp into PROG_BASE)
   gtlib.c            .gtl shared-library loader and symbol table
   tc.c               built-in C subset compiler (x86-64 code generator)
+  net.c              RTL8139 driver + ARP/IPv4/ICMP/UDP/DHCP
+  tcp.c              TCP sockets (handshake, data, retransmit, close)
   crypto.c           AES-128-CBC (T-table fast path) + CRC32
   timer.c keyboard.c mouse.c serial.c    devices
   softirq.c          deferred work for input bottom halves
@@ -210,13 +234,14 @@ kernel/
 tools/
   mkfont.py          font generator (GDI -> 4-bit grayscale font.gtd + cpm.gtd)
   gtmkfs.c           standalone exFAT formatter/populator + AES encryption (pure C)
-  sdk/               in-system SDK: tc.h, hello.c, fib.c, readme.txt
+  sdk/               in-system SDK: tc.h, net.h, hello.c, fib.c, net.c, readme.txt
   hello.asm          example program (INT 0x21 SYS_WRITE/SYS_EXIT), seeded as HELLO.GTP
   demo.asm           example program: .gtd read/seek, stat, .gtl library call (DEMO.GTP)
   sample_lib.asm     example shared library exporting add/mul (SAMPLE.GTL)
   test_v03.py        end-to-end test: OOBE, login, file commands
   test_v04.py        regression: single C: disk, GT-DOS directory, attributes, protection
   test_syscall.py    INT 0x21 gate and RUN program-execution test
+  test_net.py        RTL8139/ARP/ICMP/DHCP/TCP test with a host echo server
 build.py             build script and image assembler
 ```
 
@@ -225,7 +250,7 @@ assert on real boot output rather than on mocks.
 
 ## Notes and Limitations
 
-- The kernel currently fits in 281 sectors (143,676 bytes), loaded between `0x10000` and `0x80000`.
+- The kernel currently fits in 314 sectors (160,364 bytes), loaded between `0x10000` and `0x80000`.
   Growing past that window requires relocating the load address.
 - Large zero-initialised buffers (`font_buf`, the code page table, the back buffer) are placed in
   a `NOLOAD` `.highbss` section above 1 MB. If they were in ordinary `.bss` they would overlap the
@@ -233,6 +258,8 @@ assert on real boot output rather than on mocks.
 - TC implements a C subset: no arrays, structs, unions, floats, `switch`, `?:`, `++/--` or
   variadic functions. Programs are limited to 64 KB of code and 16 KB of globals/strings.
 - Shell file commands (`TYPE`/`CP`/`MV`/`HEAD`/`WC`/`APPEND`) operate on files up to 64 KB.
+- The network stack is IPv4-only and does not reassemble IP fragments; TCP has no
+  congestion control, SACK or window scaling, and `TCP_ACCEPT` handles one connection.
 - Building requires Windows; the kernel itself is fully freestanding and does not depend on the
   host platform.
 

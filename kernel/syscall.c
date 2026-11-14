@@ -55,6 +55,35 @@ void syscall_handle(struct regs *r)
         kprintf("%d", (int)r->rdi);
         r->rax = 0;
         break;
+    case SYS_NETINFO:
+        if (!r->rdi) { r->rax = (u64)-1; break; }
+        net_init();
+        net_get_info((struct net_info *)r->rdi);
+        r->rax = 0;
+        break;
+    case SYS_TCP_CONNECT:
+        r->rax = (u64)tcp_connect((u32)r->rdi, (u16)r->rsi);
+        break;
+    case SYS_TCP_SEND:
+        r->rax = (u64)tcp_send((int)r->rdi, (const void *)r->rsi, (u32)r->rdx);
+        break;
+    case SYS_TCP_RECV:
+        r->rax = (u64)tcp_recv((int)r->rdi, (void *)r->rsi, (u32)r->rdx);
+        break;
+    case SYS_TCP_CLOSE:
+        r->rax = (u64)tcp_close((int)r->rdi);
+        break;
+    case SYS_TCP_LISTEN:
+        r->rax = (u64)tcp_listen((u16)r->rdi);
+        break;
+    case SYS_TCP_ACCEPT:
+        r->rax = (u64)tcp_accept((int)r->rdi);
+        break;
+    case SYS_DHCP:
+        cpu_sti();
+        r->rax = (u64)net_dhcp();
+        cpu_cli();
+        break;
     case SYS_OPENDIR:
         r->rax = (u64)fat_fd_opendir((const char *)r->rdi);
         break;

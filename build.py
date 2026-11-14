@@ -154,6 +154,8 @@ C_SOURCES = [
     "crypto.c",
     "gtlib.c",
     "tc.c",
+    "net.c",
+    "tcp.c",
     "ata.c",
     "fat.c",
     "cfg.c",
@@ -445,6 +447,8 @@ def run_qemu(hd, nogui=False, debug=False):
         "-monitor", "none",
         "-serial", "stdio",
         "-rtc", "base=localtime",
+        "-netdev", "user,id=n0",
+        "-device", "rtl8139,netdev=n0",
         "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
     ]
     if nogui:

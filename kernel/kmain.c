@@ -49,6 +49,15 @@ void kmain(void)
         kprintf("[boot] no ATA disk (attach one with qemu -hda)\n");
     }
 
+    /* 5b) 网络 (RTL8139, 默认 10.0.2.15/24; DHCP 可用 NET/DHCP 命令) */
+    if (net_init()) {
+        char ipbuf[20];
+        net_ip_str(net_ip(), ipbuf);
+        kprintf("[boot] net: RTL8139 %s/24\n", ipbuf);
+    } else {
+        kprintf("[boot] no network card\n");
+    }
+
     /* 6) 配置 + 用户库 */
     if (cfg_load())
         kprintf("[boot] config loaded (host='%s', oobe=%s)\n",
