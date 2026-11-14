@@ -26,6 +26,7 @@
  *   17  SYS_LIBLOAD path (.gtl)                            句柄或 -1
  *   18  SYS_LIBSYM  handle, name                           地址或 0
  *   19  SYS_STATX   path, gt_statx*                        0 或 -1
+ *   20  SYS_IPRINT  value                                  0 (打印十进制)
  *
  * SYS_STAT 返回 {size, attr, is_dir}; SYS_STATX 额外带 exFAT 厂商扩展:
  * flags (0x01 = 内容加密), version, crc32, owner[16], mode.
@@ -33,6 +34,7 @@
  * fd 0/1/2 为控制台(stdin/stdout/stderr), 文件 fd 从 3 起.
  * 文件系统为 exFAT; 配套头: unistd.h / stat.h / dirent.h / gtlib.h /
  * time.h / stdint.h / ctype.h / stdio.h / string.h / stdlib.h.
+ * 系统内 C 编译器 TC: TC <源.c> [-o 输出.gtp], SDK 位于 \SDK\.
  */
 #ifndef _GT_GTOS_H
 #define _GT_GTOS_H

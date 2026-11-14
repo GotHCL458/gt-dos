@@ -153,6 +153,7 @@ C_SOURCES = [
     "lib.c",
     "crypto.c",
     "gtlib.c",
+    "tc.c",
     "ata.c",
     "fat.c",
     "cfg.c",
@@ -305,6 +306,16 @@ def write_manifest(assets):
         with open(host, "wb") as f:
             f.write(payload)
         lines.append(f"F \\{name.lower()} {host} 0x20 SYSTEM 0")
+
+    # 系统内 SDK: 明文只读, 供 TC 编译示例程序
+    sdk_dir = os.path.join(ROOT, "tools", "sdk")
+    if os.path.isdir(sdk_dir):
+        lines.append("D \\sdk 0x10 SYSTEM")
+        for fn in sorted(os.listdir(sdk_dir)):
+            host = os.path.join(sdk_dir, fn)
+            if os.path.isfile(host):
+                lines.append(f"F \\sdk\\{fn.lower()} {host} 0x21 SYSTEM 0")
+
     mf = os.path.join(BUILD, "mkfs.txt")
     with open(mf, "w", encoding="ascii") as f:
         f.write("\n".join(lines) + "\n")

@@ -93,6 +93,31 @@ def main():
     check("demo exit code", vm.expect("exited with code 0", 3000), vm.buf[-300:])
 
     vm.buf = ""
+    vm.cmd("tc sdk\\hello.c", 1500)
+    check("tc compiles hello", vm.expect("Compiled ", 6000), vm.buf[-300:])
+    vm.cmd("run hello.gtp", 1500)
+    check("tc hello output", vm.expect("Hello from TC!", 4000), vm.buf[-300:])
+    check("tc print_int", vm.expect("42", 3000), vm.buf[-300:])
+    check("tc hello exit", vm.expect("exited with code 0", 3000), vm.buf[-300:])
+
+    vm.buf = ""
+    vm.cmd("tc sdk\\fib.c", 1500)
+    check("tc compiles fib", vm.expect("Compiled ", 6000), vm.buf[-300:])
+    vm.cmd("run fib.gtp", 2000)
+    check("tc fib recursion + loop",
+          vm.expect("0 1 1 2 3 5 8 13 21 34", 4000), vm.buf[-300:])
+
+    vm.buf = ""
+    vm.cmd("put t.c int main(void){")
+    vm.cmd('append t.c print("PUT OK\\n");')
+    vm.cmd("append t.c return 0;")
+    vm.cmd("append t.c }")
+    vm.cmd("tc t.c", 1500)
+    check("tc compiles put/append source", vm.expect("Compiled ", 6000), vm.buf[-300:])
+    vm.cmd("run t.gtp", 1500)
+    check("tc put/append program runs", vm.expect("PUT OK", 4000), vm.buf[-300:])
+
+    vm.buf = ""
     vm.cmd("run nope.gtp", 1000)
     check("missing file reported", vm.expect("RUN failed", 3000), vm.buf[-200:])
 

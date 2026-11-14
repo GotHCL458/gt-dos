@@ -1,10 +1,14 @@
 /* 命令行解释器 (类 DOS Shell). 输入层在 ui.c, 提供行编辑/命令历史/彩色输出/
-   滚轮回看. 命令涵盖 FAT16/32 磁盘操作, 用户系统, 配置持久化, 电源管理
+   滚轮回看. 命令涵盖 exFAT 磁盘操作, 用户系统, 配置持久化, 电源管理
    (Ctrl+Alt+Del 热重启). */
 #include "gt.h"
 
 #define LINE_MAX   160
 #define ARG_MAX    8
+#define FILE_BUF_MAX 65536
+
+/* 文件命令共用缓冲 (TYPE/CP/MV/HEAD/WC), 避免 4KB 截断 */
+static u8 file_buf[FILE_BUF_MAX] __attribute__((section(".highbss")));
 
 /* PIT 通道2 分频, 约 896 Hz 的提示音 */
 #define PIT_FREQ_DIV 1331
@@ -536,7 +540,7 @@ static void cmd_mount(void)
             kprintf(" %c:", fat_drive_letter(i));
         kprintf("\n");
     } else {
-        err("Mount failed: no FAT16/32 volume.\n");
+        err("Mount failed: no exFAT volume.\n");
     }
 }
 
@@ -563,6 +567,66 @@ static void cmd_run(int argc, char **argv)
         return;
     }
     ok("Program exited with code %d.\n", code);
+}
+
+/* TC: 编译 C 子集 -> .gtp (默认输出到当前目录, 可用 -o 指定) */
+static void cmd_tc(int argc, char **argv)
+{
+    if (argc < 2) {
+        err("Usage: TC <src.c> [-o out.gtp]\n");
+        kprintf("SDK: \\SDK\\TC.H  \\SDK\\HELLO.C  \\SDK\\FIB.C\n");
+        return;
+    }
+    if (!fat_ready()) { err("No volume mounted.\n"); return; }
+
+    char sa[PATHMAX];
+    resolve_path(argv[1], sa);
+    if (read_denied(sa))
+        return;
+
+    static u8 srcbuf[TC_SRC_MAX] __attribute__((section(".highbss")));
+    u32 got = 0;
+    if (!fat_read_file(sa, srcbuf, sizeof(srcbuf) - 1, &got) || got == 0) {
+        err("Cannot read %s\n", sa);
+        return;
+    }
+    srcbuf[got] = 0;
+
+    u32 plen = 0;
+    const u8 *prog = tc_compile((const char *)srcbuf, got, &plen);
+    if (!prog) {
+        err("TC: %s\n", tc_error());
+        return;
+    }
+
+    char out[PATHMAX];
+    const char *oarg = 0;
+    for (int i = 2; i < argc; i++)
+        if (!strcmp(argv[i], "-o") && i + 1 < argc) { oarg = argv[i + 1]; break; }
+
+    if (oarg) {
+        resolve_path(oarg, out);
+    } else {
+        const char *base = sa;
+        for (const char *p = sa; *p; p++)
+            if (*p == '\\' || *p == '/') base = p + 1;
+        int k = 0;
+        out[k++] = fat_drive();
+        out[k++] = ':';
+        out[k++] = '\\';
+        const char *q = base;
+        while (*q && *q != '.' && k < PATHMAX - 8)
+            out[k++] = *q++;
+        const char *ext = ".gtp";
+        while (*ext && k < PATHMAX - 1)
+            out[k++] = *ext++;
+        out[k] = 0;
+    }
+
+    if (fat_create(out, prog, plen))
+        ok("Compiled %u bytes -> %s\n", plen, out);
+    else
+        err("Cannot write %s (use -o in your home directory)\n", out);
 }
 
 static void cmd_df(void)
@@ -785,13 +849,15 @@ static void cmd_cp(int argc, char **argv)
     resolve_path(argv[2], da);
     if (read_denied(sa)) return;
 
-    static u8 buf[4096];
+    struct fat_dirent d;
+    if (!fat_find(sa, &d) || d.is_dir) { err("Cannot read %s\n", sa); return; }
+    if (d.size >= FILE_BUF_MAX) { err("File too large (max 64 KB): %s\n", sa); return; }
     u32 got = 0;
-    if (!fat_read_file(sa, buf, sizeof(buf), &got)) {
+    if (!fat_read_file(sa, file_buf, FILE_BUF_MAX - 1, &got)) {
         err("Cannot read %s\n", sa);
         return;
     }
-    if (!fat_create(da, buf, got)) {
+    if (!fat_create(da, file_buf, got)) {
         err("Cannot write %s\n", da);
         return;
     }
@@ -806,13 +872,15 @@ static void cmd_mv(int argc, char **argv)
     resolve_path(argv[2], da);
     if (read_denied(sa)) return;
 
-    static u8 buf[4096];
+    struct fat_dirent d;
+    if (!fat_find(sa, &d) || d.is_dir) { err("Cannot read %s\n", sa); return; }
+    if (d.size >= FILE_BUF_MAX) { err("File too large (max 64 KB): %s\n", sa); return; }
     u32 got = 0;
-    if (!fat_read_file(sa, buf, sizeof(buf), &got)) {
+    if (!fat_read_file(sa, file_buf, FILE_BUF_MAX - 1, &got)) {
         err("Cannot read %s\n", sa);
         return;
     }
-    if (!fat_create(da, buf, got)) {
+    if (!fat_create(da, file_buf, got)) {
         err("Cannot write %s\n", da);
         return;
     }
@@ -839,15 +907,14 @@ static void cmd_head(int argc, char **argv)
     resolve_path(argv[fi], abs);
     if (read_denied(abs)) return;
 
-    static u8 buf[4096];
     u32 got = 0;
-    if (!fat_read_file(abs, buf, sizeof(buf) - 1, &got)) {
+    if (!fat_read_file(abs, file_buf, FILE_BUF_MAX - 1, &got)) {
         err("File not found: %s\n", abs);
         return;
     }
-    buf[got] = '\0';
+    file_buf[got] = '\0';
     int shown = 0;
-    char *p = (char *)buf;
+    char *p = (char *)file_buf;
     while (*p && shown < lines) {
         char *nl = p;
         while (*nl && *nl != '\n')
@@ -870,17 +937,19 @@ static void cmd_wc(int argc, char **argv)
     resolve_path(argv[1], abs);
     if (read_denied(abs)) return;
 
-    static u8 buf[4096];
+    struct fat_dirent d;
+    if (!fat_find(abs, &d) || d.is_dir) { err("File not found: %s\n", abs); return; }
+    if (d.size >= FILE_BUF_MAX) { err("File too large (max 64 KB): %s\n", abs); return; }
     u32 got = 0;
-    if (!fat_read_file(abs, buf, sizeof(buf) - 1, &got)) {
+    if (!fat_read_file(abs, file_buf, FILE_BUF_MAX - 1, &got)) {
         err("File not found: %s\n", abs);
         return;
     }
-    buf[got] = '\0';
+    file_buf[got] = '\0';
     u32 lines = 0, words = 0, bytes = got;
     bool in_w = false;
     for (u32 i = 0; i < got; i++) {
-        char c = (char)buf[i];
+        char c = (char)file_buf[i];
         if (c == '\n')
             lines++;
         if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
@@ -932,15 +1001,17 @@ static void cmd_type(const char *arg)
     resolve_path(arg, abs);
     if (read_denied(abs)) return;
 
-    static u8 buf[4096];
+    struct fat_dirent d;
+    if (!fat_find(abs, &d) || d.is_dir) { err("File not found: %s\n", abs); return; }
+    if (d.size >= FILE_BUF_MAX) { err("File too large (max 64 KB): %s\n", abs); return; }
     u32 got = 0;
-    if (!fat_read_file(abs, buf, sizeof(buf) - 1, &got)) {
+    if (!fat_read_file(abs, file_buf, FILE_BUF_MAX - 1, &got)) {
         err("File not found: %s\n", abs);
         return;
     }
-    buf[got] = '\0';
-    console_write((const char *)buf, got);
-    if (got && buf[got - 1] != '\n')
+    file_buf[got] = '\0';
+    console_write((const char *)file_buf, got);
+    if (got && file_buf[got - 1] != '\n')
         console_putc('\n');
 }
 
@@ -956,6 +1027,33 @@ static void cmd_put(const char *name, const char *text)
         ok("Wrote %u bytes to %s\n", len, abs);
     else
         err("Failed to create %s\n", abs);
+}
+
+/* APPEND: 追加一行文本 (便于逐行写入 C 源文件) */
+static void cmd_append(const char *name, const char *text)
+{
+    if (!name) { err("Usage: APPEND <file> <text>\n"); return; }
+    if (!fat_ready()) { err("No volume mounted.\n"); return; }
+    if (!text) text = "";
+    char abs[PATHMAX];
+    resolve_path(name, abs);
+    if (read_denied(abs)) return;
+
+    u32 got = 0;
+    struct fat_dirent fd;
+    if (fat_find(abs, &fd) && !fd.is_dir)
+        fat_read_file(abs, file_buf, FILE_BUF_MAX - 1, &got);
+    size_t tl = strlen(text);
+    if (got + tl + 2 >= FILE_BUF_MAX) { err("File too large (max 64 KB)\n"); return; }
+    if (got && file_buf[got - 1] != '\n')
+        file_buf[got++] = '\n';
+    memcpy(file_buf + got, text, tl);
+    got += (u32)tl;
+    file_buf[got++] = '\n';
+    if (fat_create(abs, file_buf, got))
+        ok("Appended %u bytes to %s\n", (u32)tl + 1, abs);
+    else
+        err("Failed to write %s\n", abs);
 }
 
 static void cmd_del(const char *name)
@@ -1090,6 +1188,8 @@ static void execute(char *line)
         cmd_config(argc, argv);
     } else if (!strncasecmp(cmd, "oobe", 8)) {
         cmd_oobe();
+    } else if (!strncasecmp(cmd, "tc", 8)) {
+        cmd_tc(argc, argv);
     } else if (!strncasecmp(cmd, "run", 8)) {
         cmd_run(argc, argv);
     } else if (!strncasecmp(cmd, "apic", 8)) {
@@ -1127,6 +1227,21 @@ static void execute(char *line)
             text[used] = '\0';
         }
         cmd_put(argc > 1 ? argv[1] : 0, text);
+    } else if (!strncasecmp(cmd, "append", 8)) {
+        static char text[LINE_MAX];
+        text[0] = '\0';
+        size_t used = 0;
+        for (int i = 2; i < argc; i++) {
+            size_t l = strlen(argv[i]);
+            if (used + l + 2 >= sizeof(text))
+                break;
+            if (used)
+                text[used++] = ' ';
+            memcpy(text + used, argv[i], l);
+            used += l;
+            text[used] = '\0';
+        }
+        cmd_append(argc > 1 ? argv[1] : 0, text);
     } else if (!strncasecmp(cmd, "del", 8) || !strncasecmp(cmd, "rm", 8)) {
         cmd_del(argc > 1 ? argv[1] : 0);
     } else if (!strncasecmp(cmd, "mkdir", 8) || !strncasecmp(cmd, "md", 8)) {

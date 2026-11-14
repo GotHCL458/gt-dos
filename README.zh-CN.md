@@ -57,6 +57,7 @@ FAT16 文件系统、用户账户与中英双语 Shell。
 | 7 | `SYS_UPTIME` | 17 | `SYS_LIBLOAD` |
 | 8 | `SYS_REBOOT` | 18 | `SYS_LIBSYM` |
 | 9 | `SYS_SHUTDOWN` | 19 | `SYS_STATX` |
+| | | 20 | `SYS_IPRINT` |
 
 - 基于 exFAT 的 `open/read/write/close/seek` fd 层（fd 0/1/2 为控制台），
   目录句柄经 `SYS_OPENDIR`/`SYS_READDIR` 遍历
@@ -67,6 +68,19 @@ FAT16 文件系统、用户账户与中英双语 Shell。
 - `kernel/include/` 下的公开头文件（`gtos.h`、`unistd.h`、`stat.h`、`dirent.h`、`gtlib.h`、
   `time.h`、`stdint.h`、`ctype.h`、`stdio.h`、`string.h`、`stdlib.h`）
   被种子写入磁盘的 `INCLUDE` 目录
+
+**内置 C 编译器 (TC) 与 SDK**
+- `TC <源.c> [-o 输出.gtp]` 直接把 C 子集编译为 x86-64 机器码，生成可由 `RUN`
+  执行的 `.gtp` 程序，全程不依赖外部工具链
+- 支持：`int`/`char`/指针变量、常量初始化的全局变量、最多 6 个参数的函数与递归、
+  `if/else`、`while`、`for`、`break`/`continue`/`return`、算术/位/比较运算、
+  `&& || !`、字符串字面量与注释
+- 内置函数（`\SDK\TC.H`）：`putc`、`print`、`puts`、`print_int`、`getc`、`exit`、
+  `sleep`、`uptime`、`open`、`read`、`write`、`close`、`seek`、`stat`、`statx`、
+  `reboot`、`shutdown`
+- `\SDK\` 提供明文只读 SDK：`TC.H`、`HELLO.C`、`FIB.C`、`README.TXT`；
+  配合 `PUT` 与 `APPEND` 可在系统内逐行编写源码
+- 程序布局：代码 64KB 位于 `0x600000`，数据/全局区位于 `0x610000`
 
 **exFAT 厂商扩展**
 - 每个文件/目录的目录项集附带 3 个厂商扩展项（类型 `0xE0`）：
@@ -151,11 +165,11 @@ qemu-system-x86_64 -hda gt-dos-hd.img -boot c
 
 **文件与磁盘** — `CD`、`PWD`、`DRIVES`、`DIR`/`LS [/A]`、`TYPE`/`CAT`、`PUT`、`DEL`/`RM`、
 `MKDIR`/`MD`、`RMDIR`、`TOUCH`、`ATTRIB`、`CP`/`COPY`、`MV`/`REN`、`HEAD`、`WC`、`TREE`、
-`DF`、`DISK`、`MOUNT`
+`DF`、`DISK`、`MOUNT`、`APPEND`
 
 **显示与硬件** — `APIC`、`IRQSTAT`
 
-**程序** — `RUN <文件.gtp>`（需要管理员权限）
+**程序** — `RUN <文件.gtp>`（需要管理员权限）、`TC <源.c> [-o 输出.gtp]`（C 子集编译器）
 
 **电源** — `REBOOT`、`SHUTDOWN`/`POWEROFF`（需要管理员权限）
 
@@ -177,6 +191,7 @@ kernel/
   syscall.c          INT 0x21 系统调用分派
   exec.c             RUN 程序加载器 (把 .gtp 载入 PROG_BASE)
   gtlib.c            .gtl 共享库加载器与符号表
+  tc.c               内置 C 子集编译器 (x86-64 代码生成)
   crypto.c           系统文件加密 (AES-128-CBC, T 表) + CRC32
   timer.c keyboard.c mouse.c serial.c    设备驱动
   softirq.c          输入下半部的延迟处理
@@ -187,6 +202,7 @@ kernel/
 tools/
   mkfont.py          字模生成器 (GDI -> 4bit 灰度 font.gtd + cpm.gtd)
   gtmkfs.c           独立 exFAT 格式化/填充 + AES 加密工具 (纯 C)
+  sdk/               系统内 SDK: tc.h, hello.c, fib.c, readme.txt
   hello.asm          示例程序 (INT 0x21 SYS_WRITE/SYS_EXIT), 种子为 HELLO.GTP
   demo.asm           示例程序: .gtd 读取/seek、stat、.gtl 库调用 (DEMO.GTP)
   sample_lib.asm     示例共享库, 导出 add/mul (SAMPLE.GTL)
@@ -201,11 +217,14 @@ build.py             构建脚本与镜像组装
 
 ## 说明与限制
 
-- 内核目前为 207 扇区（105,944 字节），加载区间为 `0x10000` 到 `0x80000`。
+- 内核目前为 281 扇区（143,676 字节），加载区间为 `0x10000` 到 `0x80000`。
   若要继续增大，需要调整加载地址。
 - 大块零初始化缓冲（`font_buf`、码点表、后台缓冲）被放置在 1 MB 以上、
   标记为 `NOLOAD` 的 `.highbss` 段。若放在普通 `.bss` 中，会与 `0xA0000`
   处的 VGA 显存孔径重叠并破坏帧缓冲。
+- TC 仅实现 C 子集：不支持数组、结构体、联合、浮点、`switch`、`?:`、`++/--`
+  与可变参数函数；程序代码上限 64KB，全局/字符串区上限 16KB。
+- Shell 文件命令（`TYPE`/`CP`/`MV`/`HEAD`/`WC`/`APPEND`）处理不超过 64KB 的文件。
 - 构建过程需要 Windows；但内核本身是完全独立的，不依赖宿主平台。
 
 ## 许可证

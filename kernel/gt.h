@@ -268,6 +268,11 @@ struct gt_statx {
 };
 int  fat_statx(const char *path, struct gt_statx *out);
 
+/* ------------------------------------------------- 内置 C 编译器 (TC) */
+#define TC_SRC_MAX 32768
+const u8  *tc_compile(const char *src, u32 len, u32 *out_len);
+const char *tc_error(void);
+
 /* ------------------------------------------------------------------ 控制台 */
 void console_init(void);
 void console_putc(char c);
@@ -317,7 +322,8 @@ enum {
     SYS_OPEN = 5, SYS_CLOSE = 6, SYS_UPTIME = 7, SYS_REBOOT = 8,
     SYS_SHUTDOWN = 9, SYS_GETTIME = 10, SYS_PUTS = 11,
     SYS_SEEK = 12, SYS_STAT = 13, SYS_OPENDIR = 14, SYS_READDIR = 15,
-    SYS_SLEEP = 16, SYS_LIBLOAD = 17, SYS_LIBSYM = 18, SYS_STATX = 19
+    SYS_SLEEP = 16, SYS_LIBLOAD = 17, SYS_LIBSYM = 18, SYS_STATX = 19,
+    SYS_IPRINT = 20
 };
 void syscall_handle(struct regs *r);    /* 由 isr_handler 分派 */
 

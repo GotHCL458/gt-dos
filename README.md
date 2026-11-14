@@ -58,6 +58,7 @@ a FAT16 file system, user accounts and a bilingual (Chinese/English) shell.
 | 7 | `SYS_UPTIME` | 17 | `SYS_LIBLOAD` |
 | 8 | `SYS_REBOOT` | 18 | `SYS_LIBSYM` |
 | 9 | `SYS_SHUTDOWN` | 19 | `SYS_STATX` |
+| | | 20 | `SYS_IPRINT` |
 
 - A small `open/read/write/close/seek` fd layer over exFAT (fds 0/1/2 are the console),
   plus directory handles through `SYS_OPENDIR`/`SYS_READDIR`
@@ -70,6 +71,18 @@ a FAT16 file system, user accounts and a bilingual (Chinese/English) shell.
 - Public headers under `kernel/include/` (`gtos.h`, `unistd.h`, `stat.h`, `dirent.h`,
   `gtlib.h`, `time.h`, `stdint.h`, `ctype.h`, `stdio.h`, `string.h`, `stdlib.h`)
   are seeded onto the disk's `INCLUDE` directory
+
+**Built-in C compiler (TC) & SDK**
+- `TC <src.c> [-o out.gtp]` compiles a C subset straight to x86-64 machine code and
+  writes a `.gtp` program that `RUN` can execute — no external toolchain involved
+- Supported: `int`/`char`/pointer variables, constant-initialised globals, functions with
+  up to 6 parameters, recursion, `if/else`, `while`, `for`, `break`/`continue`/`return`,
+  arithmetic/bitwise/comparison operators, `&& || !`, string literals and comments
+- Builtins (`\SDK\TC.H`): `putc`, `print`, `puts`, `print_int`, `getc`, `exit`, `sleep`,
+  `uptime`, `open`, `read`, `write`, `close`, `seek`, `stat`, `statx`, `reboot`, `shutdown`
+- SDK at `\SDK\` (plain, read-only): `TC.H`, `HELLO.C`, `FIB.C`, `README.TXT`;
+  `PUT` + `APPEND` let you author sources line by line inside GT-DOS
+- Program layout: 64 KB code at `0x600000`, data/globals at `0x610000`
 
 **exFAT vendor extension**
 - Each file/directory entry set carries three vendor entries (type `0xE0`):
@@ -159,11 +172,12 @@ Type `HELP` (or `?`) inside GT-DOS for the full list. Commands support both long
 
 **Files and disks** — `CD`, `PWD`, `DRIVES`, `DIR`/`LS [/A]`, `TYPE`/`CAT`, `PUT`, `DEL`/`RM`,
 `MKDIR`/`MD`, `RMDIR`, `TOUCH`, `ATTRIB`, `CP`/`COPY`, `MV`/`REN`, `HEAD`, `WC`, `TREE`,
-`DF`, `DISK`, `MOUNT`
+`DF`, `DISK`, `MOUNT`, `APPEND`
 
 **Display and hardware** — `APIC`, `IRQSTAT`
 
-**Programs** — `RUN <file.gtp>` (administrator privileges required)
+**Programs** — `RUN <file.gtp>` (administrator privileges required),
+`TC <src.c> [-o out.gtp]` (C subset compiler)
 
 **Power** — `REBOOT`, `SHUTDOWN`/`POWEROFF` (administrator privileges required)
 
@@ -185,6 +199,7 @@ kernel/
   syscall.c          INT 0x21 system-call dispatch
   exec.c             RUN program loader (loads a .gtp into PROG_BASE)
   gtlib.c            .gtl shared-library loader and symbol table
+  tc.c               built-in C subset compiler (x86-64 code generator)
   crypto.c           AES-128-CBC (T-table fast path) + CRC32
   timer.c keyboard.c mouse.c serial.c    devices
   softirq.c          deferred work for input bottom halves
@@ -195,6 +210,7 @@ kernel/
 tools/
   mkfont.py          font generator (GDI -> 4-bit grayscale font.gtd + cpm.gtd)
   gtmkfs.c           standalone exFAT formatter/populator + AES encryption (pure C)
+  sdk/               in-system SDK: tc.h, hello.c, fib.c, readme.txt
   hello.asm          example program (INT 0x21 SYS_WRITE/SYS_EXIT), seeded as HELLO.GTP
   demo.asm           example program: .gtd read/seek, stat, .gtl library call (DEMO.GTP)
   sample_lib.asm     example shared library exporting add/mul (SAMPLE.GTL)
@@ -209,11 +225,14 @@ assert on real boot output rather than on mocks.
 
 ## Notes and Limitations
 
-- The kernel currently fits in 207 sectors (105,944 bytes), loaded between `0x10000` and `0x80000`.
+- The kernel currently fits in 281 sectors (143,676 bytes), loaded between `0x10000` and `0x80000`.
   Growing past that window requires relocating the load address.
 - Large zero-initialised buffers (`font_buf`, the code page table, the back buffer) are placed in
   a `NOLOAD` `.highbss` section above 1 MB. If they were in ordinary `.bss` they would overlap the
   `0xA0000` VGA aperture and corrupt the framebuffer.
+- TC implements a C subset: no arrays, structs, unions, floats, `switch`, `?:`, `++/--` or
+  variadic functions. Programs are limited to 64 KB of code and 16 KB of globals/strings.
+- Shell file commands (`TYPE`/`CP`/`MV`/`HEAD`/`WC`/`APPEND`) operate on files up to 64 KB.
 - Building requires Windows; the kernel itself is fully freestanding and does not depend on the
   host platform.
 
