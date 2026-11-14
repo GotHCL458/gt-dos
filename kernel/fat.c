@@ -1055,3 +1055,79 @@ bool fat_touch(const char *name)
     }
     return fat_create(name, "", 0);
 }
+
+/* ---------------------------------------------------- 文件描述符层 (INT 0x21) */
+#define FD_BUFSZ 4096
+static u8 fd_buf[FD_MAX][FD_BUFSZ] __attribute__((section(".highbss")));
+struct fd_ent {
+    bool used; u32 len; u32 pos; bool dirty; char path[160];
+};
+static struct fd_ent fdtab[FD_MAX];
+
+int fat_fd_open(const char *path, int flags)
+{
+    if (!path || !path[0]) return -1;
+    int slot = -1;
+    for (int i = 0; i < FD_MAX; i++)
+        if (!fdtab[i].used) { slot = i; break; }
+    if (slot < 0) return -1;
+
+    struct fat_dirent d;
+    bool exists = fat_find(path, &d);
+    if (!exists) {
+        if (!(flags & O_CREAT)) return -1;
+        if (!fat_create(path, "", 0)) return -1;
+    } else if (flags & O_TRUNC) {
+        fat_create(path, "", 0);
+    }
+    u32 got = 0;
+    if (!fat_read_file(path, fd_buf[slot], FD_BUFSZ, &got)) got = 0;
+    fdtab[slot].used = true;
+    fdtab[slot].len = got;
+    fdtab[slot].pos = 0;
+    fdtab[slot].dirty = false;
+    int n = 0;
+    while (path[n] && n < 159) { fdtab[slot].path[n] = path[n]; n++; }
+    fdtab[slot].path[n] = '\0';
+    return slot + 3;                    /* fd 3..10; 0/1/2 保留给控制台 */
+}
+
+int fat_fd_read(int fd, void *buf, u32 n)
+{
+    if (fd < 3 || fd >= 3 + FD_MAX) return -1;
+    struct fd_ent *e = &fdtab[fd - 3];
+    if (!e->used) return -1;
+    u8 *dst = (u8 *)buf;
+    u32 c = 0;
+    while (c < n && e->pos < e->len) { dst[c++] = fd_buf[fd - 3][e->pos++]; }
+    return (int)c;
+}
+
+int fat_fd_write(int fd, const void *buf, u32 n)
+{
+    if (fd < 3 || fd >= 3 + FD_MAX) return -1;
+    struct fd_ent *e = &fdtab[fd - 3];
+    if (!e->used) return -1;
+    const u8 *src = (const u8 *)buf;
+    u32 c = 0;
+    while (c < n && e->pos < FD_BUFSZ) {
+        fd_buf[fd - 3][e->pos++] = src[c++];
+        if (e->pos > e->len) e->len = e->pos;
+    }
+    e->dirty = true;
+    return (int)c;
+}
+
+int fat_fd_close(int fd)
+{
+    if (fd < 3 || fd >= 3 + FD_MAX) return -1;
+    struct fd_ent *e = &fdtab[fd - 3];
+    if (!e->used) return -1;
+    int rc = 0;
+    if (e->dirty) {
+        if (!fat_create(e->path, fd_buf[fd - 3], e->len)) rc = -1;
+        e->dirty = false;
+    }
+    e->used = false; e->len = 0; e->pos = 0;
+    return rc;
+}

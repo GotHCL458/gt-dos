@@ -1,0 +1,12 @@
+/* GT-DOS 字符分类 (ASCII, 自包含内联) */
+#ifndef _GT_CTYPE_H
+#define _GT_CTYPE_H
+static inline int isdigit(int c){ return c >= '0' && c <= '9'; }
+static inline int isalpha(int c){ return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
+static inline int isalnum(int c){ return isalpha(c) || isdigit(c); }
+static inline int isspace(int c){ return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
+static inline int isupper(int c){ return c >= 'A' && c <= 'Z'; }
+static inline int islower(int c){ return c >= 'a' && c <= 'z'; }
+static inline int toupper(int c){ return islower(c) ? c - 32 : c; }
+static inline int tolower(int c){ return isupper(c) ? c + 32 : c; }
+#endif /* _GT_CTYPE_H */

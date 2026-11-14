@@ -1,7 +1,8 @@
 ; GT-DOS 中断/异常桩 (x86-64 长模式).
 ; CPU 异常 0..31 与硬件 IRQ 统一进入 isr_common, 再调用 C 处理函数.
 ; 桩不再 cli: 是否允许嵌套由 C 层 (isr_handler) 决定, 高优先级才能打断低优先级.
-; IRQ 两套向量: PIC 模式 32..47 (irqN), APIC 模式 64..79+ (airqN).
+; IRQ 两套向量: PIC 模式 48..63 (irqN), APIC 模式 64..79+ (airqN).
+; 系统调用门 INT 0x21 占用向量 33 (PIC 已重映射到 48+, 32..47 空闲).
 
 BITS 64
 section .text
@@ -57,31 +58,31 @@ ISR_NOERR 29
 ISR_ERR   30
 ISR_NOERR 31
 
-; ---- 硬件 IRQ, PIC 重映射后位于 32..47 ----
+; ---- 硬件 IRQ, PIC 重映射后位于 48..63 (腾出 0x21 给系统调用门) ----
 %macro IRQ 2
 global irq%1
 irq%1:
     push qword 0
-    push qword %2                       ; 向量号 32+n
+    push qword %2                       ; 向量号 48+n
     jmp isr_common
 %endmacro
 
-IRQ 0,  32
-IRQ 1,  33
-IRQ 2,  34
-IRQ 3,  35
-IRQ 4,  36
-IRQ 5,  37
-IRQ 6,  38
-IRQ 7,  39
-IRQ 8,  40
-IRQ 9,  41
-IRQ 10, 42
-IRQ 11, 43
-IRQ 12, 44
-IRQ 13, 45
-IRQ 14, 46
-IRQ 15, 47
+IRQ 0,  48
+IRQ 1,  49
+IRQ 2,  50
+IRQ 3,  51
+IRQ 4,  52
+IRQ 5,  53
+IRQ 6,  54
+IRQ 7,  55
+IRQ 8,  56
+IRQ 9,  57
+IRQ 10, 58
+IRQ 11, 59
+IRQ 12, 60
+IRQ 13, 61
+IRQ 14, 62
+IRQ 15, 63
 
 ; ---- 硬件 IRQ, APIC 模式 (向量按优先级类分配, 与 apic.c irq_vec 一致) ----
 %macro AIRQ 2
@@ -114,6 +115,13 @@ global isrspl
 isrspl:
     push qword 0
     push qword 255
+    jmp isr_common
+
+; ---- 系统调用门 INT 0x21 (向量 33): 交由 isr_handler 分派到 syscall_handle ----
+global sysint
+sysint:
+    push qword 0
+    push qword 33
     jmp isr_common
 
 ; ----------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 /* IDT / 异常处理 / 中断控制器 (8259A PIC 或 IO-APIC).
    中断嵌套: handler 执行期间开中断(sti), EOI 延后到 handler 之后.
    PIC 用 in-service 位、APIC 用 TPR 屏蔽同级/低级, 高级可打断.
-   向量: 0..31 CPU 异常, 32..47 PIC IRQ, 64..79 APIC IRQ, 255 杂散. */
+   向量: 0..31 CPU 异常, 48..63 PIC IRQ, 64..79 APIC IRQ, 33 系统调用, 255 杂散. */
 #include "gt.h"
 
 #define IDT_ENTRIES 256
@@ -80,6 +80,7 @@ extern void airq9(void);  extern void airq10(void); extern void airq11(void);
 extern void airq12(void); extern void airq13(void); extern void airq14(void);
 extern void airq15(void);
 extern void isrspl(void);               /* 杂散中断向量 255 */
+extern void sysint(void);               /* 系统调用门 INT 0x21 (向量 33) */
 
 static const char *exception_names[32] = {
     "Divide-by-zero",          "Debug",              "Non-maskable Interrupt",
@@ -116,11 +117,11 @@ void idt_set_apic_gate(u8 vec, u64 base)
 
 void pic_init(void)
 {
-    /* 把 IRQ0..15 重映射到 32..47, 避开 CPU 异常 */
+    /* IRQ0..15 重映射到 48..63, 避开 CPU 异常并腾出 0x21 给系统调用门 */
     outb(PIC1_CMD, 0x11); io_wait();
     outb(PIC2_CMD, 0x11); io_wait();
-    outb(PIC1_DATA, 0x20); io_wait();
-    outb(PIC2_DATA, 0x28); io_wait();
+    outb(PIC1_DATA, 0x30); io_wait();
+    outb(PIC2_DATA, 0x38); io_wait();
     outb(PIC1_DATA, 0x04); io_wait();
     outb(PIC2_DATA, 0x02); io_wait();
     outb(PIC1_DATA, 0x01); io_wait();
@@ -162,6 +163,11 @@ void isr_handler(struct regs *r)
     if (r->int_no == SPURIOUS_VECTOR)
         return;                       /* 杂散中断: 直接返回, 无需 EOI */
 
+    if (r->int_no == SYSCALL_VECTOR) { /* INT 0x21 系统调用门 */
+        syscall_handle(r);
+        return;
+    }
+
     if (r->int_no < 32) {
         cpu_cli();
         kprintf("\n\n*** GT-DOS EXCEPTION %u: %s ***\n",
@@ -183,21 +189,21 @@ void isr_handler(struct regs *r)
             cpu_halt();
     }
 
-    /* 硬件中断: PIC 模式向量 32..47; APIC 模式向量按优先级类分配 (查表).
-     * 未知向量 (如被屏蔽的级联线 0x20 重放): 只发 EOI 吸收, 绝不调用 handler */
+    /* 硬件中断: PIC 模式向量 48..63; APIC 模式向量按优先级类分配 (查表).
+     * 未知向量 (如被屏蔽的级联线重放): 只发 EOI 吸收, 绝不调用 handler */
     int irq = -1;
     if (apic_mode) {
         irq = apic_vector_to_irq(r->int_no);
         if (irq < 0) {
             /* 残留 PIC 向量 (切换前入队的): 发 PIC EOI 吸收 */
-            if (r->int_no >= 32 && r->int_no < 48)
-                pic_send_eoi((int)r->int_no - 32);
+            if (r->int_no >= 48 && r->int_no < 64)
+                pic_send_eoi((int)r->int_no - 48);
             else if (r->int_no >= 32)
                 apic_eoi(0);
             return;
         }
-    } else if (r->int_no >= 32 && r->int_no < 48) {
-        irq = (int)r->int_no - 32;
+    } else if (r->int_no >= 48 && r->int_no < 64) {
+        irq = (int)r->int_no - 48;
     }
     if (irq < 0)
         return;
@@ -260,10 +266,11 @@ void idt_init(void)
         airq8,  airq9,  airq10, airq11, airq12, airq13, airq14, airq15
     };
     for (int i = 0; i < 16; i++) {
-        idt_set_gate((u8)(32 + i), (u64)irqs[i], 0x18, 0x8E);
+        idt_set_gate((u8)(48 + i), (u64)irqs[i], 0x18, 0x8E);
         idt_set_gate((u8)(APIC_VECTOR_BASE + i), (u64)airqs[i], 0x18, 0x8E);
     }
     idt_set_gate(SPURIOUS_VECTOR, (u64)isrspl, 0x18, 0x8E);
+    idt_set_gate(SYSCALL_VECTOR, (u64)sysint, 0x18, 0x8E);   /* INT 0x21 */
 
     __asm__ __volatile__("lidt %0" ::"m"(idtr));
 }

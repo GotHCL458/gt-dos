@@ -1,6 +1,26 @@
 /*
- * GT-DOS 内核 API 摘要 (供用户程序参考), 存放于 D:\INCLUDE\GTOS.H.
- * 这些接口目前以内核内置命令形式提供.
+ * GT-DOS 内核 API 摘要 (供用户程序参考), 存放于 C:\GT-DOS\INCLUDE\GTOS.H.
+ *
+ * 系统调用经 INT 0x21 进入内核: 调用号放 rax, 参数按 SysV 顺序放
+ * rdi/rsi/rdx/r10/r8/r9, 返回值写回 rax. 程序运行于 ring0, 本门是 API
+ * 入口而非权限边界; 文件写仍受登录用户的家目录约束.
+ *
+ *   号  名称        rdi/rsi/rdx 含义                     返回
+ *   0   SYS_EXIT    code                                   不返回(回跳 shell)
+ *   1   SYS_PUTC    ch                                     0
+ *   2   SYS_GETC    -                                      键码
+ *   3   SYS_WRITE   fd, buf, n                             写入字节数
+ *   4   SYS_READ    fd, buf, n                             读取字节数
+ *   5   SYS_OPEN    path, flags                            fd (>=3) 或 -1
+ *   6   SYS_CLOSE   fd                                     0 或 -1
+ *   7   SYS_UPTIME  -                                      毫秒
+ *   8   SYS_REBOOT  -                                      管理员才执行
+ *   9   SYS_SHUTDOWN-                                      管理员才执行
+ *   10  SYS_GETTIME gt_time*                               0 或 -1
+ *   11  SYS_PUTS    str                                    0
+ *
+ * fd 0/1/2 为控制台(stdin/stdout/stderr), 文件 fd 从 3 起.
+ * 配套头: unistd.h(内联包装) time.h(stdint.h ctype.h).
  */
 #ifndef _GT_GTOS_H
 #define _GT_GTOS_H
@@ -12,7 +32,6 @@ typedef unsigned int       u32;
 /* 控制台 */
 void console_putc(char c);
 void console_puts(const char *s);
-int  kprintf(const char *fmt, ...);
 
 /* 颜色 (16 色 VGA 调色板) */
 enum {
@@ -20,17 +39,15 @@ enum {
     C_LGRAY, C_DGRAY, C_LBLUE, C_LGREEN, C_LCYAN, C_LRED, C_LMAGENTA,
     C_YELLOW, C_WHITE
 };
-void gt_color(u8 fg);
-void gt_color_reset(void);
 
-/* 文件 (FAT, 盘符 C: D:) */
-int  open(const char *path);
-int  read(int fd, void *buf, unsigned n);
-int  write(int fd, const void *buf, unsigned n);
-int  close(int fd);
+/* 文件 (经 INT 0x21, 见 unistd.h) */
+int  gt_open(const char *path, int flags);
+int  gt_read(int fd, void *buf, unsigned n);
+int  gt_write(int fd, const void *buf, unsigned n);
+int  gt_close(int fd);
 
 /* 进程/电源 */
-void exit(int code);
+void gt_exit(int code);
 void reboot(void);
 void shutdown(void);
 

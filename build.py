@@ -312,6 +312,7 @@ C_SOURCES = [
     "power.c",
     "oobe.c",
     "shell.c",
+    "syscall.c",
 ]
 
 ASM_SOURCES = ["entry.asm", "isr.asm"]

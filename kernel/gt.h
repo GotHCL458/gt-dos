@@ -219,6 +219,18 @@ void     fat_set_allow_sys(bool on);   /* 系统内部写 \GT-DOS\ 状态文件 
 bool     fat_read_dir_file(const char *dir, const char *name, void *buf,
                            u32 max, u32 *out_len);
 
+/* 文件描述符层 (供 INT 0x21 系统调用): fd 0/1/2 = 控制台 */
+#define FD_MAX 8
+#define O_RDONLY 0
+#define O_WRONLY 1
+#define O_RDWR   2
+#define O_CREAT  0x100
+#define O_TRUNC  0x200
+int  fat_fd_open(const char *path, int flags);
+int  fat_fd_read(int fd, void *buf, u32 n);
+int  fat_fd_write(int fd, const void *buf, u32 n);
+int  fat_fd_close(int fd);
+
 /* ------------------------------------------------------------------ 控制台 */
 void console_init(void);
 void console_putc(char c);
@@ -256,6 +268,15 @@ void irq_uninstall_handler(int irq);
 void pic_init(void);
 void pic_send_eoi(int irq);
 void panic(const char *msg);
+
+/* ---------------------------------------------------- 系统调用门 (INT 0x21) */
+#define SYSCALL_VECTOR 0x21
+enum {
+    SYS_EXIT = 0, SYS_PUTC = 1, SYS_GETC = 2, SYS_WRITE = 3, SYS_READ = 4,
+    SYS_OPEN = 5, SYS_CLOSE = 6, SYS_UPTIME = 7, SYS_REBOOT = 8,
+    SYS_SHUTDOWN = 9, SYS_GETTIME = 10, SYS_PUTS = 11
+};
+void syscall_handle(struct regs *r);    /* 由 isr_handler 分派 */
 
 /* 中断嵌套状态 (idt.c) */
 int  irq_in_service(void);             /* 当前正在服务的中断层数 */
@@ -346,6 +367,7 @@ u32    rand_next(void);
 
 /* --------------------------------------------------------------- 时钟/RTC */
 void rtc_read(int *year, int *month, int *day, int *hour, int *min, int *sec);
+struct gt_time { int year, month, day, hour, min, sec; };
 
 /* ------------------------------------------------------- 字符串扩展 (lib) */
 int    isalpha_(int c);
