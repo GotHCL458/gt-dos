@@ -5,9 +5,10 @@
 GT-DOS is a small, from-scratch **x64 teaching operating system** written in NASM assembly and C
 (compiled with clang/LLVM). It boots from a single 64 MB hard disk image through its own MBR and
 second-stage loader into 64-bit long mode, and provides a text console,
-a FAT16 file system, user accounts and a bilingual (Chinese/English) shell.
+an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
+(Chinese/English) shell.
 
-![version](https://img.shields.io/badge/version-0.9-blue)
+![version](https://img.shields.io/badge/version-0.10-blue)
 
 ## Features
 

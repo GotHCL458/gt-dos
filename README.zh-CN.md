@@ -4,9 +4,9 @@
 
 GT-DOS 是一个从零实现的 **x64 教学操作系统**，使用 NASM 汇编与 C（clang/LLVM 编译）编写。
 它通过自己的 MBR 与二级加载器，从单个 64 MB 硬盘镜像引导进入 64 位长模式，并提供文本控制台、
-FAT16 文件系统、用户账户与中英双语 Shell。
+exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 
-![version](https://img.shields.io/badge/version-0.9-blue)
+![version](https://img.shields.io/badge/version-0.10-blue)
 
 ## 功能特性
 

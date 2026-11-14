@@ -13,7 +13,7 @@ static u8 file_buf[FILE_BUF_MAX] __attribute__((section(".highbss")));
 /* PIT 通道2 分频, 约 896 Hz 的提示音 */
 #define PIT_FREQ_DIV 1331
 
-static const char *version = "GT-DOS 0.9";
+static const char *version = "GT-DOS 0.10";
 
 /* ============================================================ 回滚视图 */
 /* 统一的滚动入口: delta>0 向上翻 (看历史), 带上下限钳制与状态指示.

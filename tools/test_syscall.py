@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""GT-DOS v0.9 系统调用/程序执行验证:
+"""GT-DOS v0.10 系统调用/程序执行验证:
    1) INT 0x21 门存在 (RUN HELLO.GTP 打印并由 SYS_EXIT 回跳)
    2) 退出码回传 (code 0)
    3) 缺失文件错误处理 (RUN NOPE.GTP)

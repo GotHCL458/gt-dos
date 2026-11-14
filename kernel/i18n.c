@@ -74,8 +74,8 @@ static const struct entry table[] = {
     { "status.ready",    "Ready",                     "就绪" },
 
     /* ---- Shell 提示 ---- */
-    { "shell.banner",    "GT-DOS v0.9\n",
-      "GT-DOS v0.9\n" },
+    { "shell.banner",    "GT-DOS v0.10\n",
+      "GT-DOS v0.10\n" },
     { "shell.hint",
       "Signed in as '%s' on '%s'. Type HELP for commands.\n",
       "已登录 '%s'@'%s'。输入 HELP 查看命令。\n" },
