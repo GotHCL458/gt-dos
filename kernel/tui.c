@@ -130,7 +130,7 @@ void tui_splash(void)
 
     /* 串口纯文本版 */
     if (serial_plain()) {
-        serial_puts("\n  GT-DOS v0.8\n\n");
+        serial_puts("\n  GT-DOS v0.9\n\n");
     }
 
     /* 进度条 */

@@ -9,7 +9,7 @@
 /* PIT 通道2 分频, 约 896 Hz 的提示音 */
 #define PIT_FREQ_DIV 1331
 
-static const char *version = "GT-DOS 0.8";
+static const char *version = "GT-DOS 0.9";
 
 /* ============================================================ 回滚视图 */
 /* 统一的滚动入口: delta>0 向上翻 (看历史), 带上下限钳制与状态指示.
