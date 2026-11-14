@@ -227,8 +227,8 @@ void console_puts(const char *s);
 void console_clear(void);
 void console_set_serial(bool on);
 bool console_serial_enabled(void);
-int  kprintf(const char *fmt, ...);
-int  kvprintf(const char *fmt, va_list ap);
+int  kprintf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+int  kvprintf(const char *fmt, va_list ap) __attribute__((format(printf, 1, 0)));
 
 /* 彩色输出: 设置当前前景色 (同时驱动 VGA 与串口 ANSI) */
 void gt_color(u8 fg);

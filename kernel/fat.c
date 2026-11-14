@@ -526,12 +526,44 @@ static bool path_protected(const char *path)
     return (nxt == '\0' || nxt == '\\' || nxt == '/');
 }
 
+/* 非管理员仅可写自己家目录 \USERS\<name>\ 下的路径; 管理员不受限.
+   path 为去盘符的绝对路径 (如 "\USERS\bob\x"). */
+static bool outside_user_home(const char *path)
+{
+    if (user_is_admin())
+        return false;
+    const char *name = user_name();
+    if (!name || !name[0])
+        return true;                 /* 未登录: 禁止写 */
+    while (*path == '\\' || *path == '/')
+        path++;
+    const char *ref = "USERS\\";     /* U S E R S \ */
+    for (int i = 0; i < 6; i++)
+        if (toupper_(path[i]) != ref[i])
+            return true;
+    path += 6;
+    int j = 0;
+    while (name[j]) {
+        if (path[j] == '\0' || toupper_(path[j]) != toupper_(name[j]))
+            return true;
+        j++;
+    }
+    char nxt = path[j];
+    if (nxt != '\0' && nxt != '\\' && nxt != '/')
+        return true;
+    return false;                    /* 位于自己家目录内 */
+}
+
 static bool sys_write_denied(const char *path)
 {
     if (allow_sys)                 /* 系统自身写 GT-DOS 状态文件时放行 */
         return false;
     if (path_protected(path)) {
         kprintf("System file/folder protected.\n");
+        return true;
+    }
+    if (outside_user_home(path)) {
+        kprintf("Permission denied: outside your home directory.\n");
         return true;
     }
     return false;

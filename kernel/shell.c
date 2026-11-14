@@ -398,6 +398,17 @@ static void cmd_useradd(int argc, char **argv)
     if (user_add(argv[1], p1, flags)) {
         memset(p1, 0, sizeof(p1));
         memset(p2, 0, sizeof(p2));
+        if (fat_ready()) {
+            fat_mkdir("\\USERS");                 /* 可能已存在, 忽略返回 */
+            char home[PATHMAX];
+            int n = 0;
+            const char *pre = "\\USERS\\";
+            while (*pre && n < PATHMAX - 1) home[n++] = *pre++;
+            for (int i = 0; argv[1][i] && n < PATHMAX - 1; i++)
+                home[n++] = argv[1][i];
+            home[n] = '\0';
+            fat_mkdir(home);                      /* 该用户家目录 */
+        }
         if (user_save())
             ok("User '%s' created (%s).\n", argv[1],
                flags ? "admin" : "normal");
@@ -504,6 +515,7 @@ static void cmd_disk(void)
 
 static void cmd_mount(void)
 {
+    if (!need_admin()) return;
     if (ata_ndev() == 0) {
         err("No ATA disk found.\n");
         return;
@@ -781,6 +793,8 @@ static void cmd_head(int argc, char **argv)
     int fi = 1;
     if (argv[1][0] == '-' && isdigit_(argv[1][1])) {
         lines = atoi_dec(argv[1] + 1);
+        if (lines < 1) lines = 1;
+        if (lines > 1000) lines = 1000;
         fi = 2;
         if (argc < 3) { err("Usage: HEAD -n <file>\n"); return; }
     }
@@ -1098,6 +1112,7 @@ static void execute(char *line)
         if (!need_admin()) return;
         power_shutdown();
     } else if (!strncasecmp(cmd, "div0", 8)) {
+        if (!need_admin()) return;
         kprintf("Raising divide-by-zero...\n");
         __asm__ __volatile__("xorl %%edx, %%edx\n\t"
                              "xorl %%ecx, %%ecx\n\t"
