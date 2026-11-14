@@ -1,5 +1,5 @@
 /* OOBE 首启向导: 首次开机 (GTOS.CFG 中 oobe_done=0) 时运行: 选语言, 设主机名,
-   创建管理员账户 (默认 admin+口令), 选控制台主题色. 完成或中断后写 oobe_done=1
+   创建管理员账户 (默认 admin+口令). 完成或中断后写 oobe_done=1
    并保存, 之后开机直接进登录界面. */
 #include "gt.h"
 
@@ -50,7 +50,7 @@ void oobe_run(void)
     ui_info("%s", L("oobe.welcome"));
 
     /* ---- 步骤 1: 语言 ---- */
-    ui_info("  [1/4] %s\n", L("oobe.lang"));
+    ui_info("  [1/3] %s\n", L("oobe.lang"));
     kprintf("%s\n", L("oobe.lang_en"));
     kprintf("%s\n", L("oobe.lang_zh"));
     int lc = ask_choice(L("oobe.lang_q"), 1, 2);
@@ -61,7 +61,7 @@ void oobe_run(void)
     hr();
 
     /* ---- 步骤 2: 主机名 ---- */
-    ui_info("  [2/4] %s\n", L("oobe.host"));
+    ui_info("  [2/3] %s\n", L("oobe.host"));
     kprintf("%s", L("oobe.host_desc"));
     if (ask_line(L("oobe.host_q"), buf, sizeof(buf)) == 0 && buf[0]) {
         size_t l = strlen(buf);
@@ -76,7 +76,7 @@ void oobe_run(void)
     hr();
 
     /* ---- 步骤 3: 管理员账户 ---- */
-    ui_info("  [3/4] %s\n", L("oobe.admin"));
+    ui_info("  [3/3] %s\n", L("oobe.admin"));
     char admin_name[UNAME_MAX] = "admin";
     if (fat_ready()) {
         for (;;) {
@@ -126,23 +126,6 @@ void oobe_run(void)
     } else {
         ui_err("%s", L("oobe.skip"));
     }
-    hr();
-
-    /* ---- 步骤 4: 主题 ---- */
-    ui_info("  [4/4] %s\n", L("oobe.theme"));
-    kprintf("%s\n", L("oobe.theme1"));
-    kprintf("%s\n", L("oobe.theme2"));
-    kprintf("%s\n", L("oobe.theme3"));
-    kprintf("%s\n", L("oobe.theme4"));
-    int c = ask_choice(L("oobe.theme_q"), 1, 4);
-    switch (c) {
-    case 2: gcfg.theme_fg = C_GREEN;  gcfg.theme_bg = C_BLACK; break;
-    case 3: gcfg.theme_fg = C_YELLOW; gcfg.theme_bg = C_BLACK; break;
-    case 4: gcfg.theme_fg = C_WHITE;  gcfg.theme_bg = C_BLUE;  break;
-    default: gcfg.theme_fg = C_LGRAY; gcfg.theme_bg = C_BLACK; break;
-    }
-    cfg_apply_theme();
-    ui_info("%s", L("oobe.theme_ok"));
     hr();
 
     /* ---- 完成 ---- */

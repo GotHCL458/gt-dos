@@ -924,42 +924,6 @@ static void cmd_mkdir(const char *name)
         err("Cannot create %s\n", abs);
 }
 
-/* ---------------------------------------------------------- 分辨率命令 */
-static void cmd_res(int argc, char **argv)
-{
-    if (argc < 2 || !strncasecmp(argv[1], "list", 8)) {
-        kprintf("Supported resolutions (32bpp):\n");
-        for (int i = 0; i < gfx_mode_count(); i++) {
-            int w, h;
-            gfx_mode_size(i, &w, &h);
-            kprintf("  %2d) %dx%d%s\n", i + 1, w, h,
-                    (w == gfx_w() && h == gfx_h()) ? "  <- current" : "");
-        }
-        return;
-    }
-    if (!gfx_active()) {
-        err("Text mode active, no VBE. RES requires graphics console.\n");
-        return;
-    }
-    int w = 0, h = 0;
-    const char *p = argv[1];
-    while (*p >= '0' && *p <= '9') w = w * 10 + (*p++ - '0');
-    if (*p == 'x' || *p == 'X') {
-        p++;
-        while (*p >= '0' && *p <= '9') h = h * 10 + (*p++ - '0');
-    }
-    if (!w || !h) {
-        err("Usage: RES <W>x<H> | RES list   (e.g. RES 1024x768)\n");
-        return;
-    }
-    if (!gfx_set_mode(w, h)) {
-        err("Unsupported mode %dx%d (try RES list)\n", w, h);
-        return;
-    }
-    vga_relayout();                     /* 文本网格随分辨率重排 */
-    ok("Resolution set to %dx%d.\n", gfx_w(), gfx_h());
-}
-
 /* ------------------------------------------------------------ 中断命令 */
 static void cmd_apic(int argc, char **argv)
 {
@@ -1068,8 +1032,6 @@ static void execute(char *line)
         cmd_config(argc, argv);
     } else if (!strncasecmp(cmd, "oobe", 8)) {
         cmd_oobe();
-    } else if (!strncasecmp(cmd, "res", 8)) {
-        cmd_res(argc, argv);
     } else if (!strncasecmp(cmd, "apic", 8)) {
         cmd_apic(argc, argv);
     } else if (!strncasecmp(cmd, "irqstat", 8)) {

@@ -86,7 +86,6 @@ def main():
     vm.expect("Host name", 3000); vm.cmd("TBOX")
     vm.expect("user name", 3000); vm.cmd("admin")
     vm.expect("Password", 3000); vm.cmd("")
-    vm.expect("Choose", 3000); vm.cmd("1")
     check("oobe done", vm.expect("Enjoy GT-DOS", 6000), vm.buf[-400:])
     vm.send("\x1b"); vm.feed(500)
     check("login screen", vm.expect("User:", 8000))

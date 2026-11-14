@@ -462,22 +462,6 @@ void vga_refresh(void)
     hw_cursor();
 }
 
-/* 分辨率改变后重排文本网格 (清屏, 历史保留可回滚) */
-void vga_relayout(void)
-{
-    cur_cx = -1;
-    cur_col = 0;
-    view_off = 0;
-    hist_head = 0;
-    hist_total = 1;
-    for (int c = 0; c < COLS_MAX; c++) {
-        hist_cp[0][c] = ' ';
-        hist_attr[0][c] = def_attr;
-    }
-    render();
-    hw_cursor();
-}
-
 void vga_set_color(u8 fg, u8 bg)
 {
     attr = (u8)((bg << 4) | (fg & 0x0F));

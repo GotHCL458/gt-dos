@@ -21,18 +21,6 @@ static u32 *back __attribute__((section(".highbss")));   /* 1.2MB 后台缓冲 *
 static bool gfx_ok;
 static int gw = 640, gh = 480;
 
-/* 支持的分辨率表 (宽, 高) */
-const struct gfx_mode gfx_modes[] = {
-    { 640, 480 }, { 800, 600 }, { 1024, 768 }, { 1280, 1024 },
-};
-int gfx_mode_count(void) { return (int)(sizeof(gfx_modes) / sizeof(gfx_modes[0])); }
-void gfx_mode_size(int idx, int *w, int *h)
-{
-    if (idx < 0 || idx >= gfx_mode_count()) { *w = *h = 0; return; }
-    *w = gfx_modes[idx].w;
-    *h = gfx_modes[idx].h;
-}
-
 static void dispi_write(u16 idx, u16 val)
 {
     outw(VBE_DISPI_IOPORT_INDEX, idx);
@@ -107,20 +95,6 @@ bool gfx_init(void)
     if (!mode_apply(640, 480))
         return false;
     gfx_ok = true;
-    return true;
-}
-
-/* 切换分辨率 (启动后调用; 失败保持原分辨率) */
-bool gfx_set_mode(int w, int h)
-{
-    if (!gfx_ok)
-        return false;
-    bool found = false;
-    for (int i = 0; i < gfx_mode_count(); i++)
-        if (gfx_modes[i].w == w && gfx_modes[i].h == h) { found = true; break; }
-    if (!found)
-        return false;
-    mode_apply(w, h);
     return true;
 }
 

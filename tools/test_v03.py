@@ -141,8 +141,6 @@ def main():
     vm.cmd("s3cret")                     # 密码
     vm.cmd("s3cret")                     # 确认
     check("password set", vm.expect("Password set for 'admin'", 3000))
-    vm.cmd("2")                          # 主题: 绿底黑
-    check("theme applied", vm.expect("Theme applied", 3000))
     check("OOBE complete", vm.expect("Setup complete", 3000))
 
     # ================= 阶段 2: 登录 =================

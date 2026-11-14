@@ -47,13 +47,6 @@ static const struct entry table[] = {
       "  用户不存在 - 未设置口令。\n" },
     { "oobe.pass_mismatch", "  Passwords do not match - no password set.\n",
       "  两次口令不一致 - 未设置口令。\n" },
-    { "oobe.theme",      "Console theme",             "控制台主题" },
-    { "oobe.theme1",     "    1) Gray on black (classic)", "    1) 灰底黑字 (经典)" },
-    { "oobe.theme2",     "    2) Green on black (terminal)", "    2) 绿底黑字 (终端)" },
-    { "oobe.theme3",     "    3) Yellow on black (amber-ish)", "    3) 黄底黑字 (琥珀)" },
-    { "oobe.theme4",     "    4) White on blue",      "    4) 白底蓝字" },
-    { "oobe.theme_q",    "  Choose [1]: ",            "  请选择 [1]: " },
-    { "oobe.theme_ok",   "  Theme applied.\n",        "  主题已应用。\n" },
     { "oobe.done",       "  Setup complete. Enjoy GT-DOS!\n",
       "  设置完成。祝使用愉快！\n" },
     { "oobe.skip",       "  No disk available - skipping account setup.\n",
@@ -101,7 +94,6 @@ static const struct entry table[] = {
       "  SERIAL ON|OFF     toggle serial output\n"
       "  COLOR <0-15>      set text color\n"
       "  DIV0              raise divide-by-zero (test)\n"
-      "  RES <W>x<H>|list  change resolution (640x480..1280x1024)\n"
       "  WHOAMI / USERS / LOGIN / LOGOUT\n"
       "  PASSWD [user]     (self only unless admin)\n"
       "  USERADD <n> [-a] / USERDEL <n>      [admin]\n"
@@ -127,7 +119,6 @@ static const struct entry table[] = {
       "  SERIAL ON|OFF  串口开关\n"
       "  COLOR 0-15     文字颜色\n"
       "  DIV0           除零测试\n"
-      "  RES <宽>x<高>|list  切换分辨率 (640x480..1280x1024)\n"
       "  WHOAMI USERS LOGIN LOGOUT\n"
       "  PASSWD [用户]  修改口令 (非管理员仅限自己)\n"
       "  USERADD <名> [-a] / USERDEL <名>   [管理员]\n"

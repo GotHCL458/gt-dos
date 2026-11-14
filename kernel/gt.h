@@ -127,17 +127,12 @@ void vga_set_attr_default(u8 a);
 const u8 *vga_glyph(u32 cp);         /* 取码点 32 字节字模 (GUI 用, 可返回 0) */
 
 /* ------------------------------------------------------- 共享图形层 (gfx) */
-struct gfx_mode { int w, h; };
 bool gfx_available(void);            /* Bochs VBE 可用? */
 bool gfx_init(void);                 /* 进入 640x480x32 + 双缓冲 */
 void gfx_shutdown(void);
 bool gfx_active(void);
 int  gfx_w(void);                    /* 当前分辨率宽 */
 int  gfx_h(void);                    /* 当前分辨率高 */
-bool gfx_set_mode(int w, int h);     /* 切换分辨率 */
-extern const struct gfx_mode gfx_modes[];
-int  gfx_mode_count(void);
-void gfx_mode_size(int idx, int *w, int *h);
 void gfx_clear(u32 c);
 void gfx_fill(int x, int y, int w, int h, u32 c);
 void gfx_frame(int x, int y, int w, int h, u32 c);
@@ -151,7 +146,6 @@ void gfx_flip_rect(int x, int y, int w, int h);
 /* ---------------------------------------------------------------- GUI */
 void vga_enter_gfx(void);            /* 控制台切到图形文本后端 */
 void vga_refresh(void);              /* 重绘整个文本控制台 */
-void vga_relayout(void);             /* 分辨率改变后重排文本网格 */
 
 /* ---------------------------------------------------------------- TUI */
 void tui_splash(void);                /* 启动画面 (含短暂停留) */
