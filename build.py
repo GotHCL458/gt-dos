@@ -95,6 +95,33 @@ def find_tools():
 def _le32(v): return bytes([v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF])
 
 
+def host_work_area():
+    """宿主桌面可用区域 (不含任务栏). 非 Windows 或获取失败时返回 (0, 0)."""
+    if os.name != "nt":
+        return 0, 0
+    try:
+        import ctypes
+        from ctypes import wintypes
+        rect = wintypes.RECT()
+        if not ctypes.windll.user32.SystemParametersInfoW(
+                0x0030, 0, ctypes.byref(rect), 0):      # SPI_GETWORKAREA
+            return 0, 0
+        return rect.right - rect.left, rect.bottom - rect.top
+    except Exception:
+        return 0, 0
+
+
+def display_hint(fullscreen=False):
+    """窗口模式下给内核的分辨率上限 (宽, 高), 避免 QEMU 窗口被屏幕/任务栏裁切.
+    全屏模式由 QEMU 缩放显示, 不做限制, 返回 (0, 0)."""
+    if fullscreen:
+        return 0, 0
+    w, h = host_work_area()
+    if w <= 0 or h <= 0:
+        return 0, 0
+    return max(w - 16, 0), max(h - 48, 0)           # 预留窗口边框与标题栏
+
+
 # --------------------------------------------------------------------- 构建步骤
 def run(cmd, **kw):
     printable = " ".join(cmd)
@@ -410,6 +437,11 @@ def build():
     boot2 = build_boot2()
     print("==> 编译内核 (NASM + clang/LLVM, x86-64 long mode)")
     kernel, _ = build_kernel()
+    hint_w, hint_h = display_hint()
+    if hint_w and hint_h:
+        # 让内核知道宿主可用区域, 窗口模式选不会超出桌面的分辨率
+        kernel = patch_at(kernel, b"GTMH", hint_w)
+        kernel = patch_at(kernel, b"GTMH", hint_h, skip=4)
     ensure_font()
     font = open(os.path.join(BUILD, "font.gtd"), "rb").read()
     cpm = open(os.path.join(BUILD, "cpm.gtd"), "rb").read()
@@ -435,11 +467,32 @@ def set_utf8_console():
         pass
 
 
+def patch_image_display_hint(hd, w, h):
+    """就地改写镜像启动分区中内核的显示区域提示 (w=h=0 表示不限制)."""
+    base = (BOOT_PART_LBA + 16) * SECTOR     # 启动分区: boot2(16 扇区) + kernel
+    try:
+        with open(hd, "rb") as f:
+            f.seek(base)
+            blob = f.read(MAX_KERNEL_SECTORS * SECTOR)
+        idx = blob.find(b"GTMH")
+        if idx < 0:
+            return
+        with open(hd, "r+b") as f:
+            f.seek(base + idx + 4)
+            f.write(_le32(w) + _le32(h))
+    except OSError:
+        pass
+
+
 def run_qemu(hd, nogui=False, debug=False, full=False):
     if "qemu-system-x86_64" not in TOOLS:
         print("[!] 找不到 qemu-system-x86_64.exe")
         sys.exit(1)
     set_utf8_console()
+
+    # 按本次运行方式重写显示区域提示: 全屏不限制, 窗口模式限制在桌面可用区域内
+    if not nogui:
+        patch_image_display_hint(hd, *display_hint(full))
 
     cmd = [
         TOOLS["qemu-system-x86_64"],

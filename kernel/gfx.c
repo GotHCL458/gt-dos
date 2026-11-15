@@ -27,6 +27,21 @@ static bool gfx_ok;
 static int gw = 640, gh = 480;
 static int gs = 1;                    /* 字模整数倍缩放 */
 
+/* 宿主可用显示区域提示 (build.py 就地写入, 0 = 不限制).
+   窗口模式下若分辨率超过桌面可用区域, QEMU 窗口会被任务栏/屏幕边缘裁切,
+   因此这里把候选模式限制在宿主可完整显示的大小内. */
+volatile const u8 gfx_host_hint[12] __attribute__((used)) = {
+    'G', 'T', 'M', 'H', 0, 0, 0, 0, 0, 0, 0, 0
+};
+
+static u32 hint_u32(int off)
+{
+    return (u32)gfx_host_hint[off] |
+           ((u32)gfx_host_hint[off + 1] << 8) |
+           ((u32)gfx_host_hint[off + 2] << 16) |
+           ((u32)gfx_host_hint[off + 3] << 24);
+}
+
 static void dispi_write(u16 idx, u16 val)
 {
     outw(VBE_DISPI_IOPORT_INDEX, idx);
@@ -149,11 +164,17 @@ bool gfx_init(void)
         return true;
     if (!gfx_available())
         return false;
-    /* 分辨率自适配: 优先 1920x1080, 失败回退 1024x768, 再退 800x600/640x480 */
+    /* 分辨率自适配: 优先 1920x1080, 失败回退 1024x768, 再退 800x600/640x480.
+       窗口模式下再按宿主可用区域 (build.py 写入) 过滤, 避免窗口被裁切. */
     static const u16 modes[][2] = {
         { 1920, 1080 }, { 1024, 768 }, { 800, 600 }, { 640, 480 }
     };
+    u32 max_w = hint_u32(4), max_h = hint_u32(8);
     for (int i = 0; i < (int)(sizeof(modes) / sizeof(modes[0])); i++) {
+        if (max_w && (u32)modes[i][0] > max_w)
+            continue;
+        if (max_h && (u32)modes[i][1] > max_h)
+            continue;
         if (mode_apply(modes[i][0], modes[i][1],
                        scale_for(modes[i][0], modes[i][1]))) {
             gfx_ok = true;

@@ -25,6 +25,14 @@ static u16 status_buf_cp[COLS_MAX] __attribute__((section(".highbss")));
 static u8   status_buf_attr[COLS_MAX] __attribute__((section(".highbss")));
 static bool status_active = false;
 
+/* 行编辑快照: 记录当前行上次显示的内容, 用于只重绘变化的单元 */
+static u16 last_cp[COLS_MAX] __attribute__((section(".highbss")));
+static u8  last_attr[COLS_MAX] __attribute__((section(".highbss")));
+static bool last_valid;
+
+static void hw_cursor(void);
+static void render(void);
+
 /* 运行时文本网格: 图形模式按分辨率与字模缩放算, 文本回退模式固定 80x24 */
 static int cw(void) { return gfx_active() ? gfx_cell_w() : 8; }
 static int ch(void) { return gfx_active() ? gfx_cell_h() : 16; }
@@ -247,36 +255,6 @@ static void gfx_append_cell(int cpos, u16 cp, u8 a)
     gfx_flip_rect(x, (trows() - 1) * h, span + w, h);
 }
 
-/* 只重绘一行文本 (行编辑用, 避免整屏重绘) */
-static void gfx_render_row(int r)
-{
-    int cols = tcols(), w = cw(), h = ch();
-    int logical = hist_total - 1 - view_off - (trows() - 1 - r);
-    gfx_fill(0, r * h, gfx_w(), h, vga_pal[def_attr >> 4]);
-    if (logical < 0)
-        return;
-    const u16 *srcp = hist_cp[line_index(logical)];
-    const u8  *srca = hist_attr[line_index(logical)];
-    int c = 0;
-    while (c < cols) {
-        u16 cp = srcp[c];
-        if (cp == RIGHT_HALF) { c++; continue; }
-        u32 fg = vga_pal[srca[c] & 0x0F];
-        int x = c * w, y = r * h;
-        if (cp < 128) {
-            if (cp != ' ') gfx_char(x, y, cp, fg);
-            c++;
-        } else if (is_wide(cp)) {
-            gfx_char(x, y, cp, fg);
-            c += 2;
-        } else {
-            if (cp != ' ' && cp != 0) gfx_char(x, y, '?', fg);
-            c++;
-        }
-    }
-    gfx_flip_rect(0, r * h, gfx_w(), h);
-}
-
 /* 光标移动: 只刷新新旧两个单元格 */
 static void gfx_cursor_move(void)
 {
@@ -289,6 +267,51 @@ static void gfx_cursor_move(void)
     gfx_draw_cursor(true);
     if (cur_cx >= 0)
         gfx_flip_rect(cur_cx * w, y, w * 2, h);
+}
+
+/* 行编辑收尾: 与上次显示的当前行做差, 只重绘变化过的单元.
+   输入每个字符都调用, 这是控制台响应速度的关键路径. */
+void vga_line_sync(void)
+{
+    if (!gfx_active()) {
+        render();
+        hw_cursor();
+        return;
+    }
+    int cols = tcols(), w = cw(), h = ch();
+    const u16 *cp = hist_cp[hist_head];
+    const u8  *at = hist_attr[hist_head];
+    int minc = -1, maxc = -1;
+
+    for (int c = 0; c < cols; c++) {
+        if (cp[c] == RIGHT_HALF)
+            continue;
+        bool diff = !last_valid || cp[c] != last_cp[c] || at[c] != last_attr[c];
+        int span = 1;
+        if (is_wide(cp[c]) && c + 1 < cols) {
+            span = 2;                       /* 宽字符连右半格一起比较/重绘 */
+            if (cp[c + 1] != last_cp[c + 1] || at[c + 1] != last_attr[c + 1])
+                diff = true;
+        }
+        if (!diff)
+            continue;
+        gfx_put_cell(c, cp[c], at[c]);
+        if (minc < 0 || c < minc)
+            minc = c;
+        if (c + span - 1 > maxc)
+            maxc = c + span - 1;
+    }
+
+    if (minc >= 0)
+        gfx_flip_rect(minc * w, (trows() - 1) * h,
+                      (maxc - minc + 1) * w, h);
+
+    for (int c = 0; c < cols; c++) {
+        last_cp[c] = cp[c];
+        last_attr[c] = at[c];
+    }
+    last_valid = true;
+    hw_cursor();
 }
 
 /* -------------------------------------------------- 经典 VGA 文本后端 */
@@ -476,6 +499,7 @@ static void new_line(void)
     if (hist_total < HIST_LINES)
         hist_total++;
     cur_col = 0;
+    last_valid = false;
     for (int c = 0; c < tcols(); c++) {
         hist_cp[hist_head][c] = ' ';
         hist_attr[hist_head][c] = attr;
@@ -567,7 +591,7 @@ void vga_erase_eol(void)
     }
 }
 
-/* 直接写入当前行 (UTF-8 解码, 行编辑器整行重绘用) */
+/* 直接写入当前行 (UTF-8 解码, 行编辑器整行重绘用); 渲染由 vga_line_sync 统一完成 */
 void vga_write_raw(const char *s, int n)
 {
     if (view_off > 0)
@@ -594,11 +618,6 @@ void vga_write_raw(const char *s, int n)
             cur_col++;
         }
     }
-    if (gfx_active())
-        gfx_render_row(trows() - 1);
-    else
-        render();
-    hw_cursor();
 }
 
 void vga_clear(void)
@@ -607,6 +626,7 @@ void vga_clear(void)
     hist_total = 1;
     cur_col = 0;
     view_off = 0;
+    last_valid = false;
     for (int r = 0; r < HIST_LINES; r++)
         for (int c = 0; c < COLS_MAX; c++) {
             hist_cp[r][c] = ' ';

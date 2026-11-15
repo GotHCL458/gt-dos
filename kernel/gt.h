@@ -112,6 +112,7 @@ void vga_get_cursor(int *row, int *col);
 void vga_set_col(int col);            /* 移动当前行光标列 */
 void vga_line_reset(void);            /* 清空当前行, 光标归零 */
 void vga_write_raw(const char *s, int n); /* 直接写入当前行, UTF-8 解码 */
+void vga_line_sync(void);                 /* 行编辑收尾: 只重绘变化的单元 */
 int  vga_utf8_cols(const char *s);        /* UTF-8 字符串显示列数 */
 void vga_erase_eol(void);             /* 清除光标到行尾 */
 void vga_set_cursor_visible(bool on);

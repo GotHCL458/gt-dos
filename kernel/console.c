@@ -218,6 +218,11 @@ void console_puts(const char *s)
 void console_clear(void) { vga_clear(); }
 
 /* --------------------------------------------------------- 行编辑器原语 */
+/* 串口行状态: 已显示的提示符与输入, 用于只回显新字符 (避免每次按键重打整行) */
+static char ser_prompt[64];
+static int  ser_prompt_len = -1;
+static int  ser_line_len = -1;
+
 /* 把 prompt+buf 重绘到当前行, 光标停在 prompt_len+cur; 串口用 ANSI 控制序列 */
 void console_line_refresh(const char *prompt, const char *buf, int len,
                           int cur, int prev_len)
@@ -226,25 +231,45 @@ void console_line_refresh(const char *prompt, const char *buf, int len,
     int pcols = vga_utf8_cols(prompt);     /* 提示符可能是 UTF-8 中文 */
 
     if (ser_on) {
-        /* 回到行首 + 清除到行尾, 然后重打整行 */
-        serial_putc('\r');
-        serial_write("\x1b[K", 3);
-        serial_write("\x1b[92m", 5);         /* 提示符: 亮绿 */
-        serial_write(prompt, (size_t)plen);
-        serial_write("\x1b[0m\x1b[37m", 9);  /* 输入: 白 */
-        serial_write(buf, (size_t)len);
-        int back = len - cur;
-        if (back > 0) {
-            char mv[16];
-            int k = 0;
-            mv[k++] = 0x1B;
-            mv[k++] = '[';
-            char num[8];
-            itoa_base((u32)back, num, 10, false);
-            for (char *q = num; *q; q++)
-                mv[k++] = *q;
-            mv[k++] = 'D';
-            serial_write(mv, (size_t)k);
+        bool same_prompt = (ser_prompt_len == plen) &&
+                           (plen == 0 || memcmp(ser_prompt, prompt, (size_t)plen) == 0);
+        if (same_prompt && ser_line_len >= 0 && cur == len &&
+            len == ser_line_len + 1) {
+            /* 行尾追加: 只回显这一个字符 */
+            serial_write(buf + len - 1, 1);
+            ser_line_len = len;
+        } else if (same_prompt && ser_line_len > 0 && cur == len &&
+                   len == ser_line_len - 1) {
+            /* 行尾退格 */
+            serial_write("\b \b", 3);
+            ser_line_len = len;
+        } else {
+            /* 回到行首 + 清除到行尾, 然后重打整行 */
+            serial_putc('\r');
+            serial_write("\x1b[K", 3);
+            serial_write("\x1b[92m", 5);         /* 提示符: 亮绿 */
+            serial_write(prompt, (size_t)plen);
+            serial_write("\x1b[0m\x1b[37m", 9);  /* 输入: 白 */
+            serial_write(buf, (size_t)len);
+            int back = len - cur;
+            if (back > 0) {
+                char mv[16];
+                int k = 0;
+                mv[k++] = 0x1B;
+                mv[k++] = '[';
+                char num[8];
+                itoa_base((u32)back, num, 10, false);
+                for (char *q = num; *q; q++)
+                    mv[k++] = *q;
+                mv[k++] = 'D';
+                serial_write(mv, (size_t)k);
+            }
+            int keep = plen < (int)sizeof(ser_prompt) - 1
+                           ? plen : (int)sizeof(ser_prompt) - 1;
+            memcpy(ser_prompt, prompt, (size_t)keep);
+            ser_prompt[keep] = '\0';
+            ser_prompt_len = plen;
+            ser_line_len = len;
         }
     }
 
@@ -255,6 +280,7 @@ void console_line_refresh(const char *prompt, const char *buf, int len,
     vga_write_raw(buf, len);
     /* 恢复控制台逻辑颜色, 供后续普通输出使用 */
     vga_set_color((u8)(compose() & 0x0F), (u8)(compose() >> 4));
+    vga_line_sync();                          /* 只重绘变化的单元 */
     vga_set_col(pcols + cur);
     (void)prev_len;
 }
@@ -263,6 +289,8 @@ void console_line_end(void)
 {
     if (ser_on)
         serial_write("\r\n", 2);
+    ser_line_len = -1;                  /* 换行后串口行状态失效 */
+    ser_prompt_len = -1;
     vga_putc('\n');
 }
 

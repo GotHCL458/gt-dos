@@ -30,6 +30,8 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
 - Bochs VBE linear framebuffer, LFB address and VRAM size discovered through PCI configuration space
 - Automatic resolution selection: 1920x1080 first, then 1024x768 / 800x600 / 640x480 when the
   mode or the available VRAM does not fit
+- Windowed runs are capped to the host work area (written into the kernel by `build.py`), so the
+  QEMU window is never clipped by the taskbar; `run -full` lifts the cap and lets QEMU scale
 - Integer font scaling (1x-3x) chosen so the text grid fills the screen, e.g. 120x33 cells at
   1920x1080 with 2x glyphs
 - Double buffering — every draw goes to a back buffer, then flips, so there is no flicker
@@ -281,7 +283,7 @@ assert on real boot output rather than on mocks.
 
 ## Notes and Limitations
 
-- The kernel currently fits in 344 sectors (175,936 bytes), loaded between `0x10000` and `0x80000`.
+- The kernel currently fits in 346 sectors (176,712 bytes), loaded between `0x10000` and `0x80000`.
   Growing past that window requires relocating the load address.
 - Large zero-initialised buffers (`font_buf`, the code page table, the back buffer) are placed in
   a `NOLOAD` `.highbss` section above 1 MB. If they were in ordinary `.bss` they would overlap the
