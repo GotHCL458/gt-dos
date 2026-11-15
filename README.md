@@ -235,6 +235,15 @@ Type `HELP` (or `?`) inside GT-DOS for the full list. Commands support both long
 
 **Power** — `REBOOT`, `SHUTDOWN`/`POWEROFF` (administrator privileges required)
 
+## Keyboard
+
+PS/2 set-1 driver with E0 extended keys: arrows, Home/End, PgUp/PgDn and Ins/Del.
+Ctrl combinations become ASCII control codes, so `Ctrl+C` cancels the current line,
+`Ctrl+A`/`Ctrl+E` jump to its start/end, and `Ctrl+P`/`Ctrl+N` walk the history.
+`Ctrl+Up`/`Ctrl+Down` scroll the console, `Ctrl+Alt+Del` reboots.
+`NumLock` switches the keypad between digits/operators and navigation
+(Home/End/PgUp/PgDn/Ins/Del); CapsLock and NumLock LEDs follow the driver state.
+
 ## Project Structure
 
 ```
@@ -283,7 +292,7 @@ assert on real boot output rather than on mocks.
 
 ## Notes and Limitations
 
-- The kernel currently fits in 346 sectors (176,712 bytes), loaded between `0x10000` and `0x80000`.
+- The kernel currently fits in 348 sectors (177,688 bytes), loaded between `0x10000` and `0x80000`.
   Growing past that window requires relocating the load address.
 - Large zero-initialised buffers (`font_buf`, the code page table, the back buffer) are placed in
   a `NOLOAD` `.highbss` section above 1 MB. If they were in ordinary `.bss` they would overlap the

@@ -1,5 +1,6 @@
 /* PS/2 键盘驱动, 扫描码集 1, 含 E0 扩展键.
-   普通键返回 ASCII, 扩展键返回 KEY_* 虚拟键码 (>= 0x100). */
+   普通键返回 ASCII, 扩展键返回 KEY_* 虚拟键码 (>= 0x100).
+   Ctrl 组合转 ASCII 控制码 (Ctrl+C=3 等), 小键盘支持 NumLock 数字/导航切换. */
 #include "gt.h"
 
 #define KB_DATA   0x60
@@ -27,6 +28,7 @@ static bool shift_down;
 static bool ctrl_down;
 static bool alt_down;
 static bool caps_lock;
+static bool num_lock;
 static bool ext_pending;              /* 收到 E0, 下一字节是扩展码 */
 
 static const char keymap_lower[128] = {
@@ -62,7 +64,28 @@ static void kb_push(u16 v)
     kb_head = next;
 }
 
-static u16 ext_scancode(u8 sc)
+/* 等待 8042 输入缓冲空闲 (有界, 避免硬件异常时卡死) */
+static void kbd_wait_write(void)
+{
+    for (int i = 0; i < 100000; i++) {
+        if (!(inb(KB_STATUS) & 0x02))
+            return;
+        io_wait();
+    }
+}
+
+/* 更新 CapsLock / NumLock 指示灯 */
+static void kbd_update_leds(void)
+{
+    u8 leds = (u8)((caps_lock ? 0x04 : 0) | (num_lock ? 0x02 : 0));
+    kbd_wait_write();
+    outb(KB_DATA, 0xED);
+    kbd_wait_write();
+    outb(KB_DATA, leds);
+}
+
+/* 小键盘/方向键导航区 (非扩展码与 E0 扩展码通用) */
+static u16 nav_scancode(u8 sc)
 {
     switch (sc) {
     case 0x48: return ctrl_down ? KEY_CUP   : KEY_UP;
@@ -71,10 +94,31 @@ static u16 ext_scancode(u8 sc)
     case 0x4D: return KEY_RIGHT;
     case 0x47: return KEY_HOME;
     case 0x4F: return KEY_END;
-    case 0x53: return KEY_DEL;
     case 0x52: return KEY_INS;
+    case 0x53: return KEY_DEL;
     case 0x49: return KEY_PGUP;
     case 0x51: return KEY_PGDN;
+    default:   return 0;
+    }
+}
+
+/* 小键盘 NumLock 打开时的字符 (关闭时走 nav_scancode) */
+static char keypad_char(u8 sc)
+{
+    switch (sc) {
+    case 0x47: return '7';
+    case 0x48: return '8';
+    case 0x49: return '9';
+    case 0x4A: return '-';
+    case 0x4B: return '4';
+    case 0x4C: return '5';
+    case 0x4D: return '6';
+    case 0x4E: return '+';
+    case 0x4F: return '1';
+    case 0x50: return '2';
+    case 0x51: return '3';
+    case 0x52: return '0';
+    case 0x53: return '.';
     default:   return 0;
     }
 }
@@ -92,7 +136,11 @@ void keyboard_input_byte(u8 sc)
         if (sc == 0xB8) { alt_down  = false; return; }   /* 右 Alt 松开 */
         if (sc & 0x80)
             return;                   /* 扩展键松开 */
-        u16 v = ext_scancode(sc);
+        if (sc == 0x53 && ctrl_down && alt_down) {       /* 主键盘 Del */
+            kb_push(KEY_REBOOT);
+            return;
+        }
+        u16 v = nav_scancode(sc);
         if (v)
             kb_push(v);
         return;
@@ -104,19 +152,46 @@ void keyboard_input_byte(u8 sc)
     if (sc == 0x9D)                { ctrl_down  = false; return; }
     if (sc == 0x38)                { alt_down   = true;  return; }  /* 左 Alt */
     if (sc == 0xB8)                { alt_down   = false; return; }
-    if (sc == 0x3A)                { caps_lock = !caps_lock; return; }
+    if (sc == 0x3A)                { caps_lock = !caps_lock; kbd_update_leds(); return; }
+    if (sc == 0x45)                { num_lock  = !num_lock;  kbd_update_leds(); return; }
 
     if (sc & 0x80)
         return;                       /* 松键 */
 
-    /* Ctrl+Alt+Del -> 重启组合键 */
+    /* Ctrl+Alt+Del -> 重启组合键 (小键盘 Del 也走这里) */
     if (sc == 0x53 && ctrl_down && alt_down) {
         kb_push(KEY_REBOOT);
         return;
     }
 
+    /* 小键盘区: NumLock 开=数字/运算符, 关=方向与编辑键 */
+    if (sc >= 0x47 && sc <= 0x53) {
+        if (num_lock) {
+            char k = keypad_char(sc);
+            if (k)
+                kb_push((u16)(u8)k);
+        } else {
+            u16 v = nav_scancode(sc);
+            if (v)
+                kb_push(v);
+        }
+        return;
+    }
+
     if (sc >= 128)
         return;
+
+    /* Ctrl 组合键 -> ASCII 控制码 (Ctrl+A=1 ... Ctrl+Z=26) */
+    if (ctrl_down && !alt_down) {
+        char b = keymap_lower[sc];
+        if (b >= 'a' && b <= 'z') {
+            kb_push((u16)(b - 'a' + 1));
+            return;
+        }
+        if (b == '[')  { kb_push(27); return; }
+        if (b == '\\') { kb_push(28); return; }
+        if (b == ']')  { kb_push(29); return; }
+    }
 
     char lo = keymap_lower[sc];
     char c;
@@ -169,7 +244,9 @@ void keyboard_init(void)
     ctrl_down = false;
     alt_down = false;
     caps_lock = false;
+    num_lock = false;
     ext_pending = false;
+    kbd_update_leds();                    /* 指示灯与驱动状态对齐 */
     softirq_set(SOFTIRQ_KBD, kbd_bottom_half);
     irq_install_handler(1, keyboard_irq);
 }

@@ -222,6 +222,14 @@ qemu-system-x86_64 -hda gt-dos-hd.img -boot c
 
 **电源** — `REBOOT`、`SHUTDOWN`/`POWEROFF`（需要管理员权限）
 
+## 键盘
+
+PS/2 扫描码集 1 驱动，支持 E0 扩展键：方向键、Home/End、PgUp/PgDn、Ins/Del。
+Ctrl 组合键转换为 ASCII 控制码：`Ctrl+C` 取消当前行，`Ctrl+A`/`Ctrl+E` 跳到行首/行尾，
+`Ctrl+P`/`Ctrl+N` 翻阅历史；`Ctrl+上/下` 滚动控制台，`Ctrl+Alt+Del` 重启。
+`NumLock` 在小键盘数字/运算符与导航键（Home/End/PgUp/PgDn/Ins/Del）之间切换，
+CapsLock 与 NumLock 指示灯随驱动状态更新。
+
 ## 项目结构
 
 ```
@@ -270,7 +278,7 @@ build.py             构建脚本与镜像组装
 
 ## 说明与限制
 
-- 内核目前为 346 扇区（176,712 字节），加载区间为 `0x10000` 到 `0x80000`。
+- 内核目前为 348 扇区（177,688 字节），加载区间为 `0x10000` 到 `0x80000`。
   若要继续增大，需要调整加载地址。
 - 大块零初始化缓冲（`font_buf`、码点表、后台缓冲）被放置在 1 MB 以上、
   标记为 `NOLOAD` 的 `.highbss` 段。若放在普通 `.bss` 中，会与 `0xA0000`

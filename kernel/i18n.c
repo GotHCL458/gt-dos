@@ -119,7 +119,8 @@ static const struct entry table[] = {
       "  DIR /A shows hidden/system. \\GT-DOS\\ is protected.\n"
       "\n"
       "Edit: arrows/Home/End/Del, Up/Down=history.\n"
-      "Scroll: wheel / Ctrl+Up/Down / PgUp/PgDn.\n",
+      "Scroll: wheel / Ctrl+Up/Down / PgUp/PgDn.\n"
+      "Keys: Ctrl+C cancel, NumLock keypad, CapsLock.\n",
       "GT-DOS 命令一览:\n"
       "  HELP VER CLS ECHO <文本>\n"
       "  DATE TIME MEM UPTIME CPUID BEEP\n"
@@ -151,7 +152,8 @@ static const struct entry table[] = {
       "  DIR /A 显示隐藏/系统文件。\\GT-DOS\\ 受保护。\n"
       "\n"
       "编辑: 方向键/Home/End/Del, 上/下=历史。\n"
-      "滚动: 鼠标滚轮 / Ctrl+上/下 / PgUp/PgDn。\n" },
+      "滚动: 鼠标滚轮 / Ctrl+上/下 / PgUp/PgDn。\n"
+      "按键: Ctrl+C 取消, NumLock 小键盘, CapsLock。\n" },
 
     { 0, 0, 0 }
 };
