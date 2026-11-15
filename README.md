@@ -27,9 +27,13 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
 - ATA PIO driver, exFAT file system (long names, allocation bitmap, FAT chains), serial console (UTF-8)
 
 **Graphics**
-- Bochs VBE linear framebuffer, LFB address discovered through PCI configuration space
+- Bochs VBE linear framebuffer, LFB address and VRAM size discovered through PCI configuration space
+- Automatic resolution selection: 1920x1080 first, then 1024x768 / 800x600 / 640x480 when the
+  mode or the available VRAM does not fit
+- Integer font scaling (1x-3x) chosen so the text grid fills the screen, e.g. 120x33 cells at
+  1920x1080 with 2x glyphs
 - Double buffering — every draw goes to a back buffer, then flips, so there is no flicker
-- Text console soft-rendered at 640x480 on the framebuffer, so Chinese is not limited to the VGA 256 slots
+- Text console soft-rendered on the framebuffer, so Chinese is not limited to the VGA 256 slots
 
 **Fonts**
 - 16x16 grayscale glyphs rendered at native 16 px with GDI `CLEARTYPE_QUALITY`, filling the cell
@@ -71,6 +75,14 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
 | | | 29 | `SYS_DNS` |
 | | | 30 | `SYS_TFTP_GET` |
 | | | 31 | `SYS_HTTP_GET` |
+| | | 32 | `SYS_UDP_OPEN` |
+| | | 33 | `SYS_UDP_SENDTO` |
+| | | 34 | `SYS_UDP_RECVFROM` |
+| | | 35 | `SYS_ICMP_ERR` |
+| | | 36 | `SYS_UDP_CLOSE` |
+
+- Socket calls may use up to six arguments (`rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9`); the first
+  three follow the original ABI, so existing programs are unaffected
 
 - A small `open/read/write/close/seek` fd layer over exFAT (fds 0/1/2 are the console),
   plus directory handles through `SYS_OPENDIR`/`SYS_READDIR`
@@ -86,13 +98,18 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
 
 **Networking**
 - RTL8139 PCI NIC driver with polled RX/TX rings (no NIC interrupts)
-- Ethernet II + ARP cache; IPv4 with header checksums; ICMP echo (`PING`)
+- Ethernet II + ARP cache; IPv4 with header checksums, automatic fragmentation on send and
+  fragment reassembly on receive (2 slots, 8 KB datagrams)
+- ICMP echo (`PING`) plus ICMP error handling: destination unreachable, time exceeded and
+  parameter problems are recorded and surface as `-2` from `udp_recvfrom` or as a failed
+  TCP send/recv (`SYS_ICMP_ERR` returns the full record for user programs)
 - UDP with a DHCP client (`NET` / `DHCP`); link, MAC, IP, mask, gateway and DNS are reported
 - TCP: active and passive open, MSS option, sequence/ACK, receive window,
-  retransmission, in-order buffering, and FIN teardown
+  out-of-order segment queue and reassembly, three-duplicate-ACK fast retransmit,
+  slow start / congestion avoidance / fast recovery, RST send and receive, and FIN teardown
   (`FIN_WAIT_1/2`, `CLOSE_WAIT`, `LAST_ACK`, `CLOSING`)
-- Socket syscalls 21–31, plus TC builtins `ip4`, `tcp_connect`, `tcp_send`,
-  `tcp_recv`, `tcp_close`; shell client `TCP <ip> <port> [text]`
+- Socket syscalls 21–36, plus TC builtins `ip4`, `tcp_*`, `udp_*`, `icmp_err`;
+  shell clients `TCP <ip> <port> [text]` and `UDP <ip> <port> [size]`
 - UDP socket table plus application protocols: DNS A-record resolver (with name
   compression), TFTP client (`RRQ`/`DATA`/`ACK` with retransmission) and an HTTP/1.0
   `GET` downloader; downloads are written into the exFAT file system
@@ -155,6 +172,7 @@ lives somewhere else.
 python build.py            # compile, producing build/gt-dos-hd.img
 python build.py run        # boot the image in QEMU
 python build.py run -nogui # serial console only, no graphics window
+python build.py run -full  # full-screen window (resolution auto-selected)
 python build.py run -debug # boot with CPU/interrupt tracing enabled
 python build.py all        # build, then run
 python build.py clean      # remove the build directory
@@ -207,7 +225,8 @@ Type `HELP` (or `?`) inside GT-DOS for the full list. Commands support both long
 **Display and hardware** — `APIC`, `IRQSTAT`
 
 **Network** — `NET`, `DHCP`, `PING <ip> [count]`, `TCP <ip> <port> [text]`,
-`DNS <name>`, `TFTP GET <ip[:port]> <remote> [local]`, `HTTP GET <host[:port]> <path> [local]`
+`UDP <ip> <port> [size]`, `DNS <name>`, `TFTP GET <ip[:port]> <remote> [local]`,
+`HTTP GET <host[:port]> <path> [local]`
 
 **Programs** — `RUN <file.gtp>` (administrator privileges required),
 `TC <src.c> [-o out.gtp]` (C subset compiler)
@@ -233,8 +252,8 @@ kernel/
   exec.c             RUN program loader (loads a .gtp into PROG_BASE)
   gtlib.c            .gtl shared-library loader and symbol table
   tc.c               built-in C subset compiler (x86-64 code generator)
-  net.c              RTL8139 driver + ARP/IPv4/ICMP/UDP/DHCP
-  tcp.c              TCP sockets (handshake, data, retransmit, close)
+  net.c              RTL8139 driver + ARP/IPv4(fragmentation)/ICMP/UDP/DHCP
+  tcp.c              TCP sockets (handshake, OOO, fast retransmit, congestion, close)
   netapp.c           DNS resolver, TFTP client, HTTP GET downloader
   crypto.c           AES-128-CBC (T-table fast path) + CRC32
   timer.c keyboard.c mouse.c serial.c    devices
@@ -262,7 +281,7 @@ assert on real boot output rather than on mocks.
 
 ## Notes and Limitations
 
-- The kernel currently fits in 327 sectors (167,184 bytes), loaded between `0x10000` and `0x80000`.
+- The kernel currently fits in 344 sectors (175,936 bytes), loaded between `0x10000` and `0x80000`.
   Growing past that window requires relocating the load address.
 - Large zero-initialised buffers (`font_buf`, the code page table, the back buffer) are placed in
   a `NOLOAD` `.highbss` section above 1 MB. If they were in ordinary `.bss` they would overlap the
@@ -270,8 +289,9 @@ assert on real boot output rather than on mocks.
 - TC implements a C subset: no arrays, structs, unions, floats, `switch`, `?:`, `++/--` or
   variadic functions. Programs are limited to 64 KB of code and 16 KB of globals/strings.
 - Shell file commands (`TYPE`/`CP`/`MV`/`HEAD`/`WC`/`APPEND`) operate on files up to 64 KB.
-- The network stack is IPv4-only and does not reassemble IP fragments; TCP has no
-  congestion control, SACK or window scaling, and `TCP_ACCEPT` handles one connection.
+- The network stack is IPv4-only (no IPv6) and has no SACK or window scaling;
+  `TCP_ACCEPT` handles one connection per listening socket; UDP datagrams are limited
+  to 8 KB by the reassembly buffer.
 - TFTP/HTTP downloads are buffered in RAM and limited to 64 KB per file.
 - Building requires Windows; the kernel itself is fully freestanding and does not depend on the
   host platform.

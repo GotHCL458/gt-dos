@@ -37,6 +37,7 @@ static u8 tx_frame[1600] __attribute__((section(".highbss"), aligned(16)));
 static void net_handle_frame(const u8 *f, u32 n);
 static void ip_input(const u8 *p, u32 n);
 static void arp_input(const u8 *p, u32 n);
+static void net_mark_udp_error(u16 lport);
 
 /* ---------------------------------------------------------- 工具函数 */
 u16 net_be16(const u8 *p) { return (u16)(((u16)p[0] << 8) | p[1]); }
@@ -340,9 +341,11 @@ static bool arp_resolve(u32 ip, u8 mac[6])
 }
 
 /* ------------------------------------------------------------ IPv4 */
+/* 发送一个 IPv4 报文; 超过链路 MTU (1480 负载) 时自动分片.
+   分片偏移以 8 字节为单位, 1480 是 8 的整数倍, 故每片自然对齐. */
 static bool ip_send_ex(u32 src, u32 dst, u8 proto, const void *payload, u32 plen)
 {
-    if (!link_up || plen > 1480)
+    if (!link_up)
         return false;
     u8 hop[6];
     if (dst == 0xFFFFFFFFu) {
@@ -352,24 +355,43 @@ static bool ip_send_ex(u32 src, u32 dst, u8 proto, const void *payload, u32 plen
         if (!arp_resolve(nh, hop))
             return false;
     }
-    u8 *f = tx_frame;
-    memcpy(f, hop, 6);
-    memcpy(f + 6, dev_mac, 6);
-    net_wr_be16(f + 12, 0x0800);
-    u8 *ip = f + 14;
-    ip[0] = 0x45;
-    ip[1] = 0;
-    net_wr_be16(ip + 2, (u16)(20 + plen));
-    net_wr_be16(ip + 4, (u16)(++ip_ident));
-    net_wr_be16(ip + 6, 0);
-    ip[8] = 64;
-    ip[9] = proto;
-    net_wr_be16(ip + 10, 0);
-    net_wr_be32(ip + 12, src);
-    net_wr_be32(ip + 16, dst);
-    net_wr_be16(ip + 10, net_csum(ip, 20, 0));
-    memcpy(ip + 20, payload, plen);
-    return rtl_send(f, 14 + 20 + plen);
+
+    u16 ident = (u16)(++ip_ident);
+    const u8 *p = (const u8 *)payload;
+    u32 left = plen;
+    u32 off = 0;
+    do {
+        u32 chunk = left > 1480 ? 1480 : left;
+        u16 frag = (u16)((off / 8) & 0x1FFF);
+        if (left > chunk)
+            frag |= 0x2000;            /* MF: 还有后续分片 */
+
+        u8 *f = tx_frame;
+        memcpy(f, hop, 6);
+        memcpy(f + 6, dev_mac, 6);
+        net_wr_be16(f + 12, 0x0800);
+        u8 *ip = f + 14;
+        ip[0] = 0x45;
+        ip[1] = 0;
+        net_wr_be16(ip + 2, (u16)(20 + chunk));
+        net_wr_be16(ip + 4, ident);
+        net_wr_be16(ip + 6, frag);
+        ip[8] = 64;
+        ip[9] = proto;
+        net_wr_be16(ip + 10, 0);
+        net_wr_be32(ip + 12, src);
+        net_wr_be32(ip + 16, dst);
+        net_wr_be16(ip + 10, net_csum(ip, 20, 0));
+        if (chunk)
+            memcpy(ip + 20, p, chunk);
+        if (!rtl_send(f, 14 + 20 + chunk))
+            return false;
+
+        off += chunk;
+        p += chunk;
+        left -= chunk;
+    } while (left);
+    return true;
 }
 
 bool net_send_ip(u32 dst, u8 proto, const void *payload, u32 len)
@@ -377,11 +399,125 @@ bool net_send_ip(u32 dst, u8 proto, const void *payload, u32 len)
     return ip_send_ex(ip_addr, dst, proto, payload, len);
 }
 
+/* ------------------------------------------------ IP 分片重组 (IPv4) */
+#define REASM_SLOTS 2
+#define REASM_MAX   8192
+
+struct reasm {
+    bool used;
+    u32  src, dst;
+    u16  id;
+    u8   proto;
+    u32  total;                        /* 报文总长 (0=尚未收到末片) */
+    u32  last_ms;                      /* 最近一片到达时间 */
+    u8   buf[REASM_MAX];
+    u8   mask[REASM_MAX / 8 / 8];      /* 每 8 字节一个已收标记 */
+};
+
+static struct reasm reap[REASM_SLOTS];
+
+static void reasm_reset(struct reasm *r)
+{
+    r->used = false;
+    r->total = 0;
+}
+
+static struct reasm *reasm_find(u32 src, u32 dst, u16 id, u8 proto, bool create)
+{
+    struct reasm *free_slot = 0;
+    for (int i = 0; i < REASM_SLOTS; i++) {
+        struct reasm *r = &reap[i];
+        if (r->used) {
+            if (r->src == src && r->dst == dst && r->id == id &&
+                r->proto == proto)
+                return r;
+            if (timer_uptime_ms() - r->last_ms > 3000)
+                reasm_reset(r);        /* 超时片段回收 */
+        }
+        if (!r->used && !free_slot)
+            free_slot = r;
+    }
+    if (!create || !free_slot)
+        return 0;
+    memset(free_slot, 0, sizeof(*free_slot));
+    free_slot->used = true;
+    free_slot->src = src;
+    free_slot->dst = dst;
+    free_slot->id = id;
+    free_slot->proto = proto;
+    free_slot->last_ms = timer_uptime_ms();
+    return free_slot;
+}
+
+static void reasm_mark(struct reasm *r, u32 off, u32 len)
+{
+    u32 first = off / 8, last = (off + len - 1) / 8;
+    for (u32 b = first; b <= last; b++)
+        r->mask[b / 8] |= (u8)(1u << (b % 8));
+}
+
+static bool reasm_complete(struct reasm *r)
+{
+    u32 blocks = r->total / 8 + ((r->total % 8) ? 1 : 0);
+    for (u32 b = 0; b < blocks; b++)
+        if (!(r->mask[b / 8] & (u8)(1u << (b % 8))))
+            return false;
+    return true;
+}
+
 /* ------------------------------------------------------------ ICMP */
 static volatile bool ping_wait;
 static volatile u32 ping_ip;
 static volatile u16 ping_id, ping_seq;
 static volatile u32 ping_ms;
+
+static struct gt_icmp_err icmp_last;
+static volatile bool icmp_pending;
+
+/* 记录一个 ICMP 差错, 并标记受影响的传输层 socket */
+static void icmp_error(u32 src, const u8 *p, u32 n)
+{
+    if (n < 8 + 20)
+        return;
+    const u8 *ip = p + 8;               /* 内层 IP 头 */
+    u32 ihl = (u32)(ip[0] & 0x0F) * 4;
+    if ((ip[0] >> 4) != 4 || ihl < 20 || n < 8 + ihl + 8)
+        return;
+    if (net_be32(ip + 16) != ip_addr)   /* 只关心发往本机的报文 */
+        return;
+
+    struct gt_icmp_err e;
+    memset(&e, 0, sizeof(e));
+    e.src = src;
+    e.dst = net_be32(ip + 16);
+    e.type = p[0];
+    e.code = p[1];
+    e.proto = ip[9];
+    const u8 *t = ip + ihl;
+    if (e.proto == 17 || e.proto == 6) {
+        e.sport = net_be16(t);
+        e.dport = net_be16(t + 2);
+    } else if (e.proto == 1) {
+        e.info = (u32)net_be16(t + 4) | ((u32)net_be16(t + 6) << 16);
+    }
+    icmp_last = e;
+    icmp_pending = true;
+
+    if (e.proto == 17)
+        net_mark_udp_error(e.sport);
+    else if (e.proto == 6)
+        tcp_icmp_error(e.sport, e.dst);
+}
+
+int net_icmp_last_error(struct gt_icmp_err *out)
+{
+    if (!icmp_pending)
+        return 0;
+    if (out)
+        *out = icmp_last;
+    icmp_pending = false;
+    return 1;
+}
 
 static void icmp_input(u32 src, const u8 *p, u32 n)
 {
@@ -403,6 +539,8 @@ static void icmp_input(u32 src, const u8 *p, u32 n)
             ping_ms = timer_uptime_ms();
             ping_wait = false;
         }
+    } else if (p[0] == 3 || p[0] == 4 || p[0] == 11 || p[0] == 12) {
+        icmp_error(src, p, n);             /* 不可达 / 抑制 / 超时 / 参数错误 */
     }
 }
 
@@ -441,12 +579,13 @@ int net_ping_one(u32 ip, u16 seq, u32 *rtt_ms)
 
 /* ------------------------------------------------------ UDP socket */
 #define UDP_MAX   6
-#define UDP_RXBUF 2048
+#define UDP_RXBUF 4096
 
 struct udp_sock {
     bool used;
     u16  lport;
     bool got;
+    u8   err;                          /* 1=收到 ICMP 差错 */
     u32  src;
     u16  sport;
     u32  len;
@@ -455,7 +594,7 @@ struct udp_sock {
 
 static struct udp_sock usocks[UDP_MAX];
 static u16 udp_eph = 53000;
-static u8  udp_tx[1600] __attribute__((section(".highbss")));
+static u8  udp_tx[8192] __attribute__((section(".highbss")));
 
 static u64 net_irq_save(void)
 {
@@ -505,6 +644,22 @@ void udp_close(int fd)
     usocks[fd - 1].used = false;
 }
 
+int udp_socket_count(void)
+{
+    int n = 0;
+    for (int i = 0; i < UDP_MAX; i++)
+        if (usocks[i].used)
+            n++;
+    return n;
+}
+
+static void net_mark_udp_error(u16 lport)
+{
+    for (int i = 0; i < UDP_MAX; i++)
+        if (usocks[i].used && usocks[i].lport == lport)
+            usocks[i].err = 1;
+}
+
 int udp_sendto(int fd, u32 ip, u16 dport, const void *data, u32 len)
 {
     if (fd < 1 || fd > UDP_MAX || !usocks[fd - 1].used)
@@ -528,6 +683,11 @@ int udp_recvfrom(int fd, void *buf, u32 cap, u32 timeout_ms,
     struct udp_sock *s = &usocks[fd - 1];
     u64 fl = net_irq_save();
     cpu_sti();
+    if (s->err) {                       /* ICMP 差错优先上报 (如端口不可达) */
+        s->err = 0;
+        net_irq_restore(fl);
+        return -2;
+    }
     u32 t0 = timer_uptime_ms();
     while (!s->got && timer_uptime_ms() - t0 < timeout_ms) {
         net_poll();
@@ -692,6 +852,20 @@ int net_dhcp(void)
     return 0;
 }
 
+/* 把完整 IP 负载交给对应协议 (分片重组完成后也走这里) */
+static void ip_deliver(u32 src, u32 dst, u8 proto, const u8 *pl, u32 plen)
+{
+    if (proto == 1) {
+        if (dst == ip_addr)
+            icmp_input(src, pl, plen);
+    } else if (proto == 17) {
+        udp_input(src, pl, plen);
+    } else if (proto == 6) {
+        if (dst == ip_addr)
+            tcp_input(src, dst, pl, plen);
+    }
+}
+
 /* ----------------------------------------------------------- 收包入口 */
 static void ip_input(const u8 *p, u32 n)
 {
@@ -706,7 +880,7 @@ static void ip_input(const u8 *p, u32 n)
     if (net_csum(p, ihl, 0) != 0)
         return;
     u16 frag = net_be16(p + 6);
-    if (frag & 0x3FFF)                     /* 不分片重组 */
+    if (frag & 0x8000)                     /* 保留位: 非法 */
         return;
 
     u32 src = net_be32(p + 12);
@@ -715,14 +889,35 @@ static void ip_input(const u8 *p, u32 n)
     const u8 *pl = p + ihl;
     u32 plen = total - ihl;
 
-    if (proto == 1) {
-        if (dst == ip_addr)
-            icmp_input(src, pl, plen);
-    } else if (proto == 17) {
-        udp_input(src, pl, plen);
-    } else if (proto == 6) {
-        if (dst == ip_addr)
-            tcp_input(src, dst, pl, plen);
+    if ((frag & 0x3FFF) == 0) {            /* 未分片 */
+        ip_deliver(src, dst, proto, pl, plen);
+        return;
+    }
+
+    /* 分片: 收进重组表, 齐了再交给上层 */
+    u32 off = (u32)(frag & 0x1FFF) * 8;
+    bool mf = (frag & 0x2000) != 0;
+    if (off + plen > REASM_MAX)
+        return;
+    u16 ident = net_be16(p + 4);
+    struct reasm *r = reasm_find(src, dst, ident, proto, true);
+    if (!r)
+        return;
+    if (!mf) {                             /* 末片: 确定总长 */
+        if (!r->total || off + plen < r->total)
+            r->total = off + plen;
+    } else if (r->total && off + plen > r->total) {
+        reasm_reset(r);
+        return;
+    }
+    memcpy(r->buf + off, pl, plen);
+    reasm_mark(r, off, plen);
+    r->last_ms = timer_uptime_ms();
+
+    if (r->total && reasm_complete(r)) {
+        u32 tlen = r->total;
+        ip_deliver(src, dst, proto, r->buf, tlen);
+        reasm_reset(r);
     }
 }
 

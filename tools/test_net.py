@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""GT-DOS 网络栈验证: RTL8139 + ARP/IPv4/ICMP/UDP(DHCP)/TCP/DNS/TFTP/HTTP.
-   宿主机启动 TCP 回显、TFTP 与 HTTP 服务, 来宾通过 QEMU 用户网络
+"""GT-DOS 网络栈验证: RTL8139 + ARP/IPv4(分片重组)/ICMP(含差错)/UDP/TCP/DNS/TFTP/HTTP.
+   宿主机启动 TCP 回显、UDP 回显、TFTP 与 HTTP 服务, 来宾通过 QEMU 用户网络
    (10.0.2.2 = 宿主机) 访问, 验证 shell、TC 用户程序与文件下载."""
 import os, shutil, socket, struct, subprocess, sys, threading, time
 
@@ -13,6 +13,8 @@ MPORT = SPORT + 1
 TPORT = 20000 + (os.getpid() % 2000)
 TFTP_PORT = 21000 + (os.getpid() % 1000)
 HTTP_PORT = 22000 + (os.getpid() % 1000)
+UDP_PORT = 23000 + (os.getpid() % 1000)
+CLOSED_PORT = UDP_PORT + 1
 TFTP_BODY = b"TFTP-FILE-START\n" + b"A" * 1100 + b"TFTP-FILE-END\n"
 HTTP_BODY = b"HTTP-FILE-START\n" + b"B" * 3000 + b"HTTP-FILE-END\n"
 FAILURES = []
@@ -64,6 +66,17 @@ def tftp_server(sock):
             block = (block + 1) & 0xFFFF
             if len(chunk) < 512:
                 break
+
+def udp_server(sock):
+    while True:
+        try:
+            data, addr = sock.recvfrom(8192)
+        except OSError:
+            return
+        try:
+            sock.sendto(data, addr)
+        except OSError:
+            pass
 
 def http_server(sock):
     while True:
@@ -150,6 +163,10 @@ def main():
     hsrv.listen(8)
     threading.Thread(target=http_server, args=(hsrv,), daemon=True).start()
 
+    usrv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    usrv.bind(("127.0.0.1", UDP_PORT))
+    threading.Thread(target=udp_server, args=(usrv,), daemon=True).start()
+
     vm = VM(); vm.feed(3000)
     vm.expect("Language", 6000)
     vm.cmd("1"); vm.cmd("SBOX"); vm.cmd("admin"); vm.cmd("")
@@ -177,6 +194,27 @@ def main():
     check("tcp shell client", vm.expect(f"ECHO: NET-TEST", 5000), vm.buf[-400:])
 
     vm.buf = ""
+    vm.cmd(f"tcp 10.0.2.2 {CLOSED_PORT} HI", 2500)
+    check("tcp connect refused (RST)", vm.expect("TCP connect failed", 6000),
+          vm.buf[-400:])
+
+    vm.buf = ""
+    vm.cmd(f"udp 10.0.2.2 {UDP_PORT}", 2500)
+    check("udp echo", vm.expect("UDP: sent 24, received 24", 6000), vm.buf[-400:])
+    check("udp payload match", vm.expect("(match)", 3000), vm.buf[-400:])
+
+    vm.buf = ""
+    vm.cmd(f"udp 10.0.2.2 {UDP_PORT} 3000", 4000)
+    check("udp large datagram (IP fragments)",
+          vm.expect("UDP: sent 3000, received 3000", 10000), vm.buf[-400:])
+    check("udp reassembled payload", vm.expect("(match)", 3000), vm.buf[-400:])
+
+    vm.buf = ""
+    vm.cmd(f"udp 10.0.2.2 {CLOSED_PORT}", 3000)
+    check("udp closed port times out (no crash)",
+          vm.expect("UDP: no reply", 8000), vm.buf[-400:])
+
+    vm.buf = ""
     vm.cmd("put n.c int main(void){")
     vm.cmd(f"append n.c int fd=tcp_connect(ip4(10,0,2,2),{TPORT});")
     vm.cmd('append n.c if(fd<0){print("CONNECT FAIL\\n");return 1;}')
@@ -195,6 +233,21 @@ def main():
     check("tc net program received", vm.expect("NET OK", 12000), vm.buf[-400:])
 
     vm.buf = ""
+    vm.cmd("put u.c int main(void){")
+    vm.cmd("append u.c int u=udp_open(0);")
+    vm.cmd("append u.c int b=0x700000;")
+    vm.cmd(f'append u.c udp_sendto(u,ip4(10,0,2,2),{UDP_PORT},"tcu",3);')
+    vm.cmd("append u.c udp_recvfrom(u,b,64,2000,0,0);")
+    vm.cmd("append u.c write(1,b,3);")
+    vm.cmd("append u.c udp_close(u);")
+    vm.cmd("append u.c return 0;")
+    vm.cmd("append u.c }")
+    vm.cmd("tc u.c", 3000)
+    check("tc compiles udp program", vm.expect("Compiled ", 20000), vm.buf[-400:])
+    vm.cmd("run u.gtp", 4000)
+    check("tc udp six-arg syscalls", vm.expect("tcu", 12000), vm.buf[-400:])
+
+    vm.buf = ""
     vm.cmd(f"tftp get 10.0.2.2:{TFTP_PORT} remote.txt got.txt", 5000)
     check("tftp download", vm.expect(f"TFTP: {len(TFTP_BODY)} bytes", 15000), vm.buf[-400:])
     vm.cmd("cat got.txt", 2500)
@@ -207,7 +260,7 @@ def main():
     check("http file content", vm.expect("HTTP-FILE-END", 12000), vm.buf[-400:])
 
     vm.cmd("shutdown"); vm.feed(800); vm.close()
-    for s in (srv, tsrv, hsrv):
+    for s in (srv, tsrv, hsrv, usrv):
         try: s.close()
         except Exception: pass
 

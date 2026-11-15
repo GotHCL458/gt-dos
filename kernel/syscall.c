@@ -97,6 +97,34 @@ void syscall_handle(struct regs *r)
         r->rax = (u64)net_http_fetch((const char *)r->rdi,
                                      (const char *)r->rsi, (const char *)r->rdx);
         break;
+    case SYS_UDP_OPEN:
+        r->rax = (u64)udp_open((u16)r->rdi);
+        break;
+    case SYS_UDP_SENDTO:
+        /* rdi=fd, rsi=ip, rdx=port, rcx=data, r8=len */
+        r->rax = (u64)udp_sendto((int)r->rdi, (u32)r->rsi, (u16)r->rdx,
+                                 (const void *)r->rcx, (u32)r->r8);
+        break;
+    case SYS_UDP_RECVFROM: {
+        /* rdi=fd, rsi=buf, rdx=cap, rcx=timeout_ms, r8=src*, r9=sport* */
+        u32 src_ip = 0;
+        u16 src_port = 0;
+        int n = udp_recvfrom((int)r->rdi, (void *)r->rsi, (u32)r->rdx,
+                             (u32)r->rcx, &src_ip, &src_port);
+        if (r->r8)
+            *(u32 *)r->r8 = src_ip;
+        if (r->r9)
+            *(u16 *)r->r9 = src_port;
+        r->rax = (u64)n;
+        break;
+    }
+    case SYS_ICMP_ERR:
+        r->rax = (u64)net_icmp_last_error((struct gt_icmp_err *)r->rdi);
+        break;
+    case SYS_UDP_CLOSE:
+        udp_close((int)r->rdi);
+        r->rax = 0;
+        break;
     case SYS_OPENDIR:
         r->rax = (u64)fat_fd_opendir((const char *)r->rdi);
         break;

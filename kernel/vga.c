@@ -25,9 +25,15 @@ static u16 status_buf_cp[COLS_MAX] __attribute__((section(".highbss")));
 static u8   status_buf_attr[COLS_MAX] __attribute__((section(".highbss")));
 static bool status_active = false;
 
-/* 运行时文本网格: 图形模式按分辨率算, 文本回退模式固定 80x24 */
-static int tcols(void) { return gfx_active() ? gfx_w() / 8 : VGA_COLS; }
-static int trows(void) { return gfx_active() ? gfx_h() / 16 - 1 : TXT_ROWS; }
+/* 运行时文本网格: 图形模式按分辨率与字模缩放算, 文本回退模式固定 80x24 */
+static int cw(void) { return gfx_active() ? gfx_cell_w() : 8; }
+static int ch(void) { return gfx_active() ? gfx_cell_h() : 16; }
+static int tcols(void)
+{
+    int n = gfx_active() ? gfx_w() / cw() : VGA_COLS;
+    return n > COLS_MAX ? COLS_MAX : n;
+}
+static int trows(void) { return gfx_active() ? gfx_h() / ch() - 1 : TXT_ROWS; }
 
 /* ---------------------------------------------------------- 汉字字库 */
 #define GLYPH_BYTES 128              /* 16 行 x 8 字节 (4bit 灰度/像素) */
@@ -134,28 +140,30 @@ static int cur_cx = -1;
 static void gfx_put_cell(int cpos, u16 cp, u8 a)
 {
     u32 fg = vga_pal[a & 0x0F];
-    int x = cpos * 8, y = (trows() - 1) * 16;
+    int w = cw(), h = ch();
+    int x = cpos * w, y = (trows() - 1) * h;
     if (cp == RIGHT_HALF || cp == ' ') {
-        gfx_fill(x, y, 16, 16, vga_pal[a >> 4]);
+        gfx_fill(x, y, w, h, vga_pal[a >> 4]);
         return;
     }
     if (cp < 128) {
-        gfx_fill(x, y, 8, 16, vga_pal[a >> 4]);
+        gfx_fill(x, y, w, h, vga_pal[a >> 4]);
         gfx_char(x, y, cp, fg);
     } else if (is_wide(cp)) {
-        gfx_fill(x, y, 16, 16, vga_pal[a >> 4]);
+        gfx_fill(x, y, w * 2, h, vga_pal[a >> 4]);
         gfx_char(x, y, cp, fg);
     } else {
-        gfx_fill(x, y, 8, 16, vga_pal[a >> 4]);
+        gfx_fill(x, y, w, h, vga_pal[a >> 4]);
         gfx_char(x, y, '?', fg);
     }
 }
 
 static void gfx_draw_cursor(bool on)
 {
+    int w = cw(), h = ch();
     if (!on) {
         if (cur_cx >= 0) {
-            gfx_fill(cur_cx * 8, (trows() - 1) * 16, 8, 16,
+            gfx_fill(cur_cx * w, (trows() - 1) * h, w, h,
                      vga_pal[def_attr >> 4]);
             gfx_put_cell(cur_cx, hist_cp[hist_head][cur_cx],
                          hist_attr[hist_head][cur_cx]);
@@ -166,7 +174,7 @@ static void gfx_draw_cursor(bool on)
     if (view_off > 0 || !cursor_vis)
         return;
     cur_cx = cur_col;
-    gfx_fill(cur_cx * 8, (trows() - 1) * 16, 8, 16,
+    gfx_fill(cur_cx * w, (trows() - 1) * h, w, h,
              vga_pal[attr & 0x0F]);
 }
 
@@ -174,6 +182,7 @@ static void render_gfx(void)
 {
     int newest = hist_total - 1;
     int cols = tcols(), rows = trows();
+    int w = cw(), h = ch();
     gfx_clear(vga_pal[def_attr >> 4]);
 
     for (int r = 0; r < rows; r++) {
@@ -187,7 +196,7 @@ static void render_gfx(void)
             u16 cp = srcp[c];
             if (cp == RIGHT_HALF) { c++; continue; }
             u32 fg = vga_pal[srca[c] & 0x0F];
-            int x = c * 8, y = r * 16;
+            int x = c * w, y = r * h;
             if (cp < 128) {
                 if (cp != ' ') gfx_char(x, y, cp, fg);
                 c++;
@@ -206,19 +215,19 @@ static void render_gfx(void)
         int len = (int)strlen(scroll_msg);
         if (len > cols - 2)
             len = cols - 2;
-        gfx_text((cols - 1 - len) * 8, (rows - 1) * 16,
+        gfx_text((cols - 1 - len) * w, (rows - 1) * h,
                  scroll_msg, vga_pal[C_YELLOW]);
     }
 
-    /* 状态栏: 屏幕底部一行 */
+    /* 状态栏: 屏幕底部 (含缩放余量一起填满) */
     if (status_active) {
-        int sy = gfx_h() - 16;
-        gfx_fill(0, sy, gfx_w(), 16, vga_pal[C_LGRAY]);
+        int sy = rows * h;
+        gfx_fill(0, sy, gfx_w(), gfx_h() - sy, vga_pal[C_LGRAY]);
         int c = 0;
         while (c < cols) {
             u16 cp = status_buf_cp[c];
             if (cp != ' ' && cp < 128)
-                gfx_char(c * 8, sy, cp, vga_pal[C_BLACK]);
+                gfx_char(c * w, sy, cp, vga_pal[C_BLACK]);
             c++;
         }
     }
@@ -229,12 +238,57 @@ static void render_gfx(void)
 /* 单字符追加到当前行 (图形模式局部刷新, 不整屏重绘) */
 static void gfx_append_cell(int cpos, u16 cp, u8 a)
 {
-    int x = cpos * 8;
-    int w = is_wide(cp) ? 16 : 8;
+    int w = cw(), h = ch();
+    int x = cpos * w;
+    int span = is_wide(cp) ? w * 2 : w;
     if (cpos == cur_cx)
         gfx_draw_cursor(false);
     gfx_put_cell(cpos, cp, a);
-    gfx_flip_rect(x, (trows() - 1) * 16, w + 16, 16);
+    gfx_flip_rect(x, (trows() - 1) * h, span + w, h);
+}
+
+/* 只重绘一行文本 (行编辑用, 避免整屏重绘) */
+static void gfx_render_row(int r)
+{
+    int cols = tcols(), w = cw(), h = ch();
+    int logical = hist_total - 1 - view_off - (trows() - 1 - r);
+    gfx_fill(0, r * h, gfx_w(), h, vga_pal[def_attr >> 4]);
+    if (logical < 0)
+        return;
+    const u16 *srcp = hist_cp[line_index(logical)];
+    const u8  *srca = hist_attr[line_index(logical)];
+    int c = 0;
+    while (c < cols) {
+        u16 cp = srcp[c];
+        if (cp == RIGHT_HALF) { c++; continue; }
+        u32 fg = vga_pal[srca[c] & 0x0F];
+        int x = c * w, y = r * h;
+        if (cp < 128) {
+            if (cp != ' ') gfx_char(x, y, cp, fg);
+            c++;
+        } else if (is_wide(cp)) {
+            gfx_char(x, y, cp, fg);
+            c += 2;
+        } else {
+            if (cp != ' ' && cp != 0) gfx_char(x, y, '?', fg);
+            c++;
+        }
+    }
+    gfx_flip_rect(0, r * h, gfx_w(), h);
+}
+
+/* 光标移动: 只刷新新旧两个单元格 */
+static void gfx_cursor_move(void)
+{
+    int w = cw(), h = ch();
+    int y = (trows() - 1) * h;
+    int old = cur_cx;
+    gfx_draw_cursor(false);
+    if (old >= 0)
+        gfx_flip_rect((old > 0 ? old - 1 : 0) * w, y, w * 2, h);
+    gfx_draw_cursor(true);
+    if (cur_cx >= 0)
+        gfx_flip_rect(cur_cx * w, y, w * 2, h);
 }
 
 /* -------------------------------------------------- 经典 VGA 文本后端 */
@@ -487,7 +541,7 @@ void vga_set_col(int col)
     if (!gfx_active())
         hw_cursor();
     else
-        render();
+        gfx_cursor_move();
 }
 
 void vga_set_cursor_visible(bool on)
@@ -540,7 +594,10 @@ void vga_write_raw(const char *s, int n)
             cur_col++;
         }
     }
-    render();
+    if (gfx_active())
+        gfx_render_row(trows() - 1);
+    else
+        render();
     hw_cursor();
 }
 

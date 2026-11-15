@@ -6,6 +6,7 @@ GT-DOS 构建脚本
   python build.py            # 编译, 生成 build/gt-dos-hd.img
   python build.py run        # 只运行 QEMU (不重新编译)
   python build.py run -nogui # 运行, 只输出到终端(串口), 不开图形窗口
+  python build.py run -full  # 运行, 窗口全屏 (分辨率由内核自适配)
   python build.py run -debug # 运行, 打开 CPU/中断跟踪日志
   python build.py all        # 先编译再运行
   python build.py clean      # 清理 build 目录
@@ -434,7 +435,7 @@ def set_utf8_console():
         pass
 
 
-def run_qemu(hd, nogui=False, debug=False):
+def run_qemu(hd, nogui=False, debug=False, full=False):
     if "qemu-system-x86_64" not in TOOLS:
         print("[!] 找不到 qemu-system-x86_64.exe")
         sys.exit(1)
@@ -454,6 +455,8 @@ def run_qemu(hd, nogui=False, debug=False):
     ]
     if nogui:
         cmd += ["-display", "none"]
+    if full:
+        cmd += ["-full-screen"]
     if debug:
         cmd += ["-d", "int,cpu_reset", "-no-reboot", "-no-shutdown"]
 
@@ -499,7 +502,8 @@ def main():
         find_tools()
         run_qemu(hd,
                  nogui=("-nogui" in args or "--nogui" in args),
-                 debug=("-debug" in args or "--debug" in args))
+                 debug=("-debug" in args or "--debug" in args),
+                 full=("-full" in args or "--full" in args))
 
 
 if __name__ == "__main__":

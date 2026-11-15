@@ -128,11 +128,14 @@ const u8 *vga_glyph(u32 cp);         /* 取码点 32 字节字模 (GUI 用, 可�
 
 /* ------------------------------------------------------- 共享图形层 (gfx) */
 bool gfx_available(void);            /* Bochs VBE 可用? */
-bool gfx_init(void);                 /* 进入 640x480x32 + 双缓冲 */
+bool gfx_init(void);                 /* 分辨率自适配 (优先 1920x1080) + 双缓冲 */
 void gfx_shutdown(void);
 bool gfx_active(void);
 int  gfx_w(void);                    /* 当前分辨率宽 */
 int  gfx_h(void);                    /* 当前分辨率高 */
+int  gfx_scale(void);                /* 字模整数倍缩放 (1..3) */
+int  gfx_cell_w(void);               /* 文本单元宽 (8*scale) */
+int  gfx_cell_h(void);               /* 文本单元高 (16*scale) */
 void gfx_clear(u32 c);
 void gfx_fill(int x, int y, int w, int h, u32 c);
 void gfx_frame(int x, int y, int w, int h, u32 c);
@@ -303,27 +306,41 @@ void net_wr_be32(u8 *p, u32 v);
 u16  net_csum(const u8 *p, u32 len, u32 sum);
 bool net_send_ip(u32 dst, u8 proto, const void *payload, u32 len);
 
-/* UDP socket (内部 / DNS / TFTP) */
+/* UDP socket (内部 / DNS / TFTP / 用户 API) */
 int  udp_open(u16 port);
 void udp_close(int fd);
 int  udp_sendto(int fd, u32 ip, u16 dport, const void *data, u32 len);
 int  udp_recvfrom(int fd, void *buf, u32 cap, u32 timeout_ms,
                   u32 *src, u16 *sport);
 
+/* ICMP 差错 (目的不可达/超时) 记录, 供用户程序查询 */
+struct gt_icmp_err {
+    u32 src;                        /* ICMP 报文来源 (通常是网关/对端) */
+    u32 dst;                        /* 出错报文原目的地 */
+    u16 sport, dport;               /* 内层传输层端口 */
+    u8  type, code;                 /* ICMP 类型/代码 (3=不可达, 11=超时) */
+    u8  proto;                      /* 内层协议 (17=UDP, 6=TCP) */
+    u16 reserved;
+    u32 info;                       /* ICMP 正文 (echo 标识/序列号) */
+};
+int  net_icmp_last_error(struct gt_icmp_err *out); /* 1=取到新差错, 0=无 */
+int  udp_socket_count(void);
+
 /* 应用层: DNS / TFTP / HTTP 文件传输 */
 int  net_dns_resolve(const char *name, u32 *out);
 int  net_tftp_fetch(u32 server, u16 port, const char *remote, const char *local);
 int  net_http_fetch(const char *hostport, const char *path, const char *local);
 
-/* TCP (tcp.c) */
+/* TCP (tcp.c): 乱序重组 / 快速重传 / 拥塞控制 / RST */
 int  tcp_connect(u32 ip, u16 port);
 int  tcp_send(int fd, const void *buf, u32 len);
-int  tcp_recv(int fd, void *buf, u32 len);
+int  tcp_recv(int fd, void *buf, u32 len);   /* -1=连接被重置, 0=对端关闭 */
 int  tcp_close(int fd);
 int  tcp_listen(u16 port);
 int  tcp_accept(int fd);
 void tcp_input(u32 src, u32 dst, const u8 *seg, u32 len);
 void tcp_poll(u32 now);
+void tcp_icmp_error(u16 lport, u32 peer);
 int  tcp_socket_count(void);
 
 /* ------------------------------------------------------------------ 控制台 */
@@ -380,7 +397,9 @@ enum {
     SYS_NETINFO = 21, SYS_TCP_CONNECT = 22, SYS_TCP_SEND = 23,
     SYS_TCP_RECV = 24, SYS_TCP_CLOSE = 25, SYS_TCP_LISTEN = 26,
     SYS_TCP_ACCEPT = 27, SYS_DHCP = 28, SYS_DNS = 29,
-    SYS_TFTP_GET = 30, SYS_HTTP_GET = 31
+    SYS_TFTP_GET = 30, SYS_HTTP_GET = 31,
+    SYS_UDP_OPEN = 32, SYS_UDP_SENDTO = 33, SYS_UDP_RECVFROM = 34,
+    SYS_ICMP_ERR = 35, SYS_UDP_CLOSE = 36
 };
 void syscall_handle(struct regs *r);    /* 由 isr_handler 分派 */
 

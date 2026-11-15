@@ -665,6 +665,7 @@ static void cmd_net(void)
     kprintf("DNS       : %s\n", d);
     kprintf("MTU       : %u\n", ni.mtu);
     kprintf("TCP socks : %d\n", tcp_socket_count());
+    kprintf("UDP socks : %d\n", udp_socket_count());
 }
 
 static void cmd_dhcp(void)
@@ -752,6 +753,51 @@ static void cmd_tcp(int argc, char **argv)
         kprintf("No data received.\n");
     }
     tcp_close(fd);
+}
+
+/* UDP 用户 API 测试: 发送 size 字节模式串并等待回显 */
+static u8 udp_buf[4096] __attribute__((section(".highbss")));
+
+static void cmd_udp(int argc, char **argv)
+{
+    if (argc < 3) { err("Usage: UDP <a.b.c.d> <port> [size]\n"); return; }
+    u32 ip;
+    if (!net_parse_ip(argv[1], &ip)) { err("Bad IPv4 address.\n"); return; }
+    int port = atoi_dec(argv[2]);
+    if (port < 1 || port > 65535) { err("Bad port.\n"); return; }
+    int size = argc > 3 ? atoi_dec(argv[3]) : 24;
+    if (size < 1) size = 1;
+    if (size > (int)sizeof(udp_buf)) size = (int)sizeof(udp_buf);
+    if (!net_init()) { err("No supported NIC (RTL8139) found.\n"); return; }
+
+    int fd = udp_open(0);
+    if (fd < 0) { err("UDP: no free socket.\n"); return; }
+
+    static const char pat[] = "UDP-TEST:0123456789abcdef";
+    int plen = (int)sizeof(pat) - 1;
+    for (int i = 0; i < size; i++)
+        udp_buf[i] = (u8)pat[i % plen];
+
+    if (udp_sendto(fd, ip, (u16)port, udp_buf, (u32)size) < 0) {
+        err("UDP: send failed.\n");
+        udp_close(fd);
+        return;
+    }
+    u32 src = 0;
+    u16 sport = 0;
+    int n = udp_recvfrom(fd, file_buf, 4096, 2000, &src, &sport);
+    if (n == -2) {
+        err("UDP: ICMP unreachable (type 3).\n");
+    } else if (n < 0) {
+        err("UDP: no reply.\n");
+    } else {
+        bool same = (n == size) && memcmp(file_buf, udp_buf, (u32)n) == 0;
+        char s[20];
+        net_ip_str(src, s);
+        ok("UDP: sent %d, received %d from %s:%u%s\n",
+           size, n, s, (u32)sport, same ? " (match)" : " (diff)");
+    }
+    udp_close(fd);
 }
 
 static const char *base_name(const char *p)
@@ -1397,6 +1443,8 @@ static void execute(char *line)
         cmd_ping(argc, argv);
     } else if (!strcasecmp(cmd, "tcp")) {
         cmd_tcp(argc, argv);
+    } else if (!strcasecmp(cmd, "udp")) {
+        cmd_udp(argc, argv);
     } else if (!strcasecmp(cmd, "dns")) {
         cmd_dns(argc, argv);
     } else if (!strcasecmp(cmd, "tftp")) {

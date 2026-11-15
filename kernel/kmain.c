@@ -35,6 +35,10 @@ void kmain(void)
     if (ata_init()) {
         vga_load_font();              /* 保护模式用 ATA 读取汉字字库 */
         vga_enter_gfx();              /* 字库就绪后切换图形文本模式 (去 64 槽限制) */
+        if (gfx_active())
+            kprintf("[boot] video: %dx%d x32, font x%d, text %dx%d\n",
+                    gfx_w(), gfx_h(), gfx_scale(),
+                    gfx_w() / gfx_cell_w(), gfx_h() / gfx_cell_h());
         kprintf("[boot] ATA disk: %u sectors (%u MB)\n",
                 ata_sectors(), (ata_sectors() * 512u) / (1024u * 1024u));
         if (fat_mount()) {

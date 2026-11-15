@@ -590,6 +590,9 @@ static void p_primary(void)
                 { "tcp_accept", 27, 1 }, { "dhcp", 28, 0 },
                 { "dns", 29, 1 }, { "tftp_get", 30, 3 },
                 { "http_get", 31, 3 },
+                { "udp_open", 32, 1 }, { "udp_sendto", 33, 5 },
+                { "udp_recvfrom", 34, 6 }, { "icmp_err", 35, 1 },
+                { "udp_close", 36, 1 },
                 { NULL, 0, 0 }
             };
             int nr = -1;

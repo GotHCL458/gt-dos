@@ -1,12 +1,19 @@
-/* TCP (主动连接/被动监听, 数据收发, 重传, 四次挥手).
-   单连接阻塞式 socket 表, 由 INT 0x21 与 shell 调用.
+/* TCP: 主动连接/被动监听, 数据收发, 超时重传, 四次挥手.
+   完整实现包含: 乱序段排队重组 (OOO), 三次重复 ACK 快速重传,
+   慢启动/拥塞避免/快速恢复, 以及 RST 的收发与上报.
+   阻塞式 socket 表, 由 INT 0x21 / shell / netapp 调用.
    收包经 net_poll() -> tcp_input(); 重传与等待都用轮询. */
 #include "gt.h"
 
-#define TCP_MAX    8
-#define TCP_RXBUF  4096
-#define TCP_MSS    1460
-#define TCP_WIN    TCP_RXBUF
+#define TCP_MAX     8
+#define TCP_RXBUF   4096
+#define TCP_SNDBUF  5840                /* 4*MSS: 够 3 个后续段触发快速重传 */
+#define TCP_MSS     1460
+#define TCP_WIN     TCP_RXBUF
+#define TCP_OOO     4                   /* 每个 socket 的乱序段缓存 */
+#define TCP_RTO_MIN 500
+#define TCP_RTO_MAX 4000
+#define TCP_CWND_MAX (8 * TCP_MSS)
 
 #define F_FIN 0x01
 #define F_SYN 0x02
@@ -27,12 +34,25 @@ struct tsock {
     u32  rip;
     u32  iss, irs;
     u32  snd_una, snd_nxt, snd_wnd;
+    u32  cwnd, ssthresh;                /* 拥塞控制 */
+    u32  dupacks;                       /* 连续重复 ACK 计数 */
+    u32  rto, last_ack_ms;
     u32  rcv_nxt;
     u16  mss;
     bool peer_fin;
+    bool in_recovery;
+    u8   err;                           /* 1=对端 RST, 2=ICMP 不可达 */
     u32  rlen;
     u32  state_ms;
+    u32  snd_len;                       /* sndbuf 中未确认字节数 */
     u8   rbuf[TCP_RXBUF];
+    u8   sndbuf[TCP_SNDBUF];
+    struct {
+        bool used;
+        u32  seq;
+        u16  len;
+        u8   data[TCP_MSS];
+    } ooo[TCP_OOO];
 };
 
 static struct tsock socks[TCP_MAX];
@@ -122,6 +142,34 @@ static void tcp_xmit(struct tsock *s, u8 flags, u32 seq, u32 ack,
     net_send_ip(s->rip, 6, seg, total);
 }
 
+/* 重传 sndbuf 首段 (snd_una 起) */
+static void tcp_retransmit(struct tsock *s)
+{
+    if (!s->snd_len)
+        return;
+    u32 n = s->snd_len > s->mss ? s->mss : s->snd_len;
+    tcp_xmit(s, (u8)(F_ACK | F_PSH), s->snd_una, s->rcv_nxt, s->sndbuf, n, false);
+}
+
+/* 无端口匹配时回 RST (RFC 793 简化处理) */
+static void tcp_send_rst(u32 dst, u16 lport, u16 rport, u32 seq, u32 ack,
+                         bool with_ack)
+{
+    u8 seg[20];
+    memset(seg, 0, sizeof(seg));
+    net_wr_be16(seg + 0, lport);
+    net_wr_be16(seg + 2, rport);
+    net_wr_be32(seg + 4, seq);
+    net_wr_be32(seg + 8, ack);
+    seg[12] = (u8)((20 / 4) << 4);
+    seg[13] = (u8)(F_RST | (with_ack ? F_ACK : 0));
+    u32 src = net_ip();
+    u32 sum = (src >> 16) + (src & 0xFFFF) +
+              (dst >> 16) + (dst & 0xFFFF) + 6u + 20u;
+    net_wr_be16(seg + 16, net_csum(seg, 20, sum));
+    net_send_ip(dst, 6, seg, 20);
+}
+
 /* --------------------------------------------------------------- 输入 */
 static struct tsock *sock_find(u32 src, u16 sport, u16 dport)
 {
@@ -160,6 +208,63 @@ static u16 tcp_parse_mss(const u8 *seg, u32 hl)
     return TCP_MSS;
 }
 
+static void tcp_append(struct tsock *s, const u8 *d, u32 n)
+{
+    if (s->rlen + n > TCP_RXBUF)
+        n = TCP_RXBUF - s->rlen;
+    if (!n)
+        return;
+    memcpy(s->rbuf + s->rlen, d, n);
+    s->rlen += n;
+    s->rcv_nxt += n;
+}
+
+/* 按序数据入队, 并从乱序队列里接续可拼的段 */
+static void tcp_deliver_inorder(struct tsock *s, const u8 *d, u32 n)
+{
+    tcp_append(s, d, n);
+    for (bool progress = true; progress; ) {
+        progress = false;
+        for (int i = 0; i < TCP_OOO; i++) {
+            if (!s->ooo[i].used)
+                continue;
+            u32 seq = s->ooo[i].seq;
+            u32 len = s->ooo[i].len;
+            if (seq == s->rcv_nxt) {
+                tcp_append(s, s->ooo[i].data, len);
+                s->ooo[i].used = false;
+                progress = true;
+            } else if (seq < s->rcv_nxt && seq + len > s->rcv_nxt) {
+                u32 skip = s->rcv_nxt - seq;
+                tcp_append(s, s->ooo[i].data + skip, len - skip);
+                s->ooo[i].used = false;
+                progress = true;
+            }
+        }
+    }
+}
+
+static void tcp_store_ooo(struct tsock *s, u32 seq, const u8 *d, u32 n)
+{
+    if (n > TCP_MSS)
+        n = TCP_MSS;
+    int slot = -1;
+    for (int i = 0; i < TCP_OOO; i++) {
+        if (s->ooo[i].used && s->ooo[i].seq == seq) {
+            slot = i;                    /* 重复段: 覆盖 */
+            break;
+        }
+        if (!s->ooo[i].used && slot < 0)
+            slot = i;
+    }
+    if (slot < 0)
+        return;                          /* 队列满: 丢弃, 等对端重传 */
+    s->ooo[slot].used = true;
+    s->ooo[slot].seq = seq;
+    s->ooo[slot].len = (u16)n;
+    memcpy(s->ooo[slot].data, d, n);
+}
+
 void tcp_input(u32 src, u32 dst, const u8 *seg, u32 len)
 {
     if (len < 20 || !net_link_up())
@@ -179,14 +284,31 @@ void tcp_input(u32 src, u32 dst, const u8 *seg, u32 len)
     if (net_csum(seg, len, sum) != 0)
         return;
 
-    struct tsock *s = sock_find(src, sport, dport);
-    if (!s)
-        return;
     const u8 *data = seg + hl;
     u32 dlen = len - hl;
+    u32 now = timer_uptime_ms();
+
+    struct tsock *s = sock_find(src, sport, dport);
+    if (!s) {
+        /* 没有匹配的连接: 按 RFC 793 回 RST, 避免半开连接 */
+        if (!(flags & F_RST)) {
+            if (flags & F_ACK)
+                tcp_send_rst(src, dport, sport, ack, 0, false);
+            else
+                tcp_send_rst(src, dport, sport, 0,
+                             seq + dlen + ((flags & F_SYN) ? 1u : 0u) +
+                             ((flags & F_FIN) ? 1u : 0u), true);
+        }
+        return;
+    }
 
     if (flags & F_RST) {
-        s->state = TS_CLOSED;
+        if (s->state != TS_LISTEN) {
+            s->state = TS_CLOSED;
+            s->err = 1;
+            s->snd_len = 0;
+            s->dupacks = 0;
+        }
         return;
     }
 
@@ -201,8 +323,17 @@ void tcp_input(u32 src, u32 dst, const u8 *seg, u32 len)
             s->snd_nxt = s->iss + 1;
             s->snd_wnd = win ? win : TCP_MSS;
             s->mss = tcp_parse_mss(seg, hl);
+            s->cwnd = s->mss;
+            s->ssthresh = 4 * (u32)s->mss;
+            s->dupacks = 0;
+            s->err = 0;
+            s->in_recovery = false;
             s->state = TS_SYN_RCVD;
             tcp_xmit(s, F_SYN | F_ACK, s->iss, s->rcv_nxt, 0, 0, true);
+            s->last_ack_ms = now;
+            s->rto = TCP_RTO_MIN;
+        } else {
+            tcp_send_rst(src, dport, sport, ack, 0, true);
         }
         return;
     }
@@ -212,9 +343,16 @@ void tcp_input(u32 src, u32 dst, const u8 *seg, u32 len)
             s->irs = seq;
             s->rcv_nxt = seq + 1;
             s->snd_una = ack;
+            s->snd_nxt = ack;
             s->snd_wnd = win ? win : TCP_MSS;
             s->mss = tcp_parse_mss(seg, hl);
+            s->cwnd = s->mss;
+            s->ssthresh = 4 * (u32)s->mss;
+            s->dupacks = 0;
+            s->in_recovery = false;
             s->state = TS_ESTABLISHED;
+            s->last_ack_ms = now;
+            s->rto = TCP_RTO_MIN;
             tcp_xmit(s, F_ACK, s->snd_nxt, s->rcv_nxt, 0, 0, false);
         }
         return;
@@ -225,15 +363,60 @@ void tcp_input(u32 src, u32 dst, const u8 *seg, u32 len)
             return;
         s->snd_una = ack;
         s->state = TS_ESTABLISHED;
+        s->last_ack_ms = now;
     }
 
+    /* ---------------------------------------------------- ACK 与拥塞控制 */
     if (flags & F_ACK) {
-        if (ack > s->snd_una && ack <= s->snd_nxt)
-            s->snd_una = ack;
+        if (ack > s->snd_una && ack <= s->snd_nxt) {
+            u32 acked = ack - s->snd_una;
+            if (acked > s->snd_len)
+                acked = s->snd_len;
+            if (acked) {
+                memmove(s->sndbuf, s->sndbuf + acked, s->snd_len - acked);
+                s->snd_len -= acked;
+                s->snd_una = ack;
+                s->snd_nxt = s->snd_una + s->snd_len;
+                s->dupacks = 0;
+                s->last_ack_ms = now;
+                s->rto = TCP_RTO_MIN;
+                if (s->in_recovery) {
+                    s->cwnd = s->ssthresh;             /* 快速恢复结束 */
+                    s->in_recovery = false;
+                } else if (s->cwnd < s->ssthresh) {
+                    s->cwnd += s->mss;                 /* 慢启动 */
+                } else {
+                    u32 inc = (u32)s->mss * s->mss / s->cwnd;
+                    s->cwnd += inc ? inc : 1;          /* 拥塞避免 */
+                }
+                if (s->cwnd > TCP_CWND_MAX)
+                    s->cwnd = TCP_CWND_MAX;
+            }
+        } else if (ack == s->snd_una && s->snd_len && dlen == 0 &&
+                   !(flags & (F_SYN | F_FIN)) && win == s->snd_wnd) {
+            if (!s->in_recovery) {
+                if (++s->dupacks == 3) {
+                    /* 三次重复 ACK: 快速重传 + 快速恢复 */
+                    s->ssthresh = (s->cwnd / 2 / s->mss) * s->mss;
+                    if (s->ssthresh < 2 * s->mss)
+                        s->ssthresh = 2 * s->mss;
+                    s->cwnd = s->ssthresh + 3 * (u32)s->mss;
+                    s->in_recovery = true;
+                    s->last_ack_ms = now;
+                    s->rto = TCP_RTO_MIN;
+                    tcp_retransmit(s);
+                }
+            } else {
+                s->cwnd += s->mss;
+                if (s->cwnd > TCP_CWND_MAX)
+                    s->cwnd = TCP_CWND_MAX;
+            }
+        }
         s->snd_wnd = win;
+
         if (s->state == TS_FIN_WAIT_1 && ack == s->snd_nxt) {
             s->state = TS_FIN_WAIT_2;
-            s->state_ms = timer_uptime_ms();
+            s->state_ms = now;
         } else if (s->state == TS_LAST_ACK && ack == s->snd_nxt) {
             s->state = TS_CLOSED;
         } else if (s->state == TS_CLOSING && ack == s->snd_nxt) {
@@ -241,11 +424,21 @@ void tcp_input(u32 src, u32 dst, const u8 *seg, u32 len)
         }
     }
 
+    /* -------------------------------------------------------- 数据接收 */
     if (dlen) {
-        if (seq == s->rcv_nxt && s->rlen + dlen <= TCP_RXBUF) {
-            memcpy(s->rbuf + s->rlen, data, dlen);
-            s->rlen += dlen;
-            s->rcv_nxt += dlen;
+        if (seq + dlen <= s->rcv_nxt) {
+            /* 完全重复: 只需 ACK */
+        } else {
+            u32 skip = 0;
+            if ((i32)(seq - s->rcv_nxt) < 0)
+                skip = s->rcv_nxt - seq;
+            u32 useq = seq + skip;
+            const u8 *ud = data + skip;
+            u32 ulen = dlen - skip;
+            if (useq == s->rcv_nxt)
+                tcp_deliver_inorder(s, ud, ulen);
+            else
+                tcp_store_ooo(s, useq, ud, ulen);
         }
         tcp_xmit(s, F_ACK, s->snd_nxt, s->rcv_nxt, 0, 0, false);
     }
@@ -260,8 +453,10 @@ void tcp_input(u32 src, u32 dst, const u8 *seg, u32 len)
             s->state = TS_CLOSE_WAIT;
         else if (s->state == TS_FIN_WAIT_1)
             s->state = TS_CLOSING;
-        else if (s->state == TS_FIN_WAIT_2)
-            s->state = TS_CLOSED;
+        else if (s->state == TS_FIN_WAIT_2) {
+            s->state = TS_TIME_WAIT;
+            s->state_ms = now;
+        }
     }
 }
 
@@ -274,6 +469,19 @@ void tcp_poll(u32 now)
         if (s->state == TS_TIME_WAIT && now - s->state_ms > 1000) {
             s->used = false;
             s->state = TS_CLOSED;
+            continue;
+        }
+        /* 兜底重传: 未被 tcp_send 阻塞覆盖的未确认数据 */
+        if (s->snd_len && s->state != TS_CLOSED && s->state != TS_LISTEN &&
+            now - s->last_ack_ms > s->rto) {
+            s->ssthresh = (s->cwnd / 2 / s->mss) * s->mss;
+            if (s->ssthresh < 2 * s->mss)
+                s->ssthresh = 2 * s->mss;
+            s->cwnd = s->mss;
+            s->in_recovery = false;
+            tcp_retransmit(s);
+            s->last_ack_ms = now;
+            s->rto = s->rto * 2 > TCP_RTO_MAX ? TCP_RTO_MAX : s->rto * 2;
         }
     }
 }
@@ -302,6 +510,9 @@ int tcp_connect(u32 ip, u16 port)
     s->snd_nxt = s->iss + 1;
     s->snd_wnd = TCP_MSS;
     s->mss = TCP_MSS;
+    s->cwnd = TCP_MSS;
+    s->ssthresh = 4 * (u32)TCP_MSS;
+    s->rto = TCP_RTO_MIN;
 
     u64 fl = irq_save();
     cpu_sti();
@@ -324,7 +535,7 @@ int tcp_connect(u32 ip, u16 port)
     }
     irq_restore(fl);
 
-    if (s->state != TS_ESTABLISHED) {
+    if (s->state != TS_ESTABLISHED || s->err) {
         s->used = false;
         s->state = TS_CLOSED;
         return -1;
@@ -335,58 +546,93 @@ int tcp_connect(u32 ip, u16 port)
 int tcp_send(int fd, const void *buf, u32 len)
 {
     struct tsock *s = sock_get(fd);
-    if (!s || s->state != TS_ESTABLISHED || !buf)
+    if (!s || !buf)
         return -1;
+    if (s->err)
+        return -1;
+    if (s->state != TS_ESTABLISHED)
+        return -1;
+    if (len == 0)
+        return 0;
+
     const u8 *p = (const u8 *)buf;
-    u32 sent = 0;
+    u32 off = 0;
+    int timeouts = 0;
     u64 fl = irq_save();
     cpu_sti();
 
-    while (sent < len) {
-        u32 chunk = len - sent;
-        if (chunk > s->mss)
-            chunk = s->mss;
-        if (s->snd_wnd && chunk > s->snd_wnd)
-            chunk = s->snd_wnd;
-        if (chunk == 0) {
-            net_poll();
-            if (s->state != TS_ESTABLISHED)
-                break;
-            cpu_halt();
-            continue;
-        }
-
-        u32 seq = s->snd_nxt;
-        tcp_xmit(s, F_ACK | F_PSH, seq, s->rcv_nxt, p + sent, chunk, false);
-        s->snd_nxt += chunk;
-
-        u32 t0 = timer_uptime_ms();
-        int retry = 0;
-        while (s->snd_una < s->snd_nxt && s->state == TS_ESTABLISHED) {
-            net_poll();
-            if (s->snd_una >= s->snd_nxt || s->state != TS_ESTABLISHED)
-                break;
-            if (timer_uptime_ms() - t0 > 600) {
-                if (++retry > 5)
-                    break;
-                tcp_xmit(s, F_ACK | F_PSH, seq, s->rcv_nxt, p + sent, chunk, false);
-                t0 = timer_uptime_ms();
-            }
-            cpu_halt();
-        }
-        if (s->snd_una < s->snd_nxt || s->state != TS_ESTABLISHED)
+    while (off < len || s->snd_len) {
+        if (s->state != TS_ESTABLISHED || s->err)
             break;
-        sent += chunk;
+
+        /* 在拥塞窗口/对端窗口允许范围内尽量多发 */
+        u32 limit = s->snd_wnd;
+        u32 cw = s->cwnd ? s->cwnd : s->mss;
+        if (cw < limit)
+            limit = cw;
+        if (limit > TCP_SNDBUF)
+            limit = TCP_SNDBUF;
+
+        while (off < len && s->snd_len < limit) {
+            u32 n = len - off;
+            if (n > s->mss)
+                n = s->mss;
+            if (n > TCP_SNDBUF - s->snd_len)
+                n = TCP_SNDBUF - s->snd_len;
+            if (n > limit - s->snd_len)
+                n = limit - s->snd_len;
+            if (!n)
+                break;
+            memcpy(s->sndbuf + s->snd_len, p + off, n);
+            tcp_xmit(s, (u8)(F_ACK | F_PSH), s->snd_una + s->snd_len,
+                     s->rcv_nxt, s->sndbuf + s->snd_len, n, false);
+            s->snd_len += n;
+            s->snd_nxt = s->snd_una + s->snd_len;
+            off += n;
+        }
+
+        if (!s->snd_len && off >= len)
+            break;
+
+        /* 等待 ACK 推进 (快速重传在 tcp_input 中处理) */
+        u32 before = s->snd_una;
+        u32 t0 = timer_uptime_ms();
+        while (s->snd_una == before && s->state == TS_ESTABLISHED && !s->err &&
+               timer_uptime_ms() - t0 < TCP_RTO_MAX) {
+            net_poll();
+            if (s->snd_una != before || s->state != TS_ESTABLISHED || s->err)
+                break;
+            cpu_halt();
+        }
+        if (s->snd_una == before) {
+            if (++timeouts > 5)
+                break;
+            /* 超时: 拥塞窗口收缩 + 指数退避后重传 */
+            s->ssthresh = (s->cwnd / 2 / s->mss) * s->mss;
+            if (s->ssthresh < 2 * s->mss)
+                s->ssthresh = 2 * s->mss;
+            s->cwnd = s->mss;
+            s->in_recovery = false;
+            s->rto = s->rto * 2 > TCP_RTO_MAX ? TCP_RTO_MAX : s->rto * 2;
+            tcp_retransmit(s);
+            s->last_ack_ms = timer_uptime_ms();
+        }
     }
 
+    if (s->err) {
+        irq_restore(fl);
+        return -1;
+    }
     irq_restore(fl);
-    return (int)sent;
+    return (int)off;
 }
 
 int tcp_recv(int fd, void *buf, u32 len)
 {
     struct tsock *s = sock_get(fd);
     if (!s || !buf)
+        return -1;
+    if (s->err)
         return -1;
     if (s->state != TS_ESTABLISHED && s->state != TS_CLOSE_WAIT &&
         s->state != TS_FIN_WAIT_2)
@@ -395,16 +641,20 @@ int tcp_recv(int fd, void *buf, u32 len)
     u64 fl = irq_save();
     cpu_sti();
     u32 t0 = timer_uptime_ms();
-    while (s->rlen == 0 && !s->peer_fin &&
+    while (s->rlen == 0 && !s->peer_fin && !s->err &&
            (s->state == TS_ESTABLISHED || s->state == TS_CLOSE_WAIT ||
             s->state == TS_FIN_WAIT_2) &&
            timer_uptime_ms() - t0 < 3000) {
         net_poll();
-        if (s->rlen || s->peer_fin)
+        if (s->rlen || s->peer_fin || s->err)
             break;
         cpu_halt();
     }
 
+    if (s->err && s->rlen == 0) {
+        irq_restore(fl);
+        return -1;
+    }
     u32 k = len;
     if (k > s->rlen)
         k = s->rlen;
@@ -426,13 +676,14 @@ int tcp_close(int fd)
 
     u64 fl = irq_save();
     cpu_sti();
+    u32 fseq = s->snd_una + s->snd_len;
     if (s->state == TS_ESTABLISHED) {
-        tcp_xmit(s, F_FIN | F_ACK, s->snd_nxt, s->rcv_nxt, 0, 0, false);
-        s->snd_nxt++;
+        tcp_xmit(s, F_FIN | F_ACK, fseq, s->rcv_nxt, 0, 0, false);
+        s->snd_nxt = fseq + 1;
         s->state = TS_FIN_WAIT_1;
     } else if (s->state == TS_CLOSE_WAIT) {
-        tcp_xmit(s, F_FIN | F_ACK, s->snd_nxt, s->rcv_nxt, 0, 0, false);
-        s->snd_nxt++;
+        tcp_xmit(s, F_FIN | F_ACK, fseq, s->rcv_nxt, 0, 0, false);
+        s->snd_nxt = fseq + 1;
         s->state = TS_LAST_ACK;
     } else if (s->state == TS_SYN_SENT || s->state == TS_SYN_RCVD) {
         s->state = TS_CLOSED;
@@ -441,9 +692,9 @@ int tcp_close(int fd)
     u32 t0 = timer_uptime_ms();
     u32 last = t0;
     while (s->state != TS_CLOSED && s->state != TS_TIME_WAIT &&
-           timer_uptime_ms() - t0 < 1500) {
+           s->err == 0 && timer_uptime_ms() - t0 < 1500) {
         net_poll();
-        if (s->state == TS_CLOSED || s->state == TS_TIME_WAIT)
+        if (s->state == TS_CLOSED || s->state == TS_TIME_WAIT || s->err)
             break;
         if (s->state == TS_FIN_WAIT_1 && timer_uptime_ms() - last > 700) {
             tcp_xmit(s, F_FIN | F_ACK, s->snd_nxt - 1, s->rcv_nxt, 0, 0, false);
@@ -453,6 +704,7 @@ int tcp_close(int fd)
     }
     s->used = false;
     s->state = TS_CLOSED;
+    s->snd_len = 0;
     irq_restore(fl);
     return 0;
 }
@@ -472,6 +724,9 @@ int tcp_listen(u16 port)
     s->state = TS_LISTEN;
     s->lport = port;
     s->mss = TCP_MSS;
+    s->cwnd = TCP_MSS;
+    s->ssthresh = 4 * (u32)TCP_MSS;
+    s->rto = TCP_RTO_MIN;
     return slot + 1;
 }
 
@@ -483,12 +738,25 @@ int tcp_accept(int fd)
     u64 fl = irq_save();
     cpu_sti();
     u32 t0 = timer_uptime_ms();
-    while (s->state != TS_ESTABLISHED && timer_uptime_ms() - t0 < 10000) {
+    while (s->state != TS_ESTABLISHED && !s->err &&
+           timer_uptime_ms() - t0 < 10000) {
         net_poll();
-        if (s->state == TS_ESTABLISHED)
+        if (s->state == TS_ESTABLISHED || s->err)
             break;
         cpu_halt();
     }
     irq_restore(fl);
-    return s->state == TS_ESTABLISHED ? 0 : -1;
+    return (s->state == TS_ESTABLISHED && !s->err) ? 0 : -1;
+}
+
+/* ICMP 不可达: 标记匹配的连接, 让 send/recv 返回 -1 */
+void tcp_icmp_error(u16 lport, u32 peer)
+{
+    for (int i = 0; i < TCP_MAX; i++) {
+        struct tsock *s = &socks[i];
+        if (!s->used || s->state == TS_LISTEN)
+            continue;
+        if (s->lport == lport && s->rip == peer)
+            s->err = 2;
+    }
 }

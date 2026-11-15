@@ -25,9 +25,12 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 - ATA PIO 驱动、exFAT 文件系统（长文件名、分配位图、FAT 链）、串口控制台（UTF-8）
 
 **图形**
-- Bochs VBE 线性帧缓冲，LFB 地址通过 PCI 配置空间探测获得
+- Bochs VBE 线性帧缓冲，LFB 地址与显存容量通过 PCI 配置空间探测获得
+- 分辨率自适配：优先 1920x1080，显存或模式不支持时依次回退 1024x768 / 800x600 / 640x480
+- 字模整数倍缩放（1x–3x），自动选取让文本网格铺满屏幕的倍率
+  （例如 1920x1080 下为 2 倍字模、120x33 字符单元）
 - 双缓冲——所有绘制先写入后台缓冲再翻转，因此无闪烁
-- 文本控制台在帧缓冲上以 640x480 软渲染，中文不受 VGA 256 槽限制
+- 文本控制台在帧缓冲上软渲染，中文不受 VGA 256 槽限制
 
 **字体**
 - 16x16 灰度字模，以原生 16 px、GDI `CLEARTYPE_QUALITY` 渲染，填满整个单元
@@ -69,6 +72,14 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 | | | 29 | `SYS_DNS` |
 | | | 30 | `SYS_TFTP_GET` |
 | | | 31 | `SYS_HTTP_GET` |
+| | | 32 | `SYS_UDP_OPEN` |
+| | | 33 | `SYS_UDP_SENDTO` |
+| | | 34 | `SYS_UDP_RECVFROM` |
+| | | 35 | `SYS_ICMP_ERR` |
+| | | 36 | `SYS_UDP_CLOSE` |
+
+- 套接字调用最多使用六个参数（`rdi`、`rsi`、`rdx`、`rcx`、`r8`、`r9`）；
+  前三项与原 ABI 相同，既有程序不受影响
 
 - 基于 exFAT 的 `open/read/write/close/seek` fd 层（fd 0/1/2 为控制台），
   目录句柄经 `SYS_OPENDIR`/`SYS_READDIR` 遍历
@@ -82,12 +93,17 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 
 **网络**
 - RTL8139 PCI 网卡驱动，轮询式收/发环（不依赖网卡中断）
-- Ethernet II + ARP 缓存；IPv4 头部校验；ICMP echo（`PING`）
+- Ethernet II + ARP 缓存；IPv4 头部校验；发送时自动分片、接收时重组分片
+  （2 个重组槽，单个报文最大 8 KB）
+- ICMP echo（`PING`）与 ICMP 差错处理：目的不可达、超时、参数错误会被记录，
+  并让 `udp_recvfrom` 返回 `-2` 或使 TCP 收发失败（用户程序可用 `SYS_ICMP_ERR`
+  取回完整差错记录）
 - UDP 与 DHCP 客户端（`NET` / `DHCP`）；显示链路、MAC、IP、掩码、网关与 DNS
-- TCP：主动/被动连接、MSS 选项、序号/确认、接收窗口、超时重传、按序缓存，
+- TCP：主动/被动连接、MSS 选项、序号/确认、接收窗口、乱序段排队重组、
+  三次重复 ACK 快速重传、慢启动/拥塞避免/快速恢复、RST 收发，
   以及 FIN 四次挥手（`FIN_WAIT_1/2`、`CLOSE_WAIT`、`LAST_ACK`、`CLOSING`）
-- 系统调用 21–31，以及 TC 内置 `ip4`、`tcp_connect`、`tcp_send`、`tcp_recv`、
-  `tcp_close`；Shell 客户端 `TCP <ip> <端口> [文本]`
+- 系统调用 21–36，以及 TC 内置 `ip4`、`tcp_*`、`udp_*`、`icmp_err`；
+  Shell 客户端 `TCP <ip> <端口> [文本]` 与 `UDP <ip> <端口> [字节数]`
 - UDP socket 表与应用协议：DNS A 记录解析（含名称压缩指针）、TFTP 客户端
   （`RRQ`/`DATA`/`ACK` 与超时重传）、HTTP/1.0 `GET` 下载；下载内容写入 exFAT
 - Shell 文件传输：`TFTP GET <ip[:端口]> <远程> [本地]` 与
@@ -146,6 +162,7 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 python build.py            # 编译, 生成 build/gt-dos-hd.img
 python build.py run        # 用 QEMU 启动镜像
 python build.py run -nogui # 仅串口输出, 不开图形窗口
+python build.py run -full  # 全屏窗口 (分辨率由内核自适配)
 python build.py run -debug # 启动并开启 CPU/中断跟踪日志
 python build.py all        # 先编译再运行
 python build.py clean      # 清理 build 目录
@@ -196,7 +213,8 @@ qemu-system-x86_64 -hda gt-dos-hd.img -boot c
 **显示与硬件** — `APIC`、`IRQSTAT`
 
 **网络** — `NET`、`DHCP`、`PING <ip> [次数]`、`TCP <ip> <端口> [文本]`、
-`DNS <域名>`、`TFTP GET <ip[:端口]> <远程> [本地]`、`HTTP GET <主机[:端口]> <路径> [本地]`
+`UDP <ip> <端口> [字节数]`、`DNS <域名>`、`TFTP GET <ip[:端口]> <远程> [本地]`、
+`HTTP GET <主机[:端口]> <路径> [本地]`
 
 **程序** — `RUN <文件.gtp>`（需要管理员权限）、`TC <源.c> [-o 输出.gtp]`（C 子集编译器）
 
@@ -241,7 +259,7 @@ tools/
   test_v03.py        端到端测试: OOBE, 登录, 文件命令
   test_v04.py        回归测试: 单盘 C:, GT-DOS 目录, 属性, 系统保护
   test_syscall.py    INT 0x21 门与 RUN 程序执行测试
-  test_net.py        RTL8139/ARP/ICMP/DHCP/TCP 测试（宿主回显服务器）
+  test_net.py        RTL8139/ARP/ICMP/DHCP/TCP/UDP(分片)/TC 测试（宿主回显服务器）
 build.py             构建脚本与镜像组装
 ```
 
@@ -250,7 +268,7 @@ build.py             构建脚本与镜像组装
 
 ## 说明与限制
 
-- 内核目前为 327 扇区（167,184 字节），加载区间为 `0x10000` 到 `0x80000`。
+- 内核目前为 344 扇区（175,936 字节），加载区间为 `0x10000` 到 `0x80000`。
   若要继续增大，需要调整加载地址。
 - 大块零初始化缓冲（`font_buf`、码点表、后台缓冲）被放置在 1 MB 以上、
   标记为 `NOLOAD` 的 `.highbss` 段。若放在普通 `.bss` 中，会与 `0xA0000`
@@ -258,8 +276,8 @@ build.py             构建脚本与镜像组装
 - TC 仅实现 C 子集：不支持数组、结构体、联合、浮点、`switch`、`?:`、`++/--`
   与可变参数函数；程序代码上限 64KB，全局/字符串区上限 16KB。
 - Shell 文件命令（`TYPE`/`CP`/`MV`/`HEAD`/`WC`/`APPEND`）处理不超过 64KB 的文件。
-- 网络栈仅支持 IPv4，不做 IP 分片重组；TCP 未实现拥塞控制、SACK 与窗口缩放，
-  `TCP_ACCEPT` 一次只处理一个连接。
+- 网络栈仅支持 IPv4（无 IPv6），TCP 未实现 SACK 与窗口缩放，
+  `TCP_ACCEPT` 一次只处理一个连接；UDP 单个报文上限 8 KB（受重组缓冲限制）。
 - TFTP/HTTP 下载先缓存在内存，单个文件上限 64KB。
 - 构建过程需要 Windows；但内核本身是完全独立的，不依赖宿主平台。
 

@@ -20,6 +20,8 @@ Supported C subset:
   string literals, comments, and #include lines are skipped.
 
 Builtins (see TC.H): putc, print, puts, print_int, getc, exit, sleep,
-uptime, open, read, write, close, seek, stat, statx, reboot, shutdown.
+uptime, open, read, write, close, seek, stat, statx, reboot, shutdown,
+tcp_connect/send/recv/close, udp_open/sendto/recvfrom/close, icmp_err,
+dns, dhcp, tftp_get, http_get.
 
 Programs run in ring0 like RUN binaries; only write files you own.

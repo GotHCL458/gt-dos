@@ -43,5 +43,11 @@ int  tcp_connect(int ip, int port);
 int  tcp_send(int fd, void *buf, int n);
 int  tcp_recv(int fd, void *buf, int n);
 int  tcp_close(int fd);
+int  udp_open(int port);
+int  udp_sendto(int fd, int ip, int port, void *data, int len);
+int  udp_recvfrom(int fd, void *buf, int cap, int timeout_ms,
+                  int *src_ip, int *src_port);
+int  udp_close(int fd);
+int  icmp_err(void *st);
 
 #endif /* _GT_TC_H */
