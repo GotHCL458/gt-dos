@@ -17,11 +17,6 @@ struct gtl_lib { bool used; u64 base; int nsym; struct gtl_sym syms[32]; };
 static struct gtl_lib libs[LIB_MAXLIBS];
 static u64 lib_used;                    /* 已占用的库区字节数 */
 
-static u32 rd32(const u8 *p)
-{
-    return (u32)p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) | ((u32)p[3] << 24);
-}
-
 void lib_reset(void)
 {
     for (int i = 0; i < LIB_MAXLIBS; i++)
@@ -48,39 +43,29 @@ int lib_load(const char *path)
     u32 got = 0;
     if (!fat_read_file(path, (void *)base, (u32)(LIB_MAX - lib_used), &got))
         return -1;
-    const u8 *h = (const u8 *)base;
-    if (!(h[0] == 'G' && h[1] == 'T' && h[2] == 'L' && h[3] == '1'))
+    /* 头部与导出表由 Rust 解析 (格式/边界全部在 gt_gtl_parse 内判断) */
+    static struct gt_gtl_info gi;
+    if (gt_gtl_parse((const u8 *)base, got, &gi) != 0)
+        return -1;
+    if (lib_used + gi.image_size > LIB_MAX)
         return -1;
 
-    u32 image_size = rd32(h + 8);
-    u32 count = rd32(h + 12);
-    if (count > 32) return -1;
-    u32 imgoff = 16 + 28 * count;
-    if (image_size == 0 || imgoff + image_size > got) return -1;
-    if (lib_used + image_size > LIB_MAX) return -1;
-
-    /* 先解析导出表 (memmove 会覆盖头部), 再前移 image */
-    static u32 rvas[32];
-    for (u32 i = 0; i < count; i++) {
-        const u8 *e = h + 16 + 28 * i;
-        int n = 0;
-        while (n < 23 && e[n]) {
-            libs[slot].syms[i].name[n] = (char)e[n];
-            n++;
-        }
-        libs[slot].syms[i].name[n] = '\0';
-        rvas[i] = rd32(e + 24);
-    }
-
-    u8 *img = (u8 *)(base + imgoff);
-    memmove((void *)base, img, image_size);
+    /* 镜像前移到库基址 (导出表已复制到 gi, 覆盖头部安全) */
+    memmove((void *)base, (const u8 *)(base + gi.image_off), gi.image_size);
 
     libs[slot].used = true;
     libs[slot].base = base;
-    libs[slot].nsym = (int)count;
-    for (u32 i = 0; i < count; i++)
-        libs[slot].syms[i].addr = base + rvas[i];
-    lib_used += (image_size + 15u) & ~15u;
+    libs[slot].nsym = (int)gi.count;
+    for (u32 i = 0; i < gi.count; i++) {
+        int n = 0;
+        while (n < 23 && gi.exports[i].name[n]) {
+            libs[slot].syms[i].name[n] = gi.exports[i].name[n];
+            n++;
+        }
+        libs[slot].syms[i].name[n] = '\0';
+        libs[slot].syms[i].addr = base + gi.exports[i].rva;
+    }
+    lib_used += (gi.image_size + 15u) & ~15u;
     return slot + 1;                     /* 句柄从 1 开始 */
 }
 

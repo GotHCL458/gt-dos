@@ -26,6 +26,13 @@ static bool layout_ok(void)
     return PROG_BASE > hb && (PROG_BASE + PROG_MAX) <= 0x800000ULL;
 }
 
+/* \GT-DOS\KERNEL.GTP 是内核镜像的受保护视图, 不能当普通程序跳转执行 */
+static bool is_kernel_image(const char *abs)
+{
+    const char *b = base_name(abs);
+    return fat_path_protected(abs) && !strncasecmp(b, "KERNEL.GTP", 10);
+}
+
 int exec_run(const char *abs)
 {
     if (!layout_ok())
@@ -35,9 +42,17 @@ int exec_run(const char *abs)
     if (d.is_dir) return -2;
     if (d.size == 0 || d.size > PROG_MAX) return -3;
     if (exec_active) return -4;
+    if (is_kernel_image(abs)) return -9;
     u32 got = 0;
     if (!fat_read_file(abs, (void *)PROG_BASE, PROG_MAX, &got)) return -5;
     if (got != d.size) return -6;
+
+    /* .gtp 完整性: 与 exFAT 目录项中记录的明文 CRC32 比对 */
+    struct gt_statx sx;
+    if (fat_statx(abs, &sx) == 0 && sx.crc != 0 &&
+        gt_gtp_verify((const u8 *)PROG_BASE, got, sx.crc) != 0)
+        return -8;
+
     exec_active = true;
     lib_reset();                    /* 每个程序独立库命名空间 */
     bool sys = task_path_is_system(abs);

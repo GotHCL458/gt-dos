@@ -263,6 +263,62 @@ static void cmd_mem(void)
     kprintf("Kernel stack        : 16384 bytes\n");
 }
 
+/* KERNEL: 显示内核容器 (GTK1) 自检结果, 并核对磁盘上的受保护 .gtp 视图 */
+static void cmd_kernel(void)
+{
+    u32 ilen = 0, crc = 0;
+    u8 digest[32];
+    if (!kernel_protected_info(&ilen, &crc, digest)) {
+        err("Kernel container: NOT VERIFIED\n");
+        return;
+    }
+
+    static const char hx[] = "0123456789abcdef";
+    char hex[65];
+    for (int i = 0; i < 32; i++) {
+        hex[i * 2] = hx[digest[i] >> 4];
+        hex[i * 2 + 1] = hx[digest[i] & 15];
+    }
+    hex[64] = 0;
+
+    gt_color(C_LCYAN);
+    kprintf("Kernel container : GTK1 v1 (verified at boot)\n");
+    gt_color_reset();
+    kprintf("Image size       : %u bytes (%u sectors)\n",
+            ilen, (ilen + 511) / 512);
+    kprintf("CRC32            : 0x%08x\n", crc);
+    kprintf("SHA-256          : %s\n", hex);
+    kprintf("Runtime task     : kernel.core / kernel.image (SYS, protected)\n");
+
+    if (!fat_ready()) {
+        ui_info("Disk image: volume not mounted (KERNEL.GTP not checked).\n");
+        return;
+    }
+
+    char abs[PATHMAX];
+    resolve_path("\\GT-DOS\\KERNEL.GTP", abs);
+    struct gt_statx sx;
+    if (fat_statx(abs, &sx) != 0) {
+        ui_info("Disk image: \\GT-DOS\\KERNEL.GTP not found.\n");
+        return;
+    }
+
+    u32 got = 0;
+    if (!fat_read_file(abs, (void *)PROG_BASE, (u32)PROG_MAX, &got)) {
+        err("Disk image: read failed.\n");
+        return;
+    }
+    u8 ddisk[32] = { 0 };
+    if (got >= ilen)
+        gt_sha256((const u8 *)PROG_BASE, ilen, ddisk);
+    /* 磁盘视图 = 内核镜像 + 48 字节容器尾部 */
+    if (got == ilen + 48 && memcmp(ddisk, digest, 32) == 0)
+        ok("Disk image       : \\GT-DOS\\KERNEL.GTP matches (protected .gtp)\n");
+    else
+        err("Disk image       : mismatch (size %u, expected %u)\n",
+            got, ilen + 48);
+}
+
 static void cmd_cpuid(void)
 {
     u32 a, b, c, d;
@@ -561,6 +617,8 @@ static void cmd_run(int argc, char **argv)
         case -4: why = "a program is already running"; break;
         case -5: why = "read failed"; break;
         case -6: why = "short read"; break;
+        case -8: why = "integrity check failed (CRC mismatch)"; break;
+        case -9: why = "kernel image is protected"; break;
         default: why = "bad load layout"; break;
         }
         err("RUN failed: %s\n", why);
@@ -1470,6 +1528,8 @@ static void execute(char *line)
         cmd_time();
     } else if (!strncasecmp(cmd, "mem", 8)) {
         cmd_mem();
+    } else if (!strncasecmp(cmd, "kernel", 8)) {
+        cmd_kernel();
     } else if (!strncasecmp(cmd, "cpuid", 8)) {
         cmd_cpuid();
     } else if (!strncasecmp(cmd, "beep", 8)) {

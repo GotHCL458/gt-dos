@@ -62,14 +62,9 @@ static u8 dir_cache[DIR_CACHE_SZ] __attribute__((section(".highbss")));
 #define CLUS_BYTES ((u32)V->sec_per_clus * SEC_SIZE)
 
 /* ------------------------------------------------------------------ 工具 */
-static u16 rd_le16(const u8 *p) { return (u16)((u32)p[0] | ((u32)p[1] << 8)); }
 static u32 rd_le32(const u8 *p)
 {
     return (u32)p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) | ((u32)p[3] << 24);
-}
-static u64 rd_le64(const u8 *p)
-{
-    return (u64)rd_le32(p) | ((u64)rd_le32(p + 4) << 32);
 }
 static void wr_le16(u8 *p, u16 v) { p[0] = (u8)v; p[1] = (u8)(v >> 8); }
 static void wr_le32(u8 *p, u32 v)
@@ -417,83 +412,35 @@ struct finfo {
     u16  mode;
 };
 
-static void set_defaults(struct finfo *fi)
-{
-    memset(fi, 0, sizeof(*fi));
-    strncpy(fi->owner, "SYSTEM", sizeof(fi->owner) - 1);
-    fi->version = 1;
-}
-
-/* 解析 file 目录项及其后续项, idx 为 file 项在目录中的下标 */
+/* 解析 file 目录项集: 格式/校验和/名称/厂商扩展全部由 Rust 完成
+   (gt_exfat_parse), C 侧只把结果转成内部结构. */
 static bool set_parse(int idx, struct finfo *fi)
 {
-    const u8 *e = dir_cache + idx * 32;
-    int count = e[1];
-    if (count < 2 || count > MAX_SET_ENTS - 1)
+    if (idx < 0 || (u32)idx * 32 >= DIR_CACHE_SZ)
         return false;
-    if ((u32)(idx + 1 + count) * 32 > DIR_CACHE_SZ)
+    u32 avail = (u32)(DIR_CACHE_SZ - (u32)idx * 32) / 32;
+
+    struct gt_exfat_entry e;
+    if (gt_exfat_parse(dir_cache + (u32)idx * 32, avail, &e) != 0)
         return false;
 
-    if (set_checksum(e, 1 + count) != rd_le16(e + 2))
-        return false;
-
-    set_defaults(fi);
+    memset(fi, 0, sizeof(*fi));
     fi->used = true;
     fi->idx = idx;
-    fi->count = 1 + count;
-    fi->attr = (u8)rd_le16(e + 4);
-
-    const u8 *stream = 0;
-    int nlen = 0;
-    for (int i = 1; i <= count; i++) {
-        const u8 *s = e + i * 32;
-        if (s[0] == ET_STREAM) {
-            stream = s;
-            nlen = s[3];
-            fi->no_fat = (s[1] & 0x02) != 0;
-            fi->size = rd_le64(s + 8);
-            fi->first = rd_le32(s + 20);
-            if (rd_le64(s + 24) > fi->size)
-                fi->size = rd_le64(s + 24);
-        }
-    }
-    if (!stream)
-        return false;
-
-    int n = 0;
-    for (int i = 1; i <= count && n < nlen; i++) {
-        const u8 *s = e + i * 32;
-        if (s[0] != ET_NAME)
-            continue;
-        for (int j = 0; j < 15 && n < nlen && n < MAX_NAME; j++) {
-            u16 ch = rd_le16(s + 2 + j * 2);
-            fi->name[n++] = (ch && ch < 128) ? (char)ch : '?';
-        }
-    }
-    fi->name[n] = 0;
-    if (n == 0)
-        return false;
-
-    fi->plain_size = (u32)(fi->size > 0xFFFFFFFFu ? 0xFFFFFFFFu : fi->size);
-    for (int i = 1; i <= count; i++) {
-        const u8 *s = e + i * 32;
-        if (s[0] != ET_VENDOR)
-            continue;
-        if (s[1] == GT_XTYPE_ENCRYPT) {
-            fi->xflags = s[4];
-            fi->plain_size = rd_le32(s + 8);
-            fi->crc = rd_le32(s + 16);
-        } else if (s[1] == GT_XTYPE_ACL) {
-            fi->mode = rd_le16(s + 4);
-            memcpy(fi->owner, s + 8, 16);
-            fi->owner[15] = 0;
-        } else if (s[1] == GT_XTYPE_VERSION) {
-            fi->version = rd_le32(s + 4);
-            fi->crc = rd_le32(s + 8);
-        }
-    }
-    if (!fi->owner[0])
-        strncpy(fi->owner, "SYSTEM", sizeof(fi->owner) - 1);
+    fi->count = (int)e.count;
+    fi->attr = (u8)e.attr;
+    fi->no_fat = e.no_fat != 0;
+    fi->size = e.size;
+    fi->first = e.first;
+    fi->plain_size = e.plain_size;
+    fi->xflags = e.xflags;
+    fi->version = e.version;
+    fi->mode = e.mode;
+    fi->crc = e.crc;
+    memcpy(fi->owner, e.owner, sizeof(fi->owner));
+    fi->owner[15] = 0;
+    memcpy(fi->name, e.name, sizeof(fi->name));
+    fi->name[MAX_NAME] = 0;
     return true;
 }
 

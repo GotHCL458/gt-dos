@@ -106,8 +106,26 @@ def main():
     vm.cmd("tasks", 900)
     check("tasks lists kernel services", vm.expect("kernel.core", 4000),
           vm.buf[-300:])
+    check("tasks lists protected image", vm.expect("kernel.image", 4000),
+          vm.buf[-300:])
     check("tasks marks SYS", vm.expect("SYS", 4000), vm.buf[-300:])
+    check("tasks marks protected", vm.expect("PROT", 4000) and
+          vm.expect("yes", 4000), vm.buf[-300:])
     check("tasks shows system owner", vm.expect("SYSTEM", 4000), vm.buf[-300:])
+
+    # 1b) 内核容器自检结果与磁盘受保护视图
+    vm.buf = ""
+    vm.cmd("kernel", 1200)
+    check("kernel container GTK1", vm.expect("GTK1", 4000), vm.buf[-300:])
+    check("kernel shows SHA-256", vm.expect("SHA-256", 4000), vm.buf[-300:])
+    check("kernel disk image matches", vm.expect("matches", 4000),
+          vm.buf[-300:])
+
+    # 1c) 内核镜像的 .gtp 视图不可作为程序执行
+    vm.buf = ""
+    vm.cmd("run \\GT-DOS\\KERNEL.GTP", 1200)
+    check("kernel image not runnable", vm.expect("protected", 4000),
+          vm.buf[-300:])
 
     # 2) 服务清单: \GT-DOS\SERVICES 下加密的 .gtp
     vm.buf = ""

@@ -2,6 +2,14 @@
 ; 引导扇区以 16 位实模式跳转到 _start (物理地址 0x10000, ds=0).
 ; 流程: 实模式 -> 32 位保护模式 -> 建恒等页表 -> PAE + EFER.LME + 分页 -> 长模式 -> kmain.
 
+; GDT 放在低端内存 0x6800 (不在内核镜像内).
+; CPU 装入段寄存器时会置位描述符的 accessed 位, 若 GDT 位于被哈希的 .data
+; 中会破坏内核容器自检, 因此入口代码在运行时构造.
+GDT32_BASE  equ 0x6800
+GDT64_BASE  equ 0x6818
+GDT32_LIMIT equ 23
+GDT64_LIMIT equ 31
+
 BITS 16
 section .boot16
 global _start
@@ -18,13 +26,30 @@ _start:
     mov sp, 0x7C00
     cld
 
+    ; ---- 构造 32/64 位 GDT (低端内存, 不参与内核镜像哈希) ----
+    xor eax, eax
+    mov dword [GDT32_BASE + 0], eax
+    mov dword [GDT32_BASE + 4], eax
+    mov dword [GDT32_BASE + 8], 0x0000FFFF
+    mov dword [GDT32_BASE + 12], 0x00CF9A00
+    mov dword [GDT32_BASE + 16], 0x0000FFFF
+    mov dword [GDT32_BASE + 20], 0x00CF9200
+    mov dword [GDT64_BASE + 0], eax
+    mov dword [GDT64_BASE + 4], eax
+    mov dword [GDT64_BASE + 8], 0x0000FFFF
+    mov dword [GDT64_BASE + 12], 0x00CF9A00
+    mov dword [GDT64_BASE + 16], 0x0000FFFF
+    mov dword [GDT64_BASE + 20], 0x00CF9200
+    mov dword [GDT64_BASE + 24], eax
+    mov dword [GDT64_BASE + 28], 0x00A09A00
+
     ; ---- 打开 A20 地址线 (Fast A20 Gate) ----
     in  al, 0x92
     or  al, 0000_0010b
     out 0x92, al
 
     ; ---- 载入临时 32 位 GDT (栈上构造 6 字节伪描述符) ----
-    mov  eax, gdt32
+    mov  eax, GDT32_BASE
     push dword eax
     push word GDT32_LIMIT
     o32 lgdt [esp]
@@ -123,7 +148,7 @@ pm_start:
     wrmsr
 
     ; ---- 载入含 64 位代码段的 GDT ----
-    mov  eax, gdt64
+    mov  eax, GDT64_BASE
     push dword eax
     push word GDT64_LIMIT
     o32 lgdt [esp]
@@ -156,25 +181,6 @@ long_start:
     cli
     hlt
     jmp .hang
-
-; ----------------------------------------------------------------------------
-section .data
-align 8
-GDT32_LIMIT equ 23
-gdt32:
-    dq 0x0000000000000000           ; 0x00 空
-    dq 0x00CF9A000000FFFF           ; 0x08 32 位代码
-    dq 0x00CF92000000FFFF           ; 0x10 数据
-gdt32_end:
-
-align 8
-GDT64_LIMIT equ 31
-gdt64:
-    dq 0x0000000000000000           ; 0x00 空
-    dq 0x00CF9A000000FFFF           ; 0x08 32 位代码 (保留)
-    dq 0x00CF92000000FFFF           ; 0x10 数据
-    dq 0x00A09A0000000000           ; 0x18 64 位代码: byte5=9A(access), byte6=A0(G=1,L=1)
-gdt64_end:
 
 ; ----------------------------------------------------------------------------
 section .bss

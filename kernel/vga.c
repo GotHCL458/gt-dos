@@ -65,16 +65,8 @@ static const u8 *glyph_of(u16 cp)
 {
     if (!font_ready)
         return 0;
-    int lo = 0, hi = (int)cpm_count - 1;
-    while (lo <= hi) {
-        int mid = (lo + hi) / 2;
-        u16 c = cpm_tab[mid];
-        if (c == cp)
-            return font_tab + (u32)mid * GLYPH_BYTES;
-        if (c < cp) lo = mid + 1;
-        else        hi = mid - 1;
-    }
-    return 0;
+    /* .gtd 码点表二分查找由 Rust 完成 (gt_gtd_lookup) */
+    return gt_gtd_lookup(cpm_tab, cpm_count, font_tab, cp);
 }
 
 /* 取任意码点的 32 字节字模 (gfx.c / GUI 用). 无字模返回 0. */

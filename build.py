@@ -20,11 +20,13 @@ GT-DOS 构建脚本
 =======================================================================
 """
 
+import hashlib
 import os
 import shutil
 import subprocess
 import sys
 import time
+import zlib
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 BUILD = os.path.join(ROOT, "build")
@@ -198,6 +200,7 @@ C_SOURCES = [
     "syscall.c",
     "exec.c",
     "task.c",
+    "protect.c",
 ]
 
 ASM_SOURCES = ["entry.asm", "isr.asm", "exec_asm.asm"]
@@ -299,6 +302,32 @@ def build_kernel():
     return data, sectors
 
 
+def containerize_kernel(image):
+    """把内核镜像封装成受保护容器 (GTK1).
+
+    链接期 .container 节 (48 字节) 收尾, 构建期把其中的 'GTK0' 标记改写为:
+      0  'GTK1' | 4 version | 8 image_len | 12 crc32 | 16 sha256[32]
+    内核启动时用 Rust gtcore 校验, 任一字节不符即 panic.
+    """
+    idx = image.find(b"GTK0")
+    if idx < 0 or idx + 48 != len(image):
+        print(f"[!] 内核容器尾部异常 (GTK0@{idx}, 镜像 {len(image)} 字节)")
+        sys.exit(1)
+
+    body = image[:idx]
+    crc = zlib.crc32(body) & 0xFFFFFFFF
+    digest = hashlib.sha256(body).digest()
+    out = body + b"GTK1" + _le32(1) + _le32(idx) + _le32(crc) + digest
+
+    sectors = (len(out) + SECTOR - 1) // SECTOR
+    if sectors > MAX_KERNEL_SECTORS:
+        print(f"[!] 内核容器过大: {sectors} 扇区 (上限 {MAX_KERNEL_SECTORS})")
+        sys.exit(1)
+    print(f"    内核容器 : GTK1, {len(out)} 字节 ({sectors} 扇区), "
+          f"CRC32={crc:08x}, SHA-256={digest.hex()[:16]}...")
+    return out
+
+
 def patch_at(data, marker, value, skip=0):
     """把 4 字节小端 value 写到 (标记字符串末尾 + skip) 处."""
     idx = data.find(marker)
@@ -333,8 +362,8 @@ def build_demo_assets():
 # 卷格式化、系统文件加密、目录项与厂商扩展全部由 rust/gtmkfs 完成;
 # 本脚本只生成清单并调用一次该工具, 不参与任何加密或文件系统逻辑。
 
-def write_manifest(assets, services):
-    """生成种子清单: 系统头文件/服务程序加密, 示例程序/库/数据保持明文."""
+def write_manifest(assets, services, kernel_image=None):
+    """生成种子清单: 系统头文件/服务/内核镜像加密, 示例程序/库/数据保持明文."""
     inc_dir = os.path.join(ROOT, "kernel", "include")
     lines = ["D \\gt-dos 0x10 SYSTEM", "D \\gt-dos\\include 0x10 SYSTEM"]
     for fn in sorted(os.listdir(inc_dir)):
@@ -355,6 +384,14 @@ def write_manifest(assets, services):
             f.write(payload)
         lines.append(f"F \\gt-dos\\services\\{name.lower()} {host} 0x21 SYSTEM 1")
 
+    # 内核镜像的受保护 .gtp 视图: 与 boot 载入的容器内容一致, 加密存放.
+    # 不参与执行 (exec 拒绝), 供 KERNEL 命令核对.
+    if kernel_image is not None:
+        host = os.path.join(BUILD, "kernel.gtp")
+        with open(host, "wb") as f:
+            f.write(kernel_image)
+        lines.append(f"F \\gt-dos\\kernel.gtp {host} 0x21 SYSTEM 1")
+
     # 系统内 SDK: 明文只读, 供 TC 编译示例程序
     sdk_dir = os.path.join(ROOT, "tools", "sdk")
     if os.path.isdir(sdk_dir):
@@ -370,7 +407,8 @@ def write_manifest(assets, services):
     return mf
 
 
-def make_hd_image(mbr, boot2, kernel, font, cpm, assets, services, mkfs_tool):
+def make_hd_image(mbr, boot2, kernel, font, cpm, assets, services, mkfs_tool,
+                  kernel_image=None):
     """组装单 HDD 镜像: MBR + C: exFAT + 盘尾启动分区."""
     boot_secs = 16
     kern_secs = (len(kernel) + SECTOR - 1) // SECTOR
@@ -429,7 +467,7 @@ def make_hd_image(mbr, boot2, kernel, font, cpm, assets, services, mkfs_tool):
     with open(path, "wb") as f:
         f.write(img)
 
-    mf = write_manifest(assets, services)
+    mf = write_manifest(assets, services, kernel_image)
     r = subprocess.run([mkfs_tool, path, str(PART1_LBA), str(PART1_SECTORS), mf],
                        capture_output=True, text=True)
     if r.returncode != 0:
@@ -460,6 +498,8 @@ def build():
         # 让内核知道宿主可用区域, 窗口模式选不会超出桌面的分辨率
         kernel = patch_at(kernel, b"GTMH", hint_w)
         kernel = patch_at(kernel, b"GTMH", hint_h, skip=4)
+    # 封装受保护内核容器 (所有补丁完成后才能计算摘要)
+    kernel = containerize_kernel(kernel)
     ensure_font(mkfont_tool)
     font = open(os.path.join(BUILD, "font.gtd"), "rb").read()
     cpm = open(os.path.join(BUILD, "cpm.gtd"), "rb").read()
@@ -467,7 +507,7 @@ def build():
     services = {"NETSVC.GTP": build_asm_asset("svc_net.asm", "svc_net.gtp")}
     print("==> 组装单硬盘镜像 (MBR + C: exFAT + 隐藏启动分区)")
     hd = make_hd_image(mbr, boot2, kernel, font, cpm, assets, services,
-                       mkfs_tool)
+                       mkfs_tool, kernel_image=kernel)
     return hd
 
 

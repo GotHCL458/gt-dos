@@ -9,10 +9,20 @@
 
 void kmain(void)
 {
-    /* 1) 尽早初始化串口, 保证后续任何输出都能送到终端 */
+    /* 1) 内核容器自检: 必须在任何代码改写 .data 之前完成 */
+    int kcheck = kernel_self_check();
+
+    /* 2) 尽早初始化串口, 保证后续任何输出都能送到终端 */
     console_init();
 
-    /* 2) 建立中断体系 */
+    if (kcheck != 0) {
+        kprintf("[boot] KERNEL CONTAINER INTEGRITY CHECK FAILED (%d)\n",
+                kcheck);
+        panic("kernel image corrupted");
+    }
+    kprintf("[boot] kernel container GTK1 verified (SHA-256)\n");
+
+    /* 3) 建立中断体系 */
     idt_init();
     pic_init();
     softirq_init();

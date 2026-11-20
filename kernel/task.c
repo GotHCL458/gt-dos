@@ -10,6 +10,7 @@ struct task_ent {
     u8   id;
     u8   type;
     u8   state;
+    bool prot;                    /* SYS 任务受保护 */
     u32  mem_kb;
     char name[20];
     char owner[12];
@@ -41,6 +42,7 @@ int task_register(const char *name, u8 type, u32 mem_kb)
     e->id = ++last_id;
     e->type = type;
     e->state = TASK_RUN;
+    e->prot = (type == TASK_SYS);
     e->mem_kb = mem_kb;
     copy_str(e->name, name, sizeof(e->name));
     copy_str(e->owner, type == TASK_SYS ? "SYSTEM" : user_name(),
@@ -138,7 +140,7 @@ const char *task_last_name(void)
 
 void task_dump(void)
 {
-    kprintf("ID  TYPE  NAME              STATE  MEM    OWNER\n");
+    kprintf("ID  TYPE  PROT  NAME              STATE  MEM    OWNER\n");
     for (int i = 0; i < TASK_MAX; i++) {
         struct task_ent *e = &tasks[i];
         if (!e->used)
@@ -153,9 +155,10 @@ void task_dump(void)
             mem[k++] = 'K';
             mem[k] = 0;
         }
-        kprintf("#%-2u  %-3s  %-16s %-5s  %-4s  %s\n",
+        kprintf("#%-2u  %-3s  %-4s  %-16s %-5s  %-4s  %s\n",
                 (u32)e->id,
                 e->type == TASK_SYS ? "SYS" : "USR",
+                e->prot ? "yes" : "-",
                 e->name,
                 e->state == TASK_RUN ? "run" : "stop",
                 mem, e->owner);
@@ -170,6 +173,7 @@ void task_init(void)
     memset(tasks, 0, sizeof(tasks));
     last_id = 0;
     task_register("kernel.core", TASK_SYS, 0);
+    task_register("kernel.image", TASK_SYS, 0);   /* GTK1 受保护容器 */
     task_register("net.stack", TASK_SYS, 0);
     task_register("fs.exfat", TASK_SYS, 0);
     task_register("tty.console", TASK_SYS, 0);

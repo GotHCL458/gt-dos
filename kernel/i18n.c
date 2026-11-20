@@ -90,7 +90,7 @@ static const struct entry table[] = {
     { "help.text",
       "GT-DOS Commands:\n"
       "  HELP / VER / CLS / ECHO <text>\n"
-      "  DATE / TIME / MEM / UPTIME / CPUID / BEEP\n"
+      "  DATE / TIME / MEM / KERNEL / UPTIME / CPUID / BEEP\n"
       "  SERIAL ON|OFF     toggle serial output\n"
       "  COLOR <0-15>      set text color\n"
       "  DIV0              raise divide-by-zero (test)\n"
@@ -124,7 +124,7 @@ static const struct entry table[] = {
       "Keys: Ctrl+C cancel, NumLock keypad, CapsLock.\n",
       "GT-DOS 命令一览:\n"
       "  HELP VER CLS ECHO <文本>\n"
-      "  DATE TIME MEM UPTIME CPUID BEEP\n"
+      "  DATE TIME MEM KERNEL UPTIME CPUID BEEP\n"
       "  SERIAL ON|OFF  串口开关\n"
       "  COLOR 0-15     文字颜色\n"
       "  DIV0           除零测试\n"

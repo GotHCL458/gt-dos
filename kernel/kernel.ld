@@ -17,7 +17,10 @@ SECTIONS
     . = ALIGN(16);
     .data : { *(.data) *(.data.*) }
 
+    /* 内核容器尾部 (protect.c): 必须位于 .bss 之前, 否则入口清零会抹掉它 */
     . = ALIGN(16);
+    .container : { KEEP(*(.container)) }
+
     __bss_start = .;
     .bss : {
         *(.bss) *(.bss.*)

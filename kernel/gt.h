@@ -272,6 +272,53 @@ struct gt_statx {
 };
 int  fat_statx(const char *path, struct gt_statx *out);
 
+/* ------------------------------------- Rust 格式解析器 (rust/gtcore) */
+/* .gtl 共享库: 头部校验 + 导出表 (C 侧只负责映射与跳转) */
+struct gt_gtl_export {
+    char name[24];
+    u32  rva;
+};
+struct gt_gtl_info {
+    u32 version;
+    u32 image_size;
+    u32 image_off;
+    u32 count;
+    struct gt_gtl_export exports[32];
+};
+int gt_gtl_parse(const u8 *buf, u32 len, struct gt_gtl_info *out);
+
+/* .gtd 字模: 码点表二分查找, 返回 128 字节字模或 0 */
+const u8 *gt_gtd_lookup(const u16 *cpm, u32 count, const u8 *font, u32 cp);
+
+/* .gtp 程序: 明文 CRC32 完整性校验 (0=通过) */
+int gt_gtp_verify(const u8 *buf, u32 len, u32 expect_crc);
+
+/* exFAT 目录项集解析结果 (0x85 + 0xC0/0xC1/0xE0) */
+struct gt_exfat_entry {
+    u16 attr;
+    u8  no_fat;
+    u8  xflags;
+    u32 count;                        /* 目录项集总项数 */
+    u64 size;                         /* 磁盘上的数据长度 */
+    u32 first;                        /* 起始簇 */
+    u32 plain_size;
+    u32 crc;                          /* 明文 CRC32 */
+    u32 version;
+    u16 mode;
+    u16 nlen;
+    u8  owner[16];
+    u8  name[64];
+};
+int gt_exfat_parse(const u8 *ents, u32 avail_ents,
+                   struct gt_exfat_entry *out);
+
+/* SHA-256 (内核容器自检), 结果 32 字节 */
+u32 gt_sha256(const u8 *data, u32 len, u8 out[32]);
+
+/* -------------------------------------------- 内核容器保护 (protect.c) */
+int  kernel_self_check(void);                          /* 0=通过 */
+bool kernel_protected_info(u32 *image_len, u32 *crc, u8 digest[32]);
+
 /* ------------------------------------------------- 内置 C 编译器 (TC) */
 #define TC_SRC_MAX 32768
 const u8  *tc_compile(const char *src, u32 len, u32 *out_len);

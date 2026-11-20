@@ -16,6 +16,8 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
 - Custom MBR (`boot/mbr.asm`) with a hand-written partition table
 - Second-stage loader (`boot/boot.asm`) that loads the kernel with ATA LBA reads (AH=42h / DAP)
 - Kernel loaded at `0x10000`, hard cap of 256 KB
+- The kernel image is a protected container: a `GTK1` trailer records length, CRC32 and
+  SHA-256, and the first C statement verifies the loaded image before any other code runs
 
 **Kernel**
 - 16-bit real mode → 32-bit protected mode → **x64 long mode**, all in `kernel/entry.asm`
@@ -143,6 +145,15 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
 **Security**
 - Every file under `\GT-DOS\` is stored AES-128-CBC encrypted (PKCS#7 padding); the kernel
   decrypts transparently for its own use
+- The kernel is a protected program: a `.container` trailer (`GTK1`) stores its length,
+  CRC32 and SHA-256, and `kernel_self_check()` verifies the loaded image before anything
+  else runs. `KERNEL` prints the verified digest and compares it against the encrypted
+  `\GT-DOS\KERNEL.GTP` view; `RUN` refuses to execute that image.
+- Every `.gtp` program is CRC32-checked against its exFAT vendor metadata before control is
+  transferred, so a tampered or corrupted program is rejected.
+- Format parsers live in Rust (`rust/gtcore`: `parse.rs`, `sha256.rs`): `.gtl` headers and
+  exports, `.gtd` glyph lookup, `.gtp` integrity and exFAT directory entries; the C side
+  keeps only memory mapping and jumps.
 - The cipher and CRC32 are implemented in Rust (`rust/gtcore`, `no_std`) and linked into the
   kernel; the build-time formatter `rust/gtmkfs` uses the same crate for encryption
 - Image formatting, directory entries and vendor extensions are produced entirely by the
@@ -215,8 +226,8 @@ Binary artifacts use GT-DOS semantic suffixes: `.gtb` for raw loader/kernel bina
 
 Type `HELP` (or `?`) inside GT-DOS for the full list. Commands support both long and short names.
 
-**System** — `HELP`/`?`, `VER`, `CLS`, `DATE`, `TIME`, `MEM`, `CPUID`, `UPTIME`, `BEEP`,
-`COLOR`, `SERIAL [OFF]`
+**System** — `HELP`/`?`, `VER`, `CLS`, `DATE`, `TIME`, `MEM`, `KERNEL`, `CPUID`, `UPTIME`,
+`BEEP`, `COLOR`, `SERIAL [OFF]`
 
 **Users** — `WHOAMI`, `USERS`, `LOGIN`, `LOGOUT`/`EXIT`, `PASSWD`, `USERADD`, `USERDEL`,
 `HOSTNAME`, `CONFIG`, `OOBE` (administrator privileges required for `USERADD`, `USERDEL`,
@@ -251,9 +262,11 @@ Ctrl combinations become ASCII control codes, so `Ctrl+C` cancels the current li
 
 ## Tasks and System Services
 
-- Kernel subsystems (`kernel.core`, `net.stack`, `fs.exfat`, `tty.console`, `crypto.aes`) are
-  registered as SYS tasks at boot; `TASKS`/`PS` lists ID, type (SYS/USR), name, state, memory
-  and owner.
+- Kernel subsystems (`kernel.core`, `kernel.image`, `net.stack`, `fs.exfat`, `tty.console`,
+  `crypto.aes`) are registered as SYS tasks at boot; `TASKS`/`PS` lists ID, type (SYS/USR),
+  protection flag, name, state, memory and owner.
+- `kernel.image` represents the `GTK1` container; `KERNEL` shows its verified size, CRC32,
+  SHA-256 and whether `\GT-DOS\KERNEL.GTP` still matches the running image.
 - System services are ordinary `.gtp` programs under `\GT-DOS\SERVICES\`, seeded encrypted at
   build time (for example `NETSVC.GTP`). `SERVICE RUN <name>` executes one; because the file
   lives under `\GT-DOS\`, the running program is registered as a SYS task.
@@ -276,8 +289,9 @@ kernel/
   kmain.c            kernel entry
   idt.c apic.c       interrupts: IDT, APIC/IO-APIC, dispatch
   syscall.c          INT 0x21 system-call dispatch
-  exec.c             RUN program loader (loads a .gtp into PROG_BASE)
-  gtlib.c            .gtl shared-library loader and symbol table
+  exec.c             RUN program loader (loads a .gtp into PROG_BASE, checks CRC)
+  protect.c          GTK1 kernel container and boot-time self-check
+  gtlib.c            .gtl shared-library loader (Rust parses headers/exports)
   tc.c               built-in C subset compiler (x86-64 code generator)
   net.c              RTL8139 driver + ARP/IPv4(fragmentation)/ICMP/UDP/DHCP
   tcp.c              TCP sockets (handshake, OOO, fast retransmit, congestion, close)
@@ -290,7 +304,8 @@ kernel/
   shell.c            command interpreter
   i18n.c power.c oobe.c lib.c            strings, reset/poweroff, first-boot wizard, libc stubs
 rust/
-  gtcore/            no_std AES-128-CBC + CRC32, linked into the kernel and gtmkfs
+  gtcore/            no_std AES-128-CBC + CRC32 + SHA-256 and format parsers
+                     (.gtl/.gtd/.gtp/exFAT), linked into the kernel and gtmkfs
   gtmkfs/            exFAT formatter/populator + encrypted seed files (build-time tool)
   mkfont/            GDI font generator (4-bit grayscale font.gtd + cpm.gtd)
 tools/
@@ -304,6 +319,7 @@ tools/
   test_syscall.py    INT 0x21 gate and RUN program-execution test
   test_net.py        RTL8139/ARP/ICMP/DHCP/TCP/UDP test with a host echo server
   test_tasks.py      system task table, SYS service and protection test
+  test_protect.py    kernel-container and .gtp tamper detection test
   test_kbd.py        PS/2 keyboard test (NumLock, Ctrl combos, Ctrl+Alt+Del)
 build.py             build script and image assembler
 ```
@@ -313,8 +329,11 @@ assert on real boot output rather than on mocks.
 
 ## Notes and Limitations
 
-- The kernel currently fits in 359 sectors (183,304 bytes), loaded between `0x10000` and `0x80000`.
-  Growing past that window requires relocating the load address.
+- The kernel currently fits in 374 sectors (191,376 bytes including the 48-byte `GTK1`
+  trailer), loaded between `0x10000` and `0x80000`. Growing past that window requires
+  relocating the load address.
+- The GDT is built in low memory (0x6800) rather than `.data`: loading a segment register
+  sets the descriptor's accessed bit, which would otherwise invalidate the kernel hash.
 - Large zero-initialised buffers (`font_buf`, the code page table, the back buffer) are placed in
   a `NOLOAD` `.highbss` section above 1 MB. If they were in ordinary `.bss` they would overlap the
   `0xA0000` VGA aperture and corrupt the framebuffer.

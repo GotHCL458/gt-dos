@@ -14,6 +14,8 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 - 自实现 MBR（`boot/mbr.asm`），分区表由构建脚本写入
 - 二级加载器（`boot/boot.asm`），以 ATA LBA 读取（AH=42h / DAP）加载内核
 - 内核加载至 `0x10000`，硬性上限 256 KB
+- 内核以受保护容器形式提供：`GTK1` 尾部记录长度、CRC32 与 SHA-256，
+  第一条 C 语句在任何其它代码之前校验载入镜像
 
 **内核**
 - 16 位实模式 → 32 位保护模式 → **x64 长模式**，全部在 `kernel/entry.asm` 中完成
@@ -134,6 +136,14 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 
 **安全**
 - `\GT-DOS\` 下所有文件以 AES-128-CBC（PKCS#7 填充）密文存储；内核内部读取时透明解密
+- 内核即受保护程序：`.container` 尾部（`GTK1`）保存长度、CRC32 与 SHA-256，
+  `kernel_self_check()` 在任何其它代码之前校验载入镜像；`KERNEL` 命令显示校验结果，
+  并与加密的 `\GT-DOS\KERNEL.GTP` 视图比对；`RUN` 拒绝执行该镜像
+- 每个 `.gtp` 程序在跳转前都会与其 exFAT 厂商元数据中的明文 CRC32 比对，
+  被篡改或损坏的程序会被拒绝
+- 格式解析器位于 Rust 侧（`rust/gtcore`：`parse.rs`、`sha256.rs`）：
+  `.gtl` 头部与导出表、`.gtd` 字模查找、`.gtp` 完整性、exFAT 目录项；
+  C 侧只保留内存映射与跳转
 - 加密与 CRC32 由 Rust 实现（`rust/gtcore`，`no_std`）并链接进内核；
   构建期格式化工具 `rust/gtmkfs` 复用同一份实现
 - 镜像格式化、目录项与厂商扩展完全由 Rust 工具 `rust/gtmkfs` 完成；
@@ -203,8 +213,8 @@ qemu-system-x86_64 -hda gt-dos-hd.img -boot c
 
 在 GT-DOS 中输入 `HELP`（或 `?`）可查看完整列表。命令同时支持长名与短名。
 
-**系统** — `HELP`/`?`、`VER`、`CLS`、`DATE`、`TIME`、`MEM`、`CPUID`、`UPTIME`、`BEEP`、
-`COLOR`、`SERIAL [OFF]`
+**系统** — `HELP`/`?`、`VER`、`CLS`、`DATE`、`TIME`、`MEM`、`KERNEL`、`CPUID`、`UPTIME`、
+`BEEP`、`COLOR`、`SERIAL [OFF]`
 
 **用户** — `WHOAMI`、`USERS`、`LOGIN`、`LOGOUT`/`EXIT`、`PASSWD`、`USERADD`、`USERDEL`、
 `HOSTNAME`、`CONFIG`、`OOBE`（`USERADD`、`USERDEL`、`HOSTNAME`、`SHUTDOWN`、`REBOOT`
@@ -236,8 +246,11 @@ CapsLock 与 NumLock 指示灯随驱动状态更新。
 
 ## 任务与系统服务
 
-- 内核子系统（`kernel.core`、`net.stack`、`fs.exfat`、`tty.console`、`crypto.aes`）在启动时
-  登记为 SYS 任务；`TASKS`/`PS` 显示编号、类型（SYS/USR）、名称、状态、内存与所有者。
+- 内核子系统（`kernel.core`、`kernel.image`、`net.stack`、`fs.exfat`、`tty.console`、
+  `crypto.aes`）在启动时登记为 SYS 任务；`TASKS`/`PS` 显示编号、类型（SYS/USR）、
+  保护标记、名称、状态、内存与所有者。
+- `kernel.image` 代表 `GTK1` 容器；`KERNEL` 显示其校验后的大小、CRC32、SHA-256，
+  以及与 `\GT-DOS\KERNEL.GTP`（加密视图）是否一致。
 - 系统服务是 `\GT-DOS\SERVICES\` 下的普通 `.gtp` 程序（构建期加密写入，例如 `NETSVC.GTP`）。
   `SERVICE RUN <名字>` 运行它；由于程序位于 `\GT-DOS\`，运行期间会登记为 SYS 任务。
 - SYS 任务与服务文件受保护：`SERVICE STOP` 拒绝，`DEL`/`ATTRIB`/`CP` 针对 `\GT-DOS\`
@@ -259,8 +272,9 @@ kernel/
   kmain.c            内核入口
   idt.c apic.c       中断: IDT, APIC/IO-APIC, 分发
   syscall.c          INT 0x21 系统调用分派
-  exec.c             RUN 程序加载器 (把 .gtp 载入 PROG_BASE)
-  gtlib.c            .gtl 共享库加载器与符号表
+  exec.c             RUN 程序加载器 (把 .gtp 载入 PROG_BASE, 校验 CRC)
+  protect.c          GTK1 内核容器与启动自检
+  gtlib.c            .gtl 共享库加载器 (头部/导出表由 Rust 解析)
   tc.c               内置 C 子集编译器 (x86-64 代码生成)
   net.c              RTL8139 驱动 + ARP/IPv4/ICMP/UDP/DHCP
   tcp.c              TCP socket (握手/收发/重传/挥手)
@@ -273,7 +287,8 @@ kernel/
   shell.c            命令解释器
   i18n.c power.c oobe.c lib.c            文案, 复位/关机, 首次启动向导, libc 桩
 rust/
-  gtcore/            no_std AES-128-CBC + CRC32, 同时链接进内核与 gtmkfs
+  gtcore/            no_std AES-128-CBC + CRC32 + SHA-256 与格式解析器
+                     (.gtl/.gtd/.gtp/exFAT), 同时链接进内核与 gtmkfs
   gtmkfs/            exFAT 格式化/填充 + 加密种子文件 (构建期工具)
   mkfont/            GDI 字模生成器 (4bit 灰度 font.gtd + cpm.gtd)
 tools/
@@ -287,6 +302,7 @@ tools/
   test_syscall.py    INT 0x21 门与 RUN 程序执行测试
   test_net.py        RTL8139/ARP/ICMP/DHCP/TCP/UDP(分片)/TC 测试（宿主回显服务器）
   test_tasks.py      系统任务表、SYS 服务与保护测试
+  test_protect.py    内核容器与 .gtp 篡改检测测试
   test_kbd.py        PS/2 键盘测试 (NumLock、Ctrl 组合、Ctrl+Alt+Del)
 build.py             构建脚本与镜像组装
 ```
@@ -296,8 +312,10 @@ build.py             构建脚本与镜像组装
 
 ## 说明与限制
 
-- 内核目前为 359 扇区（183,304 字节），加载区间为 `0x10000` 到 `0x80000`。
-  若要继续增大，需要调整加载地址。
+- 内核目前为 374 扇区（191,376 字节，含 48 字节 `GTK1` 尾部），加载区间为
+  `0x10000` 到 `0x80000`。若要继续增大，需要调整加载地址。
+- GDT 在低端内存（0x6800）由入口代码构造，而非放在 `.data`：CPU 装载段寄存器
+  会置位描述符的 accessed 位，否则会破坏内核哈希。
 - 大块零初始化缓冲（`font_buf`、码点表、后台缓冲）被放置在 1 MB 以上、
   标记为 `NOLOAD` 的 `.highbss` 段。若放在普通 `.bss` 中，会与 `0xA0000`
   处的 VGA 显存孔径重叠并破坏帧缓冲。
