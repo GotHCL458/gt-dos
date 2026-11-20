@@ -1,0 +1,12 @@
+[package]
+name = "gtcore"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[features]
+default = []
+# 内核内使用: no_std + panic_handler
+kernel = []

@@ -39,7 +39,7 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 - 每像素 4 bit、16 级灰度，绘制时与背景做 alpha 混合
 - 约 21,400 个字模（ASCII、拉丁字母、符号与中文）共用自适应基线，
   因此中英文可以整齐排列在同一行
-- 由 `tools/mkfont.py` 生成 `build/font.gtd`（2.75 MB）与 `cpm.gtd`
+- 由 Rust 工具 `rust/mkfont` 生成 `build/font.gtd`（2.75 MB）与 `cpm.gtd`
 
 **系统**
 - OOBE 首次启动向导（语言 → 主机名 → 管理员）
@@ -133,10 +133,11 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
   非管理员写入时内核按所有者校验
 
 **安全**
-- `\GT-DOS\` 下所有文件以 AES-128-CBC（PKCS#7 填充，T 表高速路径）密文存储；
-  内核内部读取时透明解密
-- 镜像格式化与加密完全由独立 C 工具 `tools/gtmkfs.c` 完成（与内核链接同一份
-  `kernel/crypto.c`）；构建脚本只生成种子清单并调用一次该工具
+- `\GT-DOS\` 下所有文件以 AES-128-CBC（PKCS#7 填充）密文存储；内核内部读取时透明解密
+- 加密与 CRC32 由 Rust 实现（`rust/gtcore`，`no_std`）并链接进内核；
+  构建期格式化工具 `rust/gtmkfs` 复用同一份实现
+- 镜像格式化、目录项与厂商扩展完全由 Rust 工具 `rust/gtmkfs` 完成；
+  构建脚本只生成种子清单并调用一次该工具
 - 系统文件严格保护：任何账户（包括 `admin`）都不可读、不可改、不可删
   （`TYPE`/`HEAD`/`WC`/`CP`/`MV` 拒绝，写入与删除被拦截）
 - 非管理员仅可写自己家目录（`\USERS\<名>\`）内的文件
@@ -151,7 +152,8 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 | 依赖 | 说明 |
 | --- | --- |
 | Windows | 构建脚本与字模生成器使用 Win32 API |
-| Python 3.8+ | 用于运行 `build.py` 与 `tools/mkfont.py` |
+| Python 3.8+ | 用于运行 `build.py` |
+| Rust (stable) | `cargo` 需在 `PATH`，并安装裸机目标 `x86_64-unknown-none`（`rustup target add x86_64-unknown-none`） |
 | NASM | `nasm.exe` 需在 `PATH`，或位于 `C:\Program Files\NASM` |
 | LLVM / clang | `clang.exe`、`ld.lld.exe`、`llvm-objcopy.exe` 需在 `D:\LLVM\bin` 或 `C:\Program Files\LLVM\bin` |
 | QEMU | `qemu-system-x86_64.exe` 需在 `qemu/` 目录或 `PATH` 中 |
@@ -171,7 +173,7 @@ python build.py clean      # 清理 build 目录
 ```
 
 首次编译会一并生成字模：当 `build/font.gtd` 或 `build/cpm.gtd` 缺失时，
-会自动调用 `tools/mkfont.py`，耗时明显长于后续编译。
+会自动构建并调用 Rust 工具 `rust/mkfont`。
 
 直接启动已发布的镜像：
 
@@ -220,6 +222,8 @@ qemu-system-x86_64 -hda gt-dos-hd.img -boot c
 
 **程序** — `RUN <文件.gtp>`（需要管理员权限）、`TC <源.c> [-o 输出.gtp]`（C 子集编译器）
 
+**任务与服务** — `TASKS`/`PS`、`SERVICE LIST`、`SERVICE RUN <名字>`、`SERVICE STOP <名字>`
+
 **电源** — `REBOOT`、`SHUTDOWN`/`POWEROFF`（需要管理员权限）
 
 ## 键盘
@@ -229,6 +233,15 @@ Ctrl 组合键转换为 ASCII 控制码：`Ctrl+C` 取消当前行，`Ctrl+A`/`C
 `Ctrl+P`/`Ctrl+N` 翻阅历史；`Ctrl+上/下` 滚动控制台，`Ctrl+Alt+Del` 重启。
 `NumLock` 在小键盘数字/运算符与导航键（Home/End/PgUp/PgDn/Ins/Del）之间切换，
 CapsLock 与 NumLock 指示灯随驱动状态更新。
+
+## 任务与系统服务
+
+- 内核子系统（`kernel.core`、`net.stack`、`fs.exfat`、`tty.console`、`crypto.aes`）在启动时
+  登记为 SYS 任务；`TASKS`/`PS` 显示编号、类型（SYS/USR）、名称、状态、内存与所有者。
+- 系统服务是 `\GT-DOS\SERVICES\` 下的普通 `.gtp` 程序（构建期加密写入，例如 `NETSVC.GTP`）。
+  `SERVICE RUN <名字>` 运行它；由于程序位于 `\GT-DOS\`，运行期间会登记为 SYS 任务。
+- SYS 任务与服务文件受保护：`SERVICE STOP` 拒绝，`DEL`/`ATTRIB`/`CP` 针对 `\GT-DOS\`
+  路径一律拦截。
 
 ## 项目结构
 
@@ -252,24 +265,29 @@ kernel/
   net.c              RTL8139 驱动 + ARP/IPv4/ICMP/UDP/DHCP
   tcp.c              TCP socket (握手/收发/重传/挥手)
   netapp.c           DNS 解析、TFTP 客户端、HTTP GET 下载
-  crypto.c           系统文件加密 (AES-128-CBC, T 表) + CRC32
+  task.c             系统任务表 (SYS/USR) 与 SYS 保护
   timer.c keyboard.c mouse.c serial.c    设备驱动
   softirq.c          输入下半部的延迟处理
   ata.c fat.c cfg.c user.c               存储, exFAT 驱动(含 fd 层), 配置, 账户
   gfx.c vga.c tui.c console.c ui.c       图形层, 文本控制台, 启动画面
   shell.c            命令解释器
   i18n.c power.c oobe.c lib.c            文案, 复位/关机, 首次启动向导, libc 桩
+rust/
+  gtcore/            no_std AES-128-CBC + CRC32, 同时链接进内核与 gtmkfs
+  gtmkfs/            exFAT 格式化/填充 + 加密种子文件 (构建期工具)
+  mkfont/            GDI 字模生成器 (4bit 灰度 font.gtd + cpm.gtd)
 tools/
-  mkfont.py          字模生成器 (GDI -> 4bit 灰度 font.gtd + cpm.gtd)
-  gtmkfs.c           独立 exFAT 格式化/填充 + AES 加密工具 (纯 C)
   sdk/               系统内 SDK: tc.h, net.h, hello.c, fib.c, net.c, readme.txt
   hello.asm          示例程序 (INT 0x21 SYS_WRITE/SYS_EXIT), 种子为 HELLO.GTP
   demo.asm           示例程序: .gtd 读取/seek、stat、.gtl 库调用 (DEMO.GTP)
   sample_lib.asm     示例共享库, 导出 add/mul (SAMPLE.GTL)
+  svc_net.asm        系统服务程序, 种子为 \GT-DOS\SERVICES\NETSVC.GTP
   test_v03.py        端到端测试: OOBE, 登录, 文件命令
   test_v04.py        回归测试: 单盘 C:, GT-DOS 目录, 属性, 系统保护
   test_syscall.py    INT 0x21 门与 RUN 程序执行测试
   test_net.py        RTL8139/ARP/ICMP/DHCP/TCP/UDP(分片)/TC 测试（宿主回显服务器）
+  test_tasks.py      系统任务表、SYS 服务与保护测试
+  test_kbd.py        PS/2 键盘测试 (NumLock、Ctrl 组合、Ctrl+Alt+Del)
 build.py             构建脚本与镜像组装
 ```
 
@@ -278,7 +296,7 @@ build.py             构建脚本与镜像组装
 
 ## 说明与限制
 
-- 内核目前为 348 扇区（177,688 字节），加载区间为 `0x10000` 到 `0x80000`。
+- 内核目前为 359 扇区（183,304 字节），加载区间为 `0x10000` 到 `0x80000`。
   若要继续增大，需要调整加载地址。
 - 大块零初始化缓冲（`font_buf`、码点表、后台缓冲）被放置在 1 MB 以上、
   标记为 `NOLOAD` 的 `.highbss` 段。若放在普通 `.bss` 中，会与 `0xA0000`

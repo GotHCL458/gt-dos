@@ -16,7 +16,7 @@ GT-DOS 构建脚本
   part1 C:    : exFAT 系统盘 (含 \GT-DOS\ 系统目录与 INCLUDE 头文件)
   part2 隐藏  : 盘尾启动分区 (type 0x11, bootable):
                 [boot.gtb | kernel.gtb | font.gtd | cpm.gtd]
-工具链: NASM + clang/LLVM + QEMU
+工具链: NASM + clang/LLVM + Rust + QEMU
 =======================================================================
 """
 
@@ -58,6 +58,10 @@ CANDIDATES = {
     "llvm-objcopy": [
         r"D:\LLVM\bin\llvm-objcopy.exe",
         r"C:\Program Files\LLVM\bin\llvm-objcopy.exe",
+    ],
+    "cargo": [
+        os.path.expanduser(r"~\.cargo\bin\cargo.exe"),
+        r"C:\Program Files\Rust\bin\cargo.exe",
     ],
     "qemu-system-i386": [
         os.path.join(QEMU_DIR, "qemu-system-i386.exe"),
@@ -179,7 +183,6 @@ C_SOURCES = [
     "mouse.c",
     "timer.c",
     "lib.c",
-    "crypto.c",
     "gtlib.c",
     "tc.c",
     "net.c",
@@ -194,20 +197,46 @@ C_SOURCES = [
     "shell.c",
     "syscall.c",
     "exec.c",
+    "task.c",
 ]
 
 ASM_SOURCES = ["entry.asm", "isr.asm", "exec_asm.asm"]
 
+# Rust 组件 (crypto/crc32 内核库 + 宿主工具 gtmkfs/mkfont)
+RUST_DIR = os.path.join(ROOT, "rust")
+RUST_TARGET = os.path.join(RUST_DIR, "target")
+RUST_MANIFEST = os.path.join(RUST_DIR, "Cargo.toml")
+RUST_TRIPLE = "x86_64-unknown-none"
 
-def ensure_font():
-    """font.gtd / cpm.gtd 缺失时自动调用 tools/mkfont.py 生成."""
+
+def build_rust_tools():
+    """编译 Rust 宿主工具: gtmkfs (exFAT 镜像) 与 mkfont (字模)."""
+    print("==> 编译 Rust 工具 (gtmkfs / mkfont)")
+    run([TOOLS["cargo"], "build", "--release", "--offline",
+         "--manifest-path", RUST_MANIFEST])
+    exe = ".exe" if os.name == "nt" else ""
+    return (os.path.join(RUST_TARGET, "release", "gtmkfs" + exe),
+            os.path.join(RUST_TARGET, "release", "mkfont" + exe))
+
+
+def build_rust_kernel_lib():
+    """编译 no_std 的 gtcore 静态库 (AES-128-CBC + CRC32), 链接进内核."""
+    print("==> 编译 Rust 内核库 (gtcore)")
+    run([TOOLS["cargo"], "build", "--release", "--offline", "-p", "gtcore",
+         "--target", RUST_TRIPLE, "--features", "kernel",
+         "--manifest-path", RUST_MANIFEST])
+    return os.path.join(RUST_TARGET, RUST_TRIPLE, "release", "libgtcore.a")
+
+
+def ensure_font(mkfont_tool):
+    """font.gtd / cpm.gtd 缺失时调用 Rust 版 mkfont 生成."""
     fpath = os.path.join(BUILD, "font.gtd")
     cpath = os.path.join(BUILD, "cpm.gtd")
     if os.path.isfile(fpath) and os.path.isfile(cpath):
         return
-    print("==> 字模缺失, 调用 tools/mkfont.py 生成 (首次较慢)")
-    r = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "mkfont.py")],
-                       capture_output=True, text=True)
+    print("==> 字模缺失, 调用 mkfont 生成 (首次较慢)")
+    r = subprocess.run([mkfont_tool, BUILD], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
     print(r.stdout)
     if r.returncode != 0:
         print(r.stderr)
@@ -251,8 +280,10 @@ def build_kernel():
         run([TOOLS["clang"]] + CFLAGS + ["-c", src, "-o", obj], cwd=ROOT)
         objs.append(obj)
 
+    objs.append(build_rust_kernel_lib())
+
     elf = os.path.join(BUILD, "kernel.elf")
-    run([TOOLS["ld.lld"], "-m", "elf_x86_64", "-T",
+    run([TOOLS["ld.lld"], "-m", "elf_x86_64", "--gc-sections", "-T",
          os.path.join(ROOT, "kernel", "kernel.ld"),
          "-o", elf] + objs)
 
@@ -298,34 +329,12 @@ def build_demo_assets():
     }
 
 
-# ------------------------------------------------------- 构建期 exFAT 工具 (纯 C)
-# 卷格式化、系统文件加密、目录项与厂商扩展全部由 tools/gtmkfs.c 完成;
-# 本脚本只生成清单并调用一次该工具, 不参与任何加密或文件系统逻辑.
+# ------------------------------------------------------- 构建期 exFAT 工具 (Rust)
+# 卷格式化、系统文件加密、目录项与厂商扩展全部由 rust/gtmkfs 完成;
+# 本脚本只生成清单并调用一次该工具, 不参与任何加密或文件系统逻辑。
 
-def _host_cc():
-    for c in (os.path.join(ROOT, "mingw64", "bin", "gcc.exe"),
-              r"C:\mingw64\bin\gcc.exe",
-              r"C:\Program Files\mingw64\bin\gcc.exe",
-              "gcc"):
-        if os.path.isabs(c):
-            if os.path.isfile(c):
-                return c
-        else:
-            return c
-    return "gcc"
-
-
-def build_mkfs_tool():
-    """编译独立 exFAT 工具 build/gtmkfs.exe (复用 kernel/crypto.c)."""
-    out = os.path.join(BUILD, "gtmkfs.exe")
-    run([_host_cc(), "-O2", "-I", os.path.join(ROOT, "kernel"),
-         os.path.join(ROOT, "tools", "gtmkfs.c"),
-         os.path.join(ROOT, "kernel", "crypto.c"), "-o", out])
-    return out
-
-
-def write_manifest(assets):
-    """生成种子清单: 系统头文件加密, 示例程序/库/数据保持明文."""
+def write_manifest(assets, services):
+    """生成种子清单: 系统头文件/服务程序加密, 示例程序/库/数据保持明文."""
     inc_dir = os.path.join(ROOT, "kernel", "include")
     lines = ["D \\gt-dos 0x10 SYSTEM", "D \\gt-dos\\include 0x10 SYSTEM"]
     for fn in sorted(os.listdir(inc_dir)):
@@ -337,6 +346,14 @@ def write_manifest(assets):
         with open(host, "wb") as f:
             f.write(payload)
         lines.append(f"F \\{name.lower()} {host} 0x20 SYSTEM 0")
+
+    # 系统服务: 加密的 .gtp 程序, 以 SYS 任务身份运行且受保护
+    lines.append("D \\gt-dos\\services 0x10 SYSTEM")
+    for name, payload in services.items():
+        host = os.path.join(BUILD, name.lower())
+        with open(host, "wb") as f:
+            f.write(payload)
+        lines.append(f"F \\gt-dos\\services\\{name.lower()} {host} 0x21 SYSTEM 1")
 
     # 系统内 SDK: 明文只读, 供 TC 编译示例程序
     sdk_dir = os.path.join(ROOT, "tools", "sdk")
@@ -353,7 +370,7 @@ def write_manifest(assets):
     return mf
 
 
-def make_hd_image(mbr, boot2, kernel, font, cpm, assets, mkfs_tool):
+def make_hd_image(mbr, boot2, kernel, font, cpm, assets, services, mkfs_tool):
     """组装单 HDD 镜像: MBR + C: exFAT + 盘尾启动分区."""
     boot_secs = 16
     kern_secs = (len(kernel) + SECTOR - 1) // SECTOR
@@ -412,7 +429,7 @@ def make_hd_image(mbr, boot2, kernel, font, cpm, assets, mkfs_tool):
     with open(path, "wb") as f:
         f.write(img)
 
-    mf = write_manifest(assets)
+    mf = write_manifest(assets, services)
     r = subprocess.run([mkfs_tool, path, str(PART1_LBA), str(PART1_SECTORS), mf],
                        capture_output=True, text=True)
     if r.returncode != 0:
@@ -432,23 +449,25 @@ def make_hd_image(mbr, boot2, kernel, font, cpm, assets, mkfs_tool):
 
 def build():
     os.makedirs(BUILD, exist_ok=True)
+    mkfs_tool, mkfont_tool = build_rust_tools()
     print("==> 编译 MBR / stage2 (NASM, 16-bit)")
     mbr = build_mbr()
     boot2 = build_boot2()
-    print("==> 编译内核 (NASM + clang/LLVM, x86-64 long mode)")
+    print("==> 编译内核 (NASM + clang/LLVM + Rust, x86-64 long mode)")
     kernel, _ = build_kernel()
     hint_w, hint_h = display_hint()
     if hint_w and hint_h:
         # 让内核知道宿主可用区域, 窗口模式选不会超出桌面的分辨率
         kernel = patch_at(kernel, b"GTMH", hint_w)
         kernel = patch_at(kernel, b"GTMH", hint_h, skip=4)
-    ensure_font()
+    ensure_font(mkfont_tool)
     font = open(os.path.join(BUILD, "font.gtd"), "rb").read()
     cpm = open(os.path.join(BUILD, "cpm.gtd"), "rb").read()
     assets = build_demo_assets()
-    mkfs_tool = build_mkfs_tool()
+    services = {"NETSVC.GTP": build_asm_asset("svc_net.asm", "svc_net.gtp")}
     print("==> 组装单硬盘镜像 (MBR + C: exFAT + 隐藏启动分区)")
-    hd = make_hd_image(mbr, boot2, kernel, font, cpm, assets, mkfs_tool)
+    hd = make_hd_image(mbr, boot2, kernel, font, cpm, assets, services,
+                       mkfs_tool)
     return hd
 
 

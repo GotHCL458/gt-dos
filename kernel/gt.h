@@ -404,6 +404,23 @@ enum {
 };
 void syscall_handle(struct regs *r);    /* 由 isr_handler 分派 */
 
+/* --------------------------------------------------- 系统任务表 (task.c) */
+#define TASK_SYS 1
+#define TASK_USR 0
+#define TASK_RUN 1
+#define TASK_STOP 0
+
+void task_init(void);                                  /* 登记内核服务 */
+int  task_register(const char *name, u8 type, u32 mem_kb);
+void task_end(int id);
+int  task_count(u8 type);                              /* 0xFF = 全部 */
+bool task_is_sys(int id);
+int  task_kill(int id);                                /* -2=SYS 受保护 */
+int  task_stop(const char *name);                      /* 按名称停止, -2=SYS */
+bool task_path_is_system(const char *abs);             /* \GT-DOS\ 下的程序 */
+const char *task_last_name(void);
+void task_dump(void);
+
 /* ------------------------------------------------ 程序执行模型 (exec) */
 #define PROG_BASE       0x600000ULL
 #define PROG_MAX        0x100000ULL

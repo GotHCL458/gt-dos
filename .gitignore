@@ -16,3 +16,5 @@ __pycache__/
 
 # 运行日志
 *.log
+# Rust 构建缓存
+/rust/target/

@@ -11,6 +11,15 @@ static volatile bool exec_active;
 
 bool exec_is_active(void) { return exec_active; }
 
+static const char *base_name(const char *p)
+{
+    const char *b = p;
+    for (; *p; p++)
+        if (*p == '\\' || *p == '/')
+            b = p + 1;
+    return b;
+}
+
 static bool layout_ok(void)
 {
     u64 hb = (u64)__highbss_end;
@@ -31,7 +40,11 @@ int exec_run(const char *abs)
     if (got != d.size) return -6;
     exec_active = true;
     lib_reset();                    /* 每个程序独立库命名空间 */
+    bool sys = task_path_is_system(abs);
+    int tid = task_register(base_name(abs), sys ? TASK_SYS : TASK_USR,
+                            (d.size + 1023) / 1024);
     u64 code = exec_enter(PROG_BASE, PROG_STACK_TOP, exec_ctx);
+    task_end(tid);
     exec_active = false;
     return (int)code;
 }

@@ -876,6 +876,78 @@ static void cmd_http(int argc, char **argv)
         ok("HTTP: %d bytes -> %s\n", n, loc);
 }
 
+/* ------------------------------------------------------------ 任务/服务 */
+static void cmd_tasks(void)
+{
+    task_dump();
+}
+
+/* 系统服务是 \GT-DOS\SERVICES 下的 .gtp 程序, 以 SYS 任务身份运行且受保护 */
+static void cmd_service(int argc, char **argv)
+{
+    char abs[PATHMAX];
+    if (argc < 2 || !strcasecmp(argv[1], "list")) {
+        if (!fat_ready()) { err("No volume mounted. Type MOUNT first.\n"); return; }
+        resolve_path("\\GT-DOS\\SERVICES", abs);
+        struct fat_dirent ents[32];
+        fat_set_show_all(true);
+        int n = fat_list_dir(abs, ents, 32);
+        fat_set_show_all(false);
+        if (n < 0) { err("No system services installed.\n"); return; }
+        kprintf("System services (\\GT-DOS\\SERVICES, SYS/protected):\n");
+        for (int i = 0; i < n; i++) {
+            if (ents[i].is_dir)
+                continue;
+            kprintf("  [SYS] %-14s %6u bytes\n", ents[i].name, ents[i].size);
+        }
+        return;
+    }
+    if (!strcasecmp(argv[1], "run")) {
+        if (argc < 3) { err("Usage: SERVICE RUN <name>\n"); return; }
+        if (!need_admin()) return;
+        char name[40];
+        int k = 0;
+        for (const char *p = argv[2]; *p && k < 31; p++)
+            name[k++] = *p;
+        name[k] = 0;
+        bool dot = false;
+        for (int i = 0; name[i]; i++)
+            if (name[i] == '.') dot = true;
+        if (!dot) {
+            if (k > 34) k = 34;
+            name[k++] = '.'; name[k++] = 'g'; name[k++] = 't'; name[k++] = 'p';
+            name[k] = 0;
+        }
+        char rel[96];
+        int m = 0;
+        const char *pre = "\\GT-DOS\\SERVICES\\";
+        while (*pre && m < 80) rel[m++] = *pre++;
+        for (int i = 0; name[i] && m < 90; i++) rel[m++] = name[i];
+        rel[m] = 0;
+        resolve_path(rel, abs);
+        int rc = exec_run(abs);
+        if (rc < 0)
+            err("Service failed to start (%d).\n", rc);
+        else
+            ok("Service %s exited with code %d.\n", name, rc);
+        return;
+    }
+    if (!strcasecmp(argv[1], "stop")) {
+        if (argc < 3) { err("Usage: SERVICE STOP <name>\n"); return; }
+        int rc = task_stop(argv[2]);
+        if (rc == -2)
+            err("Permission denied: system service is protected (SYS).\n");
+        else if (rc == -3)
+            err("Service is running (cooperative); cannot stop.\n");
+        else if (rc < 0)
+            err("No such service task: %s\n", argv[2]);
+        else
+            ok("Service stopped.\n");
+        return;
+    }
+    err("Usage: SERVICE LIST | RUN <name> | STOP <name>\n");
+}
+
 static void cmd_df(void)
 {
     if (!fat_ready()) {
@@ -1451,6 +1523,10 @@ static void execute(char *line)
         cmd_tftp(argc, argv);
     } else if (!strcasecmp(cmd, "http")) {
         cmd_http(argc, argv);
+    } else if (!strcasecmp(cmd, "tasks") || !strcasecmp(cmd, "ps")) {
+        cmd_tasks();
+    } else if (!strcasecmp(cmd, "service") || !strcasecmp(cmd, "services")) {
+        cmd_service(argc, argv);
     } else if (!strcasecmp(cmd, "tc")) {
         cmd_tc(argc, argv);
     } else if (!strncasecmp(cmd, "run", 8)) {
