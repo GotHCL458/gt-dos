@@ -16,6 +16,8 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 - 内核加载至 `0x10000`，硬性上限 256 KB
 - 内核以受保护容器形式提供：`GTK1` 尾部记录长度、CRC32 与 SHA-256，
   第一条 C 语句在任何其它代码之前校验载入镜像
+- 内核代码与只读数据用 4KB 页映射并清除 RW 位，内核态同样不可写；
+  空闲看门狗每 5 秒按 `GTR1` CRC32 复核一次，不一致立即停机
 
 **内核**
 - 16 位实模式 → 32 位保护模式 → **x64 长模式**，全部在 `kernel/entry.asm` 中完成
@@ -117,16 +119,20 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 **内置 C 编译器 (TC) 与 SDK**
 - `TC <源.c> [-o 输出.gtp]` 直接把 C 子集编译为 x86-64 机器码，生成可由 `RUN`
   执行的 `.gtp` 程序，全程不依赖外部工具链
-- 支持：`int`/`char`/指针变量、常量初始化的全局变量、最多 6 个参数的函数与递归、
-  `if/else`、`while`、`for`、`break`/`continue`/`return`、算术/位/比较运算、
-  `&& || !`、字符串字面量与注释
+- 支持：`int`/`char`/指针、1–4 维数组、`struct`/`union`（字段、嵌套结构、`.` 与 `->`）、
+  函数（最多 6 参数、递归、原型）、`if/else`、`while`、`for`、
+  `switch/case/default`（可穿透）、`break`/`continue`/`return`、完整整数表达式与
+  `?:`、前置/后置 `++`/`--`、复合赋值、字符串字面量、全局/局部花括号与字符串初始化
+- 不支持：浮点、可变参数函数、函数指针、`typedef`/`enum`/`sizeof`、强制类型转换与位域；
+  预处理仅跳过指令行
 - 内置函数（`\SDK\TC.H`）：`putc`、`print`、`puts`、`print_int`、`getc`、`exit`、
   `sleep`、`uptime`、`open`、`read`、`write`、`close`、`seek`、`stat`、`statx`、
   `reboot`、`shutdown`；`\SDK\NET.H` 另含 `ip4`、`tcp_connect`、`tcp_send`、
   `tcp_recv`、`tcp_close`、`dns`、`tftp_get`、`http_get`
 - `\SDK\` 提供明文只读 SDK：`TC.H`、`HELLO.C`、`FIB.C`、`README.TXT`；
   配合 `PUT` 与 `APPEND` 可在系统内逐行编写源码
-- 程序布局：代码 64KB 位于 `0x600000`，数据/全局区位于 `0x610000`
+- 程序布局：代码 128KB 位于 `0x600000`，数据 128KB 位于 `0x620000`
+  （全局 64KB + 字符串池 64KB）
 
 **exFAT 厂商扩展**
 - 每个文件/目录的目录项集附带 3 个厂商扩展项（类型 `0xE0`）：
@@ -139,6 +145,8 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 - 内核即受保护程序：`.container` 尾部（`GTK1`）保存长度、CRC32 与 SHA-256，
   `kernel_self_check()` 在任何其它代码之前校验载入镜像；`KERNEL` 命令显示校验结果，
   并与加密的 `\GT-DOS\KERNEL.GTP` 视图比对；`RUN` 拒绝执行该镜像
+- 运行时防篡改：代码/只读数据区间为 4KB 只读页（CR0.WP 已置位），
+  空闲看门狗每 5 秒复核，`KERNEL VERIFY` 可手动复核；不一致立即停机
 - 每个 `.gtp` 程序在跳转前都会与其 exFAT 厂商元数据中的明文 CRC32 比对，
   被篡改或损坏的程序会被拒绝
 - 格式解析器位于 Rust 侧（`rust/gtcore`：`parse.rs`、`sha256.rs`）：
@@ -273,9 +281,9 @@ kernel/
   idt.c apic.c       中断: IDT, APIC/IO-APIC, 分发
   syscall.c          INT 0x21 系统调用分派
   exec.c             RUN 程序加载器 (把 .gtp 载入 PROG_BASE, 校验 CRC)
-  protect.c          GTK1 内核容器与启动自检
+  protect.c          GTK1 内核容器、4KB 写保护、自检与看门狗
   gtlib.c            .gtl 共享库加载器 (头部/导出表由 Rust 解析)
-  tc.c               内置 C 子集编译器 (x86-64 代码生成)
+  tc.c               内置 C 编译器 (数组/结构体/switch/三目, x86-64)
   net.c              RTL8139 驱动 + ARP/IPv4/ICMP/UDP/DHCP
   tcp.c              TCP socket (握手/收发/重传/挥手)
   netapp.c           DNS 解析、TFTP 客户端、HTTP GET 下载
@@ -312,15 +320,20 @@ build.py             构建脚本与镜像组装
 
 ## 说明与限制
 
-- 内核目前为 374 扇区（191,376 字节，含 48 字节 `GTK1` 尾部），加载区间为
-  `0x10000` 到 `0x80000`。若要继续增大，需要调整加载地址。
+- 内核目前为 449 扇区（229,696 字节，含 48 字节 `GTK1` 尾部），加载区间为
+  `0x10000` 到 `0x80000`（余量 63 扇区）。若要继续增大，需要调整加载地址。
 - GDT 在低端内存（0x6800）由入口代码构造，而非放在 `.data`：CPU 装载段寄存器
   会置位描述符的 accessed 位，否则会破坏内核哈希。
+- 启动哈希覆盖完整镜像（代码 + 只读数据 + 数据段）；运行时看门狗只覆盖不可变的
+  `[0x10000, __ro_end)`，因为 `.data` 在运行中会合法变化。
 - 大块零初始化缓冲（`font_buf`、码点表、后台缓冲）被放置在 1 MB 以上、
   标记为 `NOLOAD` 的 `.highbss` 段。若放在普通 `.bss` 中，会与 `0xA0000`
   处的 VGA 显存孔径重叠并破坏帧缓冲。
-- TC 仅实现 C 子集：不支持数组、结构体、联合、浮点、`switch`、`?:`、`++/--`
-  与可变参数函数；程序代码上限 64KB，全局/字符串区上限 16KB。
+- TC 已支持数组、结构体/联合、`switch`、`?:`、`++/--`；仍不支持浮点、可变参数、
+  函数指针、`typedef`/`enum`/`sizeof`。程序代码上限 128KB，数据上限 128KB
+  （全局 64KB + 字符串 64KB）。
+- 内核 `.bss` 必须保持在 `0xA0000`（VGA 孔径）以下，`.highbss` 必须低于 `LIB_BASE`；
+  链接脚本对两者都有断言，表过大时会直接构建失败。
 - Shell 文件命令（`TYPE`/`CP`/`MV`/`HEAD`/`WC`/`APPEND`）处理不超过 64KB 的文件。
 - 网络栈仅支持 IPv4（无 IPv6），TCP 未实现 SACK 与窗口缩放，
   `TCP_ACCEPT` 一次只处理一个连接；UDP 单个报文上限 8 KB（受重组缓冲限制）。

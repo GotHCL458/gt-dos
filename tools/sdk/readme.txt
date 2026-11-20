@@ -13,11 +13,15 @@ Files:
   FIB.C      recursion + loop example
 
 Supported C subset:
-  int/char/pointer variables, global variables with constant initialisers,
-  functions with up to 6 parameters (recursion supported),
-  if/else, while, for, break, continue, return,
-  arithmetic and bitwise operators, comparisons, && || !,
-  string literals, comments, and #include lines are skipped.
+  int/char/pointers, 1-4D arrays, struct/union (fields, . and ->),
+  functions with up to 6 parameters (recursion and prototypes supported),
+  if/else, while, for, switch/case/default, break, continue, return,
+  full integer expressions with ?:, prefix/postfix ++ --, compound
+  assignments, string literals, brace/string initialisers, comments.
+  Not supported: float/double, variadic functions, function pointers,
+  typedef/enum/sizeof, casts, bitfields. #include lines are skipped.
+
+Layout: 128 KB code at 0x600000, 128 KB data at 0x620000.
 
 Builtins (see TC.H): putc, print, puts, print_int, getc, exit, sleep,
 uptime, open, read, write, close, seek, stat, statx, reboot, shutdown,

@@ -4,10 +4,17 @@
  * can be kept in source files for readability.
  *
  * Supported subset:
- *   int / char / pointer variables, globals with constant initialisers,
- *   functions (up to 6 parameters, recursion), if/else, while, for,
- *   break/continue/return, + - * / % & | ^ ~ << >> comparisons,
- *   && || !, string literals, and the builtins declared below.
+ *   int / char / pointers, 1-4D arrays, struct / union (fields, . and ->),
+ *   functions (up to 6 parameters, recursion, prototypes), if/else, while,
+ *   for, switch/case/default, break/continue/return, full integer
+ *   expressions with ?:, prefix/postfix ++ --, compound assignments,
+ *   string literals, brace/string initialisers, and the builtins below.
+ *
+ * Not supported: float/double, variadic functions, function pointers,
+ * typedef/enum/sizeof, casts and bitfields.
+ *
+ * Layout: 128 KB code at 0x600000, 128 KB data at 0x620000
+ *         (64 KB globals, 64 KB string pool).
  */
 #ifndef _GT_TC_H
 #define _GT_TC_H

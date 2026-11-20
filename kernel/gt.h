@@ -61,12 +61,14 @@ static inline void cpu_cli(void)  { __asm__ __volatile__("cli"); }
 static inline void cpu_sti(void)  { __asm__ __volatile__("sti"); }
 
 void softirq_dispatch(void);           /* 前置声明 (cpu_relax 使用) */
+void kernel_idle_check(void);          /* 空闲期内核完整性复核 (protect.c) */
 
 /* 空闲等待: hlt 唤醒后顺便派发软中断 (bottom-half 在非中断上下文执行) */
 static inline void cpu_relax(void)
 {
     cpu_halt();
     softirq_dispatch();
+    kernel_idle_check();
 }
 
 u64 gt_read_cr2(void);
@@ -315,8 +317,9 @@ int gt_exfat_parse(const u8 *ents, u32 avail_ents,
 /* SHA-256 (内核容器自检), 结果 32 字节 */
 u32 gt_sha256(const u8 *data, u32 len, u8 out[32]);
 
-/* -------------------------------------------- 内核容器保护 (protect.c) */
+/* -------------------------------------------- 内核容器/防篡改 (protect.c) */
 int  kernel_self_check(void);                          /* 0=通过 */
+int  kernel_reverify(void);                            /* 只读段 CRC32 复核 */
 bool kernel_protected_info(u32 *image_len, u32 *crc, u8 digest[32]);
 
 /* ------------------------------------------------- 内置 C 编译器 (TC) */

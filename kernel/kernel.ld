@@ -14,6 +14,11 @@ SECTIONS
     . = ALIGN(16);
     .rodata : { *(.rodata) *(.rodata.*) }
 
+    /* 只读段结束边界: 4KB 对齐, 入口代码据此把 [0x10000, __ro_end) 设为只读 */
+    . = ALIGN(4096);
+    __ro_end = .;
+    .romark : { KEEP(*(.romark)) }
+
     . = ALIGN(16);
     .data : { *(.data) *(.data.*) }
 
@@ -34,6 +39,12 @@ SECTIONS
         *(.highbss) *(.highbss.*)
     }
     __highbss_end = .;
+
+    /* 安全边界: .bss 不得越过 0xA0000 (VGA 孔径), 大缓冲不得撞上 LIB_BASE */
+    ASSERT(__bss_end <= 0xA0000,
+           "kernel .bss overlaps the VGA aperture; move buffers to .highbss")
+    ASSERT(__highbss_end <= 0x500000,
+           "kernel .highbss overlaps LIB_BASE")
 
     /DISCARD/ : {
         *(.comment)

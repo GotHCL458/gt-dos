@@ -18,6 +18,9 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
 - Kernel loaded at `0x10000`, hard cap of 256 KB
 - The kernel image is a protected container: a `GTK1` trailer records length, CRC32 and
   SHA-256, and the first C statement verifies the loaded image before any other code runs
+- Kernel code and read-only data are mapped with 4 KB pages and RW cleared, so they cannot
+  be written even in ring 0; an idle watchdog re-checks that range every 5 seconds
+  (`GTR1` CRC32) and halts the system on a mismatch
 
 **Kernel**
 - 16-bit real mode → 32-bit protected mode → **x64 long mode**, all in `kernel/entry.asm`
@@ -124,16 +127,21 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
 **Built-in C compiler (TC) & SDK**
 - `TC <src.c> [-o out.gtp]` compiles a C subset straight to x86-64 machine code and
   writes a `.gtp` program that `RUN` can execute — no external toolchain involved
-- Supported: `int`/`char`/pointer variables, constant-initialised globals, functions with
-  up to 6 parameters, recursion, `if/else`, `while`, `for`, `break`/`continue`/`return`,
-  arithmetic/bitwise/comparison operators, `&& || !`, string literals and comments
+- Supported: `int`/`char`/pointers, 1-4D arrays, `struct`/`union` (fields, nested
+  structs, `.` and `->`), functions (up to 6 parameters, recursion, prototypes),
+  `if/else`, `while`, `for`, `switch/case/default` (fallthrough), `break`/`continue`/
+  `return`, full integer expressions with `?:`, prefix/postfix `++`/`--`, compound
+  assignments, string literals, and brace/string initializers for globals and locals
+- Not supported: floating point, variadic functions, function pointers,
+  `typedef`/`enum`/`sizeof`, casts and bitfields; the preprocessor only skips directives
 - Builtins (`\SDK\TC.H`): `putc`, `print`, `puts`, `print_int`, `getc`, `exit`, `sleep`,
   `uptime`, `open`, `read`, `write`, `close`, `seek`, `stat`, `statx`, `reboot`, `shutdown`;
   `\SDK\NET.H` adds `ip4`, `tcp_connect`, `tcp_send`, `tcp_recv`, `tcp_close`,
   `dns`, `tftp_get`, `http_get`
 - SDK at `\SDK\` (plain, read-only): `TC.H`, `HELLO.C`, `FIB.C`, `README.TXT`;
   `PUT` + `APPEND` let you author sources line by line inside GT-DOS
-- Program layout: 64 KB code at `0x600000`, data/globals at `0x610000`
+- Program layout: 128 KB code at `0x600000`, 128 KB data at `0x620000`
+  (64 KB globals + 64 KB string pool)
 
 **exFAT vendor extension**
 - Each file/directory entry set carries three vendor entries (type `0xE0`):
@@ -149,6 +157,9 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
   CRC32 and SHA-256, and `kernel_self_check()` verifies the loaded image before anything
   else runs. `KERNEL` prints the verified digest and compares it against the encrypted
   `\GT-DOS\KERNEL.GTP` view; `RUN` refuses to execute that image.
+- Runtime anti-tampering: the code/rodata range is 4 KB read-only (CR0.WP), re-checked by
+  the idle watchdog every 5 seconds and on demand with `KERNEL VERIFY`; any mismatch halts
+  the system.
 - Every `.gtp` program is CRC32-checked against its exFAT vendor metadata before control is
   transferred, so a tampered or corrupted program is rejected.
 - Format parsers live in Rust (`rust/gtcore`: `parse.rs`, `sha256.rs`): `.gtl` headers and
@@ -290,9 +301,9 @@ kernel/
   idt.c apic.c       interrupts: IDT, APIC/IO-APIC, dispatch
   syscall.c          INT 0x21 system-call dispatch
   exec.c             RUN program loader (loads a .gtp into PROG_BASE, checks CRC)
-  protect.c          GTK1 kernel container and boot-time self-check
+  protect.c          GTK1 kernel container, 4 KB write protection, self-check/watchdog
   gtlib.c            .gtl shared-library loader (Rust parses headers/exports)
-  tc.c               built-in C subset compiler (x86-64 code generator)
+  tc.c               built-in C compiler (arrays/structs/switch/ternary, x86-64)
   net.c              RTL8139 driver + ARP/IPv4(fragmentation)/ICMP/UDP/DHCP
   tcp.c              TCP sockets (handshake, OOO, fast retransmit, congestion, close)
   netapp.c           DNS resolver, TFTP client, HTTP GET downloader
@@ -329,16 +340,22 @@ assert on real boot output rather than on mocks.
 
 ## Notes and Limitations
 
-- The kernel currently fits in 374 sectors (191,376 bytes including the 48-byte `GTK1`
-  trailer), loaded between `0x10000` and `0x80000`. Growing past that window requires
-  relocating the load address.
+- The kernel currently fits in 449 sectors (229,696 bytes including the 48-byte `GTK1`
+  trailer), loaded between `0x10000` and `0x80000` (63 sectors of headroom). Growing past
+  that window requires relocating the load address.
 - The GDT is built in low memory (0x6800) rather than `.data`: loading a segment register
   sets the descriptor's accessed bit, which would otherwise invalidate the kernel hash.
+- The boot hash covers the whole image (code + rodata + data); the runtime watchdog only
+  covers the immutable `[0x10000, __ro_end)` range, because `.data` legitimately changes.
 - Large zero-initialised buffers (`font_buf`, the code page table, the back buffer) are placed in
   a `NOLOAD` `.highbss` section above 1 MB. If they were in ordinary `.bss` they would overlap the
   `0xA0000` VGA aperture and corrupt the framebuffer.
-- TC implements a C subset: no arrays, structs, unions, floats, `switch`, `?:`, `++/--` or
-  variadic functions. Programs are limited to 64 KB of code and 16 KB of globals/strings.
+- TC implements a practical C subset: arrays, structs/unions, `switch` and `?:`/`++`/`--`
+  are supported; floating point, variadic functions, function pointers and
+  `typedef`/`enum`/`sizeof` remain unsupported. Programs are limited to 128 KB of code and
+  128 KB of data (64 KB globals + 64 KB strings).
+- Kernel `.bss` must stay below `0xA0000` (the VGA aperture) and `.highbss` below
+  `LIB_BASE`; the linker script asserts both bounds, so oversized tables fail the build.
 - Shell file commands (`TYPE`/`CP`/`MV`/`HEAD`/`WC`/`APPEND`) operate on files up to 64 KB.
 - The network stack is IPv4-only (no IPv6) and has no SACK or window scaling;
   `TCP_ACCEPT` handles one connection per listening socket; UDP datagrams are limited

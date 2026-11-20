@@ -263,9 +263,19 @@ static void cmd_mem(void)
     kprintf("Kernel stack        : 16384 bytes\n");
 }
 
-/* KERNEL: 显示内核容器 (GTK1) 自检结果, 并核对磁盘上的受保护 .gtp 视图 */
-static void cmd_kernel(void)
+/* KERNEL: 显示内核容器 (GTK1) 自检结果, 并核对磁盘上的受保护 .gtp 视图.
+   KERNEL VERIFY: 只做运行时只读段 CRC32 复核 (防篡改). */
+static void cmd_kernel(int argc, char **argv)
 {
+    if (argc > 1 && !strcasecmp(argv[1], "verify")) {
+        int rc = kernel_reverify();
+        if (rc == 0)
+            ok("Kernel runtime check: verified (code+rodata CRC32)\n");
+        else
+            err("Kernel runtime check FAILED (%d)\n", rc);
+        return;
+    }
+
     u32 ilen = 0, crc = 0;
     u8 digest[32];
     if (!kernel_protected_info(&ilen, &crc, digest)) {
@@ -288,6 +298,9 @@ static void cmd_kernel(void)
             ilen, (ilen + 511) / 512);
     kprintf("CRC32            : 0x%08x\n", crc);
     kprintf("SHA-256          : %s\n", hex);
+    kprintf("Runtime check    : %s\n",
+            kernel_reverify() == 0 ? "verified (code+rodata RO, 4KB pages)"
+                                   : "FAILED");
     kprintf("Runtime task     : kernel.core / kernel.image (SYS, protected)\n");
 
     if (!fat_ready()) {
@@ -1529,7 +1542,7 @@ static void execute(char *line)
     } else if (!strncasecmp(cmd, "mem", 8)) {
         cmd_mem();
     } else if (!strncasecmp(cmd, "kernel", 8)) {
-        cmd_kernel();
+        cmd_kernel(argc, argv);
     } else if (!strncasecmp(cmd, "cpuid", 8)) {
         cmd_cpuid();
     } else if (!strncasecmp(cmd, "beep", 8)) {

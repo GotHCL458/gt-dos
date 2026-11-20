@@ -118,8 +118,17 @@ def main():
     vm.cmd("kernel", 1200)
     check("kernel container GTK1", vm.expect("GTK1", 4000), vm.buf[-300:])
     check("kernel shows SHA-256", vm.expect("SHA-256", 4000), vm.buf[-300:])
+    check("kernel runtime check verified", vm.expect("Runtime check", 4000)
+          and vm.expect("verified", 4000), vm.buf[-300:])
     check("kernel disk image matches", vm.expect("matches", 4000),
           vm.buf[-300:])
+
+    # 1b-2) 运行时只读段复核 (防篡改)
+    vm.buf = ""
+    vm.cmd("kernel verify", 700)
+    check("kernel verify reports ok", vm.expect("runtime check", 4000)
+          and vm.expect("verified", 4000) and
+          not vm.expect("FAILED", 300), vm.buf[-300:])
 
     # 1c) 内核镜像的 .gtp 视图不可作为程序执行
     vm.buf = ""

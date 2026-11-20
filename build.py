@@ -302,6 +302,23 @@ def build_kernel():
     return data, sectors
 
 
+def prepare_kernel_runtime(image):
+    """写入运行时只读段校验值.
+
+    .romark 位于只读段边界 (4KB 对齐), 其中 GTR1 结构记录长度与 CRC32;
+    KERNEL VERIFY 与空闲期看门狗据此复核代码/只读数据未被改写.
+    """
+    pos = image.find(b"GTR1")
+    if pos < 0 or (pos & 0xFFF) != 0:
+        print(f"[!] 内核只读段标记异常 (GTR1@{pos}, 需 4KB 对齐)")
+        sys.exit(1)
+    crc = zlib.crc32(image[:pos]) & 0xFFFFFFFF
+    image = patch_at(image, b"GTR1", pos)
+    image = patch_at(image, b"GTR1", crc, skip=4)
+    print(f"    只读段   : {pos} 字节 (4KB 页写保护), CRC32={crc:08x}")
+    return image
+
+
 def containerize_kernel(image):
     """把内核镜像封装成受保护容器 (GTK1).
 
@@ -498,7 +515,8 @@ def build():
         # 让内核知道宿主可用区域, 窗口模式选不会超出桌面的分辨率
         kernel = patch_at(kernel, b"GTMH", hint_w)
         kernel = patch_at(kernel, b"GTMH", hint_h, skip=4)
-    # 封装受保护内核容器 (所有补丁完成后才能计算摘要)
+    # 运行时防篡改: 只读段校验值 + 受保护容器尾部 (所有补丁完成后计算)
+    kernel = prepare_kernel_runtime(kernel)
     kernel = containerize_kernel(kernel)
     ensure_font(mkfont_tool)
     font = open(os.path.join(BUILD, "font.gtd"), "rb").read()

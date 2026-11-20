@@ -1,29 +1,74 @@
 /* TC: 系统内置 C 子集编译器.
    直接生成 x86-64 机器码, 输出 .gtp 平面程序 (由 RUN 装载到 0x600000).
-   支持: int/char/指针变量, 全局变量, 函数(最多 6 参数/递归), if/else,
-   while/for/break/continue/return, 整数与位运算, 字符串字面量,
-   以及 SDK 内置函数 (SYSCALL 包装).
-   代码上限 64KB; 数据区固定映射在 0x610000 起. */
+
+   支持:
+     * int / char / 指针变量, 全局与局部数组 (最多 4 维)
+     * struct / union (具名定义, 字段数组, 嵌套结构, . 与 ->)
+     * 函数 (最多 6 参数, 递归, 原型), if/else, while, for,
+       switch/case/default (可穿透), break/continue/return
+     * 完整整数表达式: + - * / % & | ^ ~ << >> 比较 && || !
+     * 三目 ?:, 前置/后置 ++ --, 复合赋值 (= += -= *= /= %= &= |= ^= <<= >>=)
+     * 字符串字面量, 全局常量初始化, 局部初始化, 数组/结构体初始化列表
+     * SDK 内置函数 (SYSCALL 包装)
+
+   布局: 代码 128KB @0x600000, 数据 128KB @0x620000
+         (全局 64KB, 字符串池 64KB). 数值一律按 64 位整数处理. */
 #include "gt.h"
 
-#define TC_CODE_MAX  0x10000
-#define TC_DATA_GLOB 0x4000
-#define TC_DATA_MAX  0x10000
+#define TC_CODE_MAX  0x20000
+#define TC_DATA_GLOB 0x10000
+#define TC_DATA_MAX  0x20000
 #define TC_PROG_BASE 0x600000ULL
 #define TC_DATA_BASE (TC_PROG_BASE + TC_CODE_MAX)
 #define TC_GLOB_BASE TC_DATA_BASE
 #define TC_STR_BASE  (TC_DATA_BASE + TC_DATA_GLOB)
 
-#define MAX_SYM   384
-#define MAX_LOCAL 96
+/* 注意: 这些表在 .bss, 合计必须让 __bss_end 留在 0xA0000 (VGA 孔径) 以下.
+   kernel.ld 末尾有链接期断言, 超限会直接构建失败. */
+#define MAX_SYM   256
+#define MAX_LOCAL 128
 #define MAX_FCALL 256
-#define MAX_NEST  24
+#define MAX_NEST  16
 #define MAX_ARGS  6
+#define MAX_DIM   4
+#define MAX_STRUCT 12
+#define MAX_FIELDS 16
+#define MAX_CASES 32
 
 enum {
     T_EOF = 0, T_ID = 256, T_NUM, T_STR,
     T_EQ, T_NE, T_LE, T_GE, T_ANDAND, T_OROR, T_SHL, T_SHR,
-    T_PLUSEQ, T_MINUSEQ, T_STAREQ, T_SLASHEQ, T_PERCENTEQ
+    T_PLUSEQ, T_MINUSEQ, T_STAREQ, T_SLASHEQ, T_PERCENTEQ,
+    T_ANDEQ, T_OREQ, T_XOREQ, T_SHLEQ, T_SHREQ,
+    T_INC, T_DEC, T_ARROW
+};
+
+/* ---------------------------------------------------------------- 类型 */
+enum { CK_VOID, CK_INT, CK_CHAR, CK_STRUCT };
+
+struct ctype {
+    int kind;        /* CK_* */
+    int ptr;         /* 指针层数 */
+    int sid;         /* 结构体编号 (kind == CK_STRUCT) */
+    int obj;         /* 非指针对象的字节数 */
+};
+
+struct field {
+    char name[32];
+    struct ctype type;      /* 元素类型 (数组时) */
+    int dims[MAX_DIM];
+    int ndims;
+    int nelem;
+    int offset;
+};
+
+struct stype {
+    char name[32];
+    int size;
+    int nf;
+    bool is_union;
+    bool complete;
+    struct field f[MAX_FIELDS];
 };
 
 struct token {
@@ -31,17 +76,33 @@ struct token {
     i64 v;
     int line;
     char name[32];
+    int slen;                 /* 字符串字面量字节数 (不含 NUL) */
+    u32 soff;                 /* 字符串在池中的偏移 */
 };
 
 enum { SK_GLOBAL = 1, SK_LOCAL, SK_FUNC };
 
 struct sym {
     char name[32];
-    i64 addr;          /* 全局地址 / 函数代码偏移 */
+    i64 addr;                 /* 全局地址 / 函数代码偏移 */
     int kind;
-    int offset;        /* 局部变量 rbp 偏移 */
+    int offset;               /* 局部变量 rbp 偏移 */
     int nparams;
     bool defined;
+    struct ctype type;        /* 标量类型, 或数组元素类型 */
+    int dims[MAX_DIM];
+    int ndims;
+    int nelem;
+    int size;                 /* 变量总字节数 */
+};
+
+struct decl {
+    char name[32];
+    struct ctype type;        /* 元素类型 */
+    int dims[MAX_DIM];
+    int ndims;
+    int nelem;                /* 0 = 未知 (初始化时确定) */
+    bool incomplete;
 };
 
 struct fcall {
@@ -50,14 +111,30 @@ struct fcall {
 };
 
 struct loopctx {
-    u32 breaks[32];
+    u32 breaks[16];
     int nbreak;
-    u32 cont;                          /* continue 目标 */
+    u32 cont;
+    bool is_switch;
 };
 
+struct caselab {
+    i64 val;
+    u32 addr;
+};
+
+struct swctx {
+    int tmp;
+    int ncase;
+    struct caselab cases[MAX_CASES];
+    u32 def_addr;
+    bool has_def;
+};
+
+/* ---------------------------------------------------------------- 状态 */
 static u8  code[TC_CODE_MAX] __attribute__((section(".highbss")));
 static u8  str_pool[TC_DATA_MAX - TC_DATA_GLOB] __attribute__((section(".highbss")));
 static u8  out_buf[TC_CODE_MAX + TC_DATA_MAX] __attribute__((section(".highbss")));
+static u8  gmem[TC_DATA_GLOB] __attribute__((section(".highbss")));
 
 static const char *sp;
 static int line_no = 1;
@@ -65,6 +142,7 @@ static struct token cur, nxt;
 
 static u32 clen;
 static u32 str_used;
+static int gused;
 static bool failed;
 static char err_msg[96];
 
@@ -72,17 +150,33 @@ static struct sym syms[MAX_SYM];
 static int nsyms;
 static struct sym locs[MAX_LOCAL];
 static int nloc;
-static u64 ginit[MAX_SYM];
-static int nglob;
+static int lused;                  /* 局部变量已占用字节 */
+
+static struct stype stypes[MAX_STRUCT];
+static int nstypes;
 
 static struct fcall fcs[MAX_FCALL];
 static int nfc;
 static struct loopctx loops[MAX_NEST];
 static int nloop;
+static struct swctx swstk[MAX_NEST];
+static int nsw;
 
 static u32 main_call_pos;
 static u32 locals_imm_pos;
-static int cur_nparams;
+
+/* 上一次表达式结果 */
+struct ety {
+    struct ctype t;               /* 值类型 / 数组元素类型 */
+    bool lval;                    /* rax 中保存的是地址 */
+    bool is_arr;                  /* 仍是数组视图 (rax=首地址) */
+    int dims[MAX_DIM];
+    int ndims;
+    int esize;
+    int nelem;
+};
+
+static struct ety g_e;
 
 /* ------------------------------------------------------------------ 错误 */
 static void fail(const char *msg)
@@ -171,9 +265,15 @@ static struct token scan(void)
                 sp++;
             }
         } else {
-            while (isdigit_((unsigned char)*sp)) {
-                v = v * 10 + (*sp - '0');
-                sp++;
+            if (c == '0' && (sp[1] == 'b' || sp[1] == 'B')) {
+                sp += 2;
+                while (*sp == '0' || *sp == '1')
+                    v = v * 2 + (*sp++ - '0');
+            } else {
+                while (isdigit_((unsigned char)*sp)) {
+                    v = v * 10 + (*sp - '0');
+                    sp++;
+                }
             }
         }
         t.t = T_NUM;
@@ -207,6 +307,7 @@ static struct token scan(void)
     if (c == '"') {
         sp++;
         u32 start = str_used;
+        int len = 0;
         while (*sp && *sp != '"') {
             char ch = *sp++;
             if (ch == '\\') {
@@ -222,22 +323,28 @@ static struct token scan(void)
                 }
             }
             add_str_byte((u8)ch);
+            len++;
         }
         if (*sp == '"') sp++;
         add_str_byte(0);
         t.t = T_STR;
         t.v = (i64)(TC_STR_BASE + start);
+        t.soff = start;
+        t.slen = len;
         return t;
     }
 
     sp++;
     switch (c) {
     case '+':
-        if (*sp == '=') { sp++; t.t = T_PLUSEQ; }
+        if (*sp == '+') { sp++; t.t = T_INC; }
+        else if (*sp == '=') { sp++; t.t = T_PLUSEQ; }
         else t.t = '+';
         break;
     case '-':
-        if (*sp == '=') { sp++; t.t = T_MINUSEQ; }
+        if (*sp == '-') { sp++; t.t = T_DEC; }
+        else if (*sp == '>') { sp++; t.t = T_ARROW; }
+        else if (*sp == '=') { sp++; t.t = T_MINUSEQ; }
         else t.t = '-';
         break;
     case '*':
@@ -261,22 +368,30 @@ static struct token scan(void)
         else t.t = '!';
         break;
     case '<':
-        if (*sp == '=') { sp++; t.t = T_LE; }
+        if (*sp == '<' && sp[1] == '=') { sp += 2; t.t = T_SHLEQ; }
+        else if (*sp == '=') { sp++; t.t = T_LE; }
         else if (*sp == '<') { sp++; t.t = T_SHL; }
         else t.t = '<';
         break;
     case '>':
-        if (*sp == '=') { sp++; t.t = T_GE; }
+        if (*sp == '>' && sp[1] == '=') { sp += 2; t.t = T_SHREQ; }
+        else if (*sp == '=') { sp++; t.t = T_GE; }
         else if (*sp == '>') { sp++; t.t = T_SHR; }
         else t.t = '>';
         break;
     case '&':
         if (*sp == '&') { sp++; t.t = T_ANDAND; }
+        else if (*sp == '=') { sp++; t.t = T_ANDEQ; }
         else t.t = '&';
         break;
     case '|':
         if (*sp == '|') { sp++; t.t = T_OROR; }
+        else if (*sp == '=') { sp++; t.t = T_OREQ; }
         else t.t = '|';
+        break;
+    case '^':
+        if (*sp == '=') { sp++; t.t = T_XOREQ; }
+        else t.t = '^';
         break;
     default:
         t.t = (u8)c;
@@ -336,6 +451,11 @@ static void mov_rax_imm(u64 v)
     e8(0x48); e8(0xB8); e64(v);
 }
 
+static void mov_rcx_imm(u64 v)
+{
+    e8(0x48); e8(0xB9); e64(v);
+}
+
 static void push_rax(void) { e8(0x50); }
 static void pop_rcx(void)  { e8(0x59); }
 
@@ -356,18 +476,20 @@ static void mov_rax_local(int disp)
     e8(0x48); e8(0x8B); modrm_rbp(disp, 0);
 }
 
-static void mov_local_rax(int disp)
-{
-    e8(0x48); e8(0x89); modrm_rbp(disp, 0);
-}
-
 static void lea_rax_local(int disp)
 {
     e8(0x48); e8(0x8D); modrm_rbp(disp, 0);
 }
 
-static void mov_rax_abs(u64 addr) { e8(0x48); e8(0xA1); e64(addr); }
-static void mov_abs_rax(u64 addr) { e8(0x48); e8(0xA3); e64(addr); }
+static void lea_rcx_local(int disp)
+{
+    e8(0x48); e8(0x8D); modrm_rbp(disp, 1);
+}
+
+static void lea_rdi_local(int disp)
+{
+    e8(0x48); e8(0x8D); modrm_rbp(disp, 7);
+}
 
 static void test_rax(void) { e8(0x48); e8(0x85); e8(0xC0); }
 
@@ -402,6 +524,81 @@ static void patch_rel(u32 pos, u32 target)
     code[pos + 1] = (u8)(u >> 8);
     code[pos + 2] = (u8)(u >> 16);
     code[pos + 3] = (u8)(u >> 24);
+}
+
+static void add_rax_imm(i64 v)
+{
+    if (v >= 0) {
+        e8(0x48); e8(0x05); e32((u32)v);           /* add rax, imm32 */
+    } else {
+        e8(0x48); e8(0x2D); e32((u32)(-v));        /* sub rax, imm32 */
+    }
+}
+
+static void add_rsp_imm(int n)
+{
+    if (n <= 127) {
+        e8(0x48); e8(0x83); e8(0xC4); e8((u8)n);
+    } else {
+        e8(0x48); e8(0x81); e8(0xC4); e32((u32)n);
+    }
+}
+
+static void imul_rax_imm(int v)
+{
+    e8(0x48); e8(0x69); e8(0xC0); e32((u32)v);
+}
+
+static void imul_rcx_imm(int v)
+{
+    e8(0x48); e8(0x69); e8(0xC9); e32((u32)v);
+}
+
+static void mov_rax_rcx(void) { e8(0x48); e8(0x89); e8(0xC8); }
+static void mov_rdx_rax(void) { e8(0x48); e8(0x89); e8(0xC2); }
+static void mov_rax_rdx(void) { e8(0x48); e8(0x89); e8(0xD0); }
+static void mov_rcx_rsp(void) { e8(0x48); e8(0x8B); e8(0x0C); e8(0x24); }
+
+/* 以 rax 为地址读写对象 (char 用 1 字节, 其余 8 字节) */
+static int value_bytes(const struct ctype *t)
+{
+    if (t->ptr > 0)
+        return 8;
+    if (t->kind == CK_CHAR)
+        return 1;
+    if (t->kind == CK_VOID)
+        return 0;
+    if (t->kind == CK_STRUCT)
+        return stypes[t->sid].size;
+    return 8;
+}
+
+static void load_at(const struct ctype *t)
+{
+    if (value_bytes(t) == 1) {
+        e8(0x48); e8(0x0F); e8(0xB6); e8(0x00);    /* movzx rax, byte [rax] */
+    } else {
+        e8(0x48); e8(0x8B); e8(0x00);              /* mov rax, [rax] */
+    }
+}
+
+static void store_at(const struct ctype *t)
+{
+    if (value_bytes(t) == 1) {
+        e8(0x88); e8(0x01);                        /* mov [rcx], al */
+    } else {
+        e8(0x48); e8(0x89); e8(0x01);              /* mov [rcx], rax */
+    }
+}
+
+static void zero_local(int disp, int size)
+{
+    if (size <= 0)
+        return;
+    lea_rdi_local(disp);
+    e8(0x48); e8(0xC7); e8(0xC1); e32((u32)size);  /* mov rcx, imm32 */
+    e8(0x31); e8(0xC0);                            /* xor eax, eax */
+    e8(0xF3); e8(0xAA);                            /* rep stosb */
 }
 
 /* 二元运算: rax=右值, rcx=左值 -> rax=结果 */
@@ -449,6 +646,62 @@ static void apply_cmp(int op)
     e8(0x48); e8(0x0F); e8(0xB6); e8(0xC0);
 }
 
+/* ------------------------------------------------------------ 类型辅助 */
+static int ptr_step(const struct ctype *t)
+{
+    if (t->ptr > 1)
+        return 8;
+    if (t->kind == CK_STRUCT) {
+        int sz = stypes[t->sid].size;
+        return sz > 0 ? sz : 1;
+    }
+    return t->obj > 0 ? t->obj : 1;
+}
+
+static int inc_step(const struct ctype *t)
+{
+    if (t->ptr > 0)
+        return ptr_step(t);
+    return 1;                       /* 整数/字符 ++ 每次加 1 */
+}
+
+static int align_up(int v, int a)
+{
+    return (v + a - 1) & ~(a - 1);
+}
+
+static int find_struct(const char *name)
+{
+    for (int i = 0; i < nstypes; i++)
+        if (!strcmp(stypes[i].name, name))
+            return i;
+    return -1;
+}
+
+static int add_struct(const char *name, bool is_union)
+{
+    int sid = find_struct(name);
+    if (sid >= 0)
+        return sid;
+    if (nstypes >= MAX_STRUCT) { fail("too many struct types"); return 0; }
+    struct stype *st = &stypes[nstypes];
+    memset(st, 0, sizeof(*st));
+    strncpy(st->name, name, 31);
+    st->is_union = is_union;
+    return nstypes++;
+}
+
+static struct field *find_field(int sid, const char *name)
+{
+    if (sid < 0 || sid >= nstypes)
+        return 0;
+    struct stype *st = &stypes[sid];
+    for (int i = 0; i < st->nf; i++)
+        if (!strcmp(st->f[i].name, name))
+            return &st->f[i];
+    return 0;
+}
+
 /* ------------------------------------------------------------------ 符号 */
 static struct sym *find_sym(const char *name)
 {
@@ -479,30 +732,66 @@ static struct sym *add_func(const char *name)
     return s;
 }
 
-static struct sym *add_global(const char *name)
+static int alloc_local(int size)
 {
-    struct sym *s = find_sym(name);
-    if (s && s->kind == SK_GLOBAL)
-        return s;
-    if (nsyms >= MAX_SYM || nglob >= MAX_SYM) { fail("too many globals"); return 0; }
-    s = &syms[nsyms++];
-    memset(s, 0, sizeof(*s));
-    strncpy(s->name, name, 31);
-    s->kind = SK_GLOBAL;
-    s->addr = (i64)(TC_GLOB_BASE + (u64)nglob * 8);
-    ginit[nglob] = 0;
-    nglob++;
-    return s;
+    if (size <= 0)
+        size = 8;
+    lused += size;
+    lused = align_up(lused, 8);
+    if (lused > 0x10000) { fail("too many locals"); return 0; }
+    return -lused;
 }
 
-static struct sym *add_local(const char *name, int disp)
+static i64 alloc_global(int size)
+{
+    if (size <= 0)
+        size = 8;
+    gused = align_up(gused, 8);
+    if (gused + size > TC_DATA_GLOB) {
+        fail("global data too large");
+        return TC_GLOB_BASE;
+    }
+    i64 a = TC_GLOB_BASE + gused;
+    gused += size;
+    return a;
+}
+
+static struct sym *new_local(const struct decl *d, int disp)
 {
     if (nloc >= MAX_LOCAL) { fail("too many locals"); return 0; }
     struct sym *s = &locs[nloc++];
     memset(s, 0, sizeof(*s));
-    strncpy(s->name, name, 31);
+    strncpy(s->name, d->name, 31);
     s->kind = SK_LOCAL;
     s->offset = disp;
+    s->type = d->type;
+    s->ndims = d->ndims;
+    for (int i = 0; i < d->ndims; i++)
+        s->dims[i] = d->dims[i];
+    s->nelem = d->nelem;
+    s->size = d->ndims ? d->nelem * value_bytes(&d->type)
+                       : value_bytes(&d->type);
+    return s;
+}
+
+static struct sym *new_global(const struct decl *d)
+{
+    struct sym *s = find_sym(d->name);
+    if (s && s->kind == SK_GLOBAL)
+        return s;
+    if (nsyms >= MAX_SYM) { fail("too many symbols"); return 0; }
+    s = &syms[nsyms++];
+    memset(s, 0, sizeof(*s));
+    strncpy(s->name, d->name, 31);
+    s->kind = SK_GLOBAL;
+    s->type = d->type;
+    s->ndims = d->ndims;
+    for (int i = 0; i < d->ndims; i++)
+        s->dims[i] = d->dims[i];
+    s->nelem = d->nelem;
+    s->size = d->ndims ? d->nelem * value_bytes(&d->type)
+                       : value_bytes(&d->type);
+    s->addr = alloc_global(s->size);
     return s;
 }
 
@@ -517,39 +806,446 @@ static struct sym *lookup_var(const char *name)
     return 0;
 }
 
-static void load_var(const char *name)
+static void gen_sym_addr(struct sym *s)
 {
-    struct sym *s = lookup_var(name);
-    if (!s) { fail("undefined variable"); return; }
     if (s->kind == SK_LOCAL)
-        mov_rax_local(s->offset);
+        lea_rax_local(s->offset);
     else
-        mov_rax_abs((u64)s->addr);
+        mov_rax_imm((u64)s->addr);
 }
 
-static void store_var(const char *name)
+/* ------------------------------------------------------------ 常量表达式 */
+static i64 c_cond(void);
+
+static i64 c_unary(void)
 {
-    struct sym *s = lookup_var(name);
-    if (!s) { fail("undefined variable"); return; }
-    if (s->kind == SK_LOCAL)
-        mov_local_rax(s->offset);
-    else
-        mov_abs_rax((u64)s->addr);
+    if (accept('-'))
+        return -c_unary();
+    if (accept('+'))
+        return c_unary();
+    if (accept('~'))
+        return ~c_unary();
+    if (accept('!'))
+        return !c_unary();
+    if (accept('(')) {
+        i64 v = c_cond();
+        expect(')');
+        return v;
+    }
+    if (cur.t == T_NUM || cur.t == T_STR) {
+        i64 v = cur.v;
+        advance();
+        return v;
+    }
+    fail("constant expected");
+    return 0;
 }
 
-/* ------------------------------------------------------------------ 表达式 */
-static void p_assign(void);
-static void p_lor(void);
-
-static void p_primary(void)
+static i64 c_mul(void)
 {
+    i64 v = c_unary();
+    for (;;) {
+        int op = cur.t;
+        if (op != '*' && op != '/' && op != '%')
+            break;
+        advance();
+        i64 r = c_unary();
+        if ((op == '/' || op == '%') && r == 0) { fail("divide by zero"); return 0; }
+        if (op == '*') v *= r;
+        else if (op == '/') v /= r;
+        else v %= r;
+    }
+    return v;
+}
+
+static i64 c_add(void)
+{
+    i64 v = c_mul();
+    for (;;) {
+        int op = cur.t;
+        if (op != '+' && op != '-')
+            break;
+        advance();
+        i64 r = c_mul();
+        v = (op == '+') ? v + r : v - r;
+    }
+    return v;
+}
+
+static i64 c_shift(void)
+{
+    i64 v = c_add();
+    for (;;) {
+        int op = cur.t;
+        if (op != T_SHL && op != T_SHR)
+            break;
+        advance();
+        i64 r = c_add();
+        v = (op == T_SHL) ? (i64)((u64)v << (r & 63))
+                          : (i64)((u64)v >> (r & 63));
+    }
+    return v;
+}
+
+static i64 c_rel(void)
+{
+    i64 v = c_shift();
+    for (;;) {
+        int op = cur.t;
+        if (op != '<' && op != '>' && op != T_LE && op != T_GE)
+            break;
+        advance();
+        i64 r = c_shift();
+        if (op == '<') v = v < r;
+        else if (op == '>') v = v > r;
+        else if (op == T_LE) v = v <= r;
+        else v = v >= r;
+    }
+    return v;
+}
+
+static i64 c_eq(void)
+{
+    i64 v = c_rel();
+    for (;;) {
+        int op = cur.t;
+        if (op != T_EQ && op != T_NE)
+            break;
+        advance();
+        i64 r = c_rel();
+        v = (op == T_EQ) ? (v == r) : (v != r);
+    }
+    return v;
+}
+
+static i64 c_band(void)
+{
+    i64 v = c_eq();
+    while (cur.t == '&') { advance(); v &= c_eq(); }
+    return v;
+}
+
+static i64 c_bxor(void)
+{
+    i64 v = c_band();
+    while (cur.t == '^') { advance(); v ^= c_band(); }
+    return v;
+}
+
+static i64 c_bor(void)
+{
+    i64 v = c_bxor();
+    while (cur.t == '|') { advance(); v |= c_bxor(); }
+    return v;
+}
+
+static i64 c_land(void)
+{
+    i64 v = c_bor();
+    while (cur.t == T_ANDAND) { advance(); v = (v && c_bor()) ? 1 : 0; }
+    return v;
+}
+
+static i64 c_lor(void)
+{
+    i64 v = c_land();
+    while (cur.t == T_OROR) { advance(); v = (v || c_land()) ? 1 : 0; }
+    return v;
+}
+
+static i64 c_cond(void)
+{
+    i64 v = c_lor();
+    if (accept('?')) {
+        i64 a = c_cond();
+        expect(':');
+        i64 b = c_cond();
+        return v ? a : b;
+    }
+    return v;
+}
+
+/* ------------------------------------------------------------ 表达式生成 */
+static void gen_expr(int minp);
+static void gen_unary(void);
+
+static void mat_value(void)
+{
+    if (g_e.is_arr) {
+        /* 数组退化为指针: 首地址已在 rax */
+        struct ctype p = g_e.t;
+        p.ptr = 1;
+        p.obj = (g_e.dims[0] > 0) ? (g_e.nelem / g_e.dims[0]) * g_e.esize
+                                  : g_e.esize;
+        g_e.t = p;
+        g_e.is_arr = false;
+        g_e.lval = false;
+        return;
+    }
+    if (g_e.lval) {
+        if (g_e.t.ptr == 0 && g_e.t.kind == CK_STRUCT) {
+            fail("struct value not supported (use a field)");
+            return;
+        }
+        load_at(&g_e.t);
+        g_e.lval = false;
+    }
+}
+
+static void gen_value(int minp, struct ety *out)
+{
+    gen_expr(minp);
+    mat_value();
+    if (out)
+        *out = g_e;
+}
+
+static int bin_prec(int t)
+{
+    switch (t) {
+    case '*': case '/': case '%': return 11;
+    case '+': case '-': return 10;
+    case T_SHL: case T_SHR: return 9;
+    case '<': case '>': case T_LE: case T_GE: return 8;
+    case T_EQ: case T_NE: return 7;
+    case '&': return 6;
+    case '^': return 5;
+    case '|': return 4;
+    case T_ANDAND: return 3;
+    case T_OROR: return 2;
+    default: return -1;
+    }
+}
+
+static bool is_assign_op(int t)
+{
+    return t == '=' || t == T_PLUSEQ || t == T_MINUSEQ || t == T_STAREQ ||
+           t == T_SLASHEQ || t == T_PERCENTEQ || t == T_ANDEQ || t == T_OREQ ||
+           t == T_XOREQ || t == T_SHLEQ || t == T_SHREQ;
+}
+
+static int assign_binop(int t)
+{
+    switch (t) {
+    case T_PLUSEQ: return '+';
+    case T_MINUSEQ: return '-';
+    case T_STAREQ: return '*';
+    case T_SLASHEQ: return '/';
+    case T_PERCENTEQ: return '%';
+    case T_ANDEQ: return '&';
+    case T_OREQ: return '|';
+    case T_XOREQ: return '^';
+    case T_SHLEQ: return T_SHL;
+    case T_SHREQ: return T_SHR;
+    default: return 0;
+    }
+}
+
+static void gen_call(const char *name);
+
+/* 前缀/后缀 ++ -- */
+static void gen_incdec(bool inc, bool prefix)
+{
+    int step;
+    struct ctype t;
+    advance();                      /* 吃掉 ++ / -- */
+    gen_unary();
+    if (g_e.is_arr) { fail("cannot modify array"); return; }
+    if (!g_e.lval) { fail("++/-- requires lvalue"); return; }
+    t = g_e.t;
+    if (t.ptr == 0 && t.kind == CK_STRUCT) {
+        fail("++/-- on struct");
+        return;
+    }
+    step = inc_step(&t);
+
+    push_rax();                     /* 地址 */
+    load_at(&t);                    /* rax = 旧值 */
+    if (!prefix)
+        mov_rdx_rax();              /* 保存旧值 */
+    add_rax_imm(inc ? step : -step);
+    mov_rcx_rsp();                  /* 地址 */
+    store_at(&t);
+    add_rsp_imm(8);
+    if (!prefix)
+        mov_rax_rdx();
+    g_e.lval = false;
+    g_e.is_arr = false;
+    g_e.t = t;
+}
+
+static void gen_postfix(void)
+{
+    for (;;) {
+        if (cur.t == '[') {
+            advance();
+            int step = 1;
+            struct ctype elem = g_e.t;
+            bool was_arr = g_e.is_arr;
+            int adims[MAX_DIM] = { 0 };
+            int andims = 0;
+            int anelem = 0, aesize = 0;
+            if (was_arr) {
+                /* 下标表达式会覆盖 g_e, 先把数组视图完整保存 */
+                andims = g_e.ndims;
+                for (int i = 0; i < andims; i++)
+                    adims[i] = g_e.dims[i];
+                anelem = g_e.nelem;
+                aesize = g_e.esize;
+                int n0 = adims[0] > 0 ? adims[0] : 1;
+                int rest = anelem / n0;
+                step = rest * aesize;
+                if (step <= 0)
+                    step = aesize;
+            } else {
+                mat_value();
+                if (g_e.t.ptr == 0) { fail("subscript requires pointer"); return; }
+                step = ptr_step(&g_e.t);
+                elem = g_e.t;
+                elem.ptr--;
+                if (elem.ptr == 0 && elem.kind == CK_STRUCT)
+                    elem.obj = stypes[elem.sid].size;
+            }
+            push_rax();                 /* 基址 */
+            gen_value(0, 0);            /* 下标 */
+            if (step != 1)
+                imul_rax_imm(step);
+            pop_rcx();
+            e8(0x48); e8(0x01); e8(0xC8);   /* add rax, rcx */
+            expect(']');
+
+            if (was_arr) {
+                if (andims > 1) {
+                    for (int i = 1; i < andims; i++)
+                        adims[i - 1] = adims[i];
+                    andims--;
+                    adims[andims] = 0;
+                    int n = 1;
+                    for (int i = 0; i < andims; i++)
+                        n *= adims[i];
+                    g_e.ndims = andims;
+                    for (int i = 0; i < andims; i++)
+                        g_e.dims[i] = adims[i];
+                    g_e.nelem = n;
+                    g_e.esize = aesize;
+                    g_e.t = elem;
+                    g_e.is_arr = true;
+                    g_e.lval = false;
+                } else {
+                    g_e.ndims = 0;
+                    g_e.t = elem;
+                    g_e.is_arr = false;
+                    g_e.lval = true;
+                }
+            } else {
+                g_e.t = elem;
+                g_e.lval = true;
+                g_e.is_arr = false;
+            }
+            continue;
+        }
+        if (cur.t == '.') {
+            advance();
+            if (!g_e.lval || g_e.is_arr || g_e.t.ptr != 0 ||
+                g_e.t.kind != CK_STRUCT) {
+                fail(". requires struct lvalue");
+                return;
+            }
+            if (cur.t != T_ID) { fail("field name expected"); return; }
+            struct field *fd = find_field(g_e.t.sid, cur.name);
+            if (!fd) { fail("no such field"); return; }
+            advance();
+            add_rax_imm(fd->offset);
+            if (fd->ndims > 0) {
+                g_e.is_arr = true;
+                g_e.ndims = fd->ndims;
+                for (int i = 0; i < fd->ndims; i++)
+                    g_e.dims[i] = fd->dims[i];
+                g_e.nelem = fd->nelem;
+                g_e.esize = value_bytes(&fd->type);
+                g_e.t = fd->type;
+                g_e.lval = false;
+            } else if (fd->type.kind == CK_STRUCT && fd->type.ptr == 0) {
+                g_e.t = fd->type;
+                g_e.lval = true;
+                g_e.is_arr = false;
+            } else {
+                g_e.t = fd->type;
+                g_e.lval = true;
+                g_e.is_arr = false;
+            }
+            continue;
+        }
+        if (cur.t == T_ARROW) {
+            advance();
+            mat_value();
+            if (g_e.t.ptr != 1 || g_e.t.kind != CK_STRUCT) {
+                fail("-> requires struct pointer");
+                return;
+            }
+            if (cur.t != T_ID) { fail("field name expected"); return; }
+            struct field *fd = find_field(g_e.t.sid, cur.name);
+            if (!fd) { fail("no such field"); return; }
+            advance();
+            add_rax_imm(fd->offset);
+            if (fd->ndims > 0) {
+                g_e.is_arr = true;
+                g_e.ndims = fd->ndims;
+                for (int i = 0; i < fd->ndims; i++)
+                    g_e.dims[i] = fd->dims[i];
+                g_e.nelem = fd->nelem;
+                g_e.esize = value_bytes(&fd->type);
+                g_e.t = fd->type;
+                g_e.lval = false;
+            } else {
+                g_e.t = fd->type;
+                g_e.lval = true;
+                g_e.is_arr = false;
+            }
+            continue;
+        }
+        if (cur.t == T_INC || cur.t == T_DEC) {
+            bool inc = (cur.t == T_INC);
+            if (g_e.is_arr || !g_e.lval) { fail("++/-- requires lvalue"); return; }
+            struct ctype t = g_e.t;
+            if (t.ptr == 0 && t.kind == CK_STRUCT) { fail("++/-- on struct"); return; }
+            int step = inc_step(&t);
+            push_rax();                 /* 地址 */
+            mov_rcx_rsp();
+            mov_rax_rcx();              /* rax = 地址 */
+            load_at(&t);                /* rax = 旧值 */
+            mov_rdx_rax();              /* 保存旧值 */
+            add_rax_imm(inc ? step : -step);
+            mov_rcx_rsp();
+            store_at(&t);
+            add_rsp_imm(8);
+            mov_rax_rdx();
+            g_e.lval = false;
+            g_e.is_arr = false;
+            g_e.t = t;
+            advance();
+            continue;
+        }
+        break;
+    }
+}
+
+static void gen_primary(void)
+{
+    memset(&g_e, 0, sizeof(g_e));
+
     if (cur.t == T_NUM) {
         mov_rax_imm((u64)cur.v);
+        g_e.t.kind = CK_INT;
+        g_e.t.obj = 8;
         advance();
         return;
     }
     if (cur.t == T_STR) {
         mov_rax_imm((u64)cur.v);
+        g_e.t.kind = CK_CHAR;
+        g_e.t.ptr = 1;
+        g_e.t.obj = 1;
         advance();
         return;
     }
@@ -559,342 +1255,580 @@ static void p_primary(void)
         name[31] = 0;
 
         if (nxt.t == '(') {
-            advance();                  /* ID */
-            advance();                  /* ( */
-            int nargs = 0;
-            if (cur.t != ')') {
-                for (;;) {
-                    p_assign();
-                    push_rax();
-                    nargs++;
-                    if (nargs > MAX_ARGS) { fail("too many arguments"); return; }
-                    if (accept(','))
-                        continue;
-                    break;
-                }
-            }
-            expect(')');
-
-            /* SDK 内置函数 -> INT 0x21 */
-            struct { const char *n; int nr; int args; } bi[] = {
-                { "putc", 1, 1 }, { "print", 11, 1 }, { "puts", 11, 1 },
-                { "print_int", 20, 1 }, { "getc", 2, 0 }, { "exit", 0, 1 },
-                { "sleep", 16, 1 }, { "uptime", 7, 0 },
-                { "open", 5, 2 }, { "read", 4, 3 }, { "write", 3, 3 },
-                { "close", 6, 1 }, { "seek", 12, 3 },
-                { "stat", 13, 2 }, { "statx", 19, 2 },
-                { "reboot", 8, 0 }, { "shutdown", 9, 0 },
-                { "netinfo", 21, 1 }, { "tcp_connect", 22, 2 },
-                { "tcp_send", 23, 3 }, { "tcp_recv", 24, 3 },
-                { "tcp_close", 25, 1 }, { "tcp_listen", 26, 1 },
-                { "tcp_accept", 27, 1 }, { "dhcp", 28, 0 },
-                { "dns", 29, 1 }, { "tftp_get", 30, 3 },
-                { "http_get", 31, 3 },
-                { "udp_open", 32, 1 }, { "udp_sendto", 33, 5 },
-                { "udp_recvfrom", 34, 6 }, { "icmp_err", 35, 1 },
-                { "udp_close", 36, 1 },
-                { NULL, 0, 0 }
-            };
-            int nr = -1;
-            for (int i = 0; bi[i].n; i++) {
-                if (!strcmp(bi[i].n, name)) {
-                    if (bi[i].args != nargs) { fail("wrong argument count"); return; }
-                    nr = bi[i].nr;
-                    break;
-                }
-            }
-            if (!strcmp(name, "ip4")) {
-                if (nargs != 4) { fail("ip4 needs 4 arguments"); return; }
-                e8(0x5A); e8(0x59); e8(0x5E); e8(0x5F);   /* d,c,b,a */
-                e8(0x48); e8(0x89); e8(0xF8);             /* mov rax,rdi */
-                e8(0x48); e8(0xC1); e8(0xE0); e8(0x18);   /* shl rax,24 */
-                e8(0x49); e8(0x89); e8(0xF0);             /* mov r8,rsi */
-                e8(0x49); e8(0xC1); e8(0xE0); e8(0x10);   /* shl r8,16 */
-                e8(0x4C); e8(0x09); e8(0xC0);             /* or rax,r8 */
-                e8(0x49); e8(0x89); e8(0xC8);             /* mov r8,rcx */
-                e8(0x49); e8(0xC1); e8(0xE0); e8(0x08);   /* shl r8,8 */
-                e8(0x4C); e8(0x09); e8(0xC0);             /* or rax,r8 */
-                e8(0x48); e8(0x09); e8(0xD0);             /* or rax,rdx */
-                return;
-            }
-            if (nr >= 0) {
-                /* 参数按 rdi,rsi,rdx,rcx,r8,r9 反向弹出 */
-                static const u8 regs[MAX_ARGS][2] = {
-                    { 0x5F, 0x00 }, { 0x5E, 0x00 }, { 0x5A, 0x00 },
-                    { 0x59, 0x00 }, { 0x41, 0x58 }, { 0x41, 0x59 }
-                };
-                for (int i = nargs - 1; i >= 0; i--) {
-                    if (regs[i][0] == 0x41) { e8(0x41); e8(regs[i][1]); }
-                    else e8(regs[i][0]);
-                }
-                mov_rax_imm((u64)nr);
-                e8(0xCD); e8(0x21);
-                return;
-            }
-
-            /* 用户函数: 参数按左到右压栈, 由被调者按声明顺序取 */
-            if (nfc >= MAX_FCALL) { fail("too many calls"); return; }
-            e8(0xE8);
-            fcs[nfc].pos = clen;        /* rel32 字段位置 */
-            e32(0);
-            strncpy(fcs[nfc].name, name, 31);
-            fcs[nfc].name[31] = 0;
-            nfc++;
-            if (nargs)
-                { e8(0x48); e8(0x81); e8(0xC4); e32((u32)nargs * 8); }
+            gen_call(name);
             return;
         }
 
-        /* 变量读取 */
-        load_var(name);
+        struct sym *s = lookup_var(name);
+        if (!s) { fail("undefined variable"); return; }
+        gen_sym_addr(s);
+        if (s->ndims > 0) {
+            g_e.is_arr = true;
+            g_e.ndims = s->ndims;
+            for (int i = 0; i < s->ndims; i++)
+                g_e.dims[i] = s->dims[i];
+            g_e.nelem = s->nelem;
+            g_e.esize = value_bytes(&s->type);
+            g_e.t = s->type;
+            g_e.lval = false;
+        } else {
+            g_e.t = s->type;
+            g_e.lval = true;
+            g_e.is_arr = false;
+        }
         advance();
         return;
     }
     if (accept('(')) {
-        p_assign();
+        gen_expr(0);
         expect(')');
         return;
     }
     fail("bad expression");
 }
 
-static void p_unary(void)
+static void gen_unary(void)
 {
+    if (cur.t == T_INC) { gen_incdec(true, true); return; }
+    if (cur.t == T_DEC) { gen_incdec(false, true); return; }
     if (accept('-')) {
-        p_unary();
+        gen_unary();
+        mat_value();
         e8(0x48); e8(0xF7); e8(0xD8);       /* neg rax */
+        g_e.t.kind = CK_INT; g_e.t.ptr = 0; g_e.t.obj = 8;
+        g_e.lval = false;
         return;
     }
     if (accept('!')) {
-        p_unary();
+        gen_unary();
+        mat_value();
         test_rax();
         e8(0x0F); e8(0x94); e8(0xC0);       /* sete al */
         e8(0x48); e8(0x0F); e8(0xB6); e8(0xC0);
+        g_e.t.kind = CK_INT; g_e.t.ptr = 0; g_e.t.obj = 8;
+        g_e.lval = false;
         return;
     }
     if (accept('~')) {
-        p_unary();
+        gen_unary();
+        mat_value();
         e8(0x48); e8(0xF7); e8(0xD0);       /* not rax */
+        g_e.t.kind = CK_INT; g_e.t.ptr = 0; g_e.t.obj = 8;
+        g_e.lval = false;
+        return;
+    }
+    if (accept('+')) {
+        gen_unary();
+        mat_value();
         return;
     }
     if (accept('&')) {
-        if (cur.t != T_ID) { fail("& requires variable"); return; }
-        struct sym *s = lookup_var(cur.name);
-        if (!s) { fail("undefined variable"); return; }
-        if (s->kind == SK_LOCAL)
-            lea_rax_local(s->offset);
-        else
-            mov_rax_imm((u64)s->addr);
-        advance();
+        gen_unary();
+        if (g_e.is_arr) {
+            struct ctype p = g_e.t;
+            p.ptr = 1;
+            p.obj = g_e.nelem * g_e.esize;
+            g_e.t = p;
+            g_e.is_arr = false;
+            g_e.lval = false;
+            return;
+        }
+        if (!g_e.lval) { fail("& requires lvalue"); return; }
+        g_e.t.ptr++;
+        g_e.lval = false;
         return;
     }
     if (accept('*')) {
-        p_unary();
-        e8(0x48); e8(0x8B); e8(0x00);       /* mov rax, [rax] */
+        gen_unary();
+        mat_value();
+        if (g_e.t.ptr == 0) { fail("* requires pointer"); return; }
+        g_e.t.ptr--;
+        if (g_e.t.ptr == 0 && g_e.t.kind == CK_STRUCT)
+            g_e.t.obj = stypes[g_e.t.sid].size;
+        g_e.lval = true;
+        g_e.is_arr = false;
         return;
     }
-    if (accept('+'))
-        { p_unary(); return; }
-    p_primary();
+    gen_primary();
+    gen_postfix();
 }
 
-static void p_mul(void)
+static void gen_expr(int minp)
 {
-    p_unary();
+    gen_unary();
+
     for (;;) {
-        int op = cur.t;
-        if (op != '*' && op != '/' && op != '%')
+        if (failed)
+            return;
+
+        /* 三目运算 */
+        if (minp <= 1 && cur.t == '?') {
+            advance();
+            mat_value();
+            test_rax();
+            u32 jz = emit_jcc(0x84);
+            struct ety mid;
+            gen_value(0, &mid);
+            expect(':');
+            u32 jend = emit_jmp();
+            patch_rel(jz, clen);
+            struct ety rhs;
+            gen_value(0, &rhs);
+            patch_rel(jend, clen);
+            g_e.t = (mid.t.ptr > 0) ? mid.t : rhs.t;
+            g_e.lval = false;
+            g_e.is_arr = false;
+            continue;
+        }
+
+        /* 赋值 */
+        if (minp == 0 && is_assign_op(cur.t)) {
+            if (g_e.is_arr || !g_e.lval) {
+                fail("assignment requires lvalue");
+                return;
+            }
+            struct ctype lt = g_e.t;
+            if (lt.ptr == 0 && lt.kind == CK_STRUCT) {
+                fail("struct assignment not supported");
+                return;
+            }
+            int op = cur.t;
+            advance();
+
+            push_rax();                    /* 目标地址 */
+            if (op != '=') {
+                mov_rcx_rsp();
+                mov_rax_rcx();
+                load_at(&lt);               /* rax = 旧值 */
+                push_rax();                /* 旧值 (左操作数) */
+            }
+            gen_value(0, 0);
+            if (op != '=') {
+                int bop = assign_binop(op);
+                if ((bop == '+' || bop == '-') && lt.ptr > 0)
+                    imul_rax_imm(ptr_step(&lt));
+                pop_rcx();                 /* 旧值 */
+                apply_binop(bop);
+            }
+            pop_rcx();                     /* 地址 */
+            store_at(&lt);
+            g_e.t = lt;
+            g_e.lval = false;
+            g_e.is_arr = false;
+            continue;
+        }
+
+        int prec = bin_prec(cur.t);
+        if (prec < 0 || prec < minp)
             break;
-        advance();
+
+        int op = cur.t;
+        mat_value();
+        struct ctype lt = g_e.t;
+        bool logic = (op == T_ANDAND || op == T_OROR);
+        if (logic)
+            boolify();
+
         push_rax();
-        p_unary();
-        pop_rcx();
-        apply_binop(op);
+        advance();
+        gen_expr(prec + 1);
+        mat_value();
+        struct ety rt = g_e;
+        if (logic)
+            boolify();
+        pop_rcx();                         /* 左值在 rcx */
+
+        if (logic) {
+            apply_binop(op == T_ANDAND ? '&' : '|');
+            g_e.t.kind = CK_INT; g_e.t.ptr = 0; g_e.t.obj = 8;
+            g_e.lval = false;
+            g_e.is_arr = false;
+            continue;
+        }
+
+        /* 指针算术: 按元素大小缩放整数侧 */
+        if (op == '+' || op == '-') {
+            if (lt.ptr > 0 && rt.t.ptr == 0) {
+                int st = ptr_step(&lt);
+                if (st != 1)
+                    imul_rax_imm(st);
+            } else if (op == '+' && lt.ptr == 0 && rt.t.ptr > 0) {
+                int st = ptr_step(&rt.t);
+                if (st != 1)
+                    imul_rcx_imm(st);
+            }
+        }
+
+        bool cmpop = (op == T_EQ || op == T_NE || op == '<' || op == '>' ||
+                      op == T_LE || op == T_GE);
+        if (cmpop) {
+            apply_cmp(op);
+            g_e.t.kind = CK_INT; g_e.t.ptr = 0; g_e.t.obj = 8;
+        } else if (op == '-' && lt.ptr > 0 && rt.t.ptr > 0) {
+            /* 指针相减: 结果除以元素大小 */
+            apply_binop('-');
+            int st = ptr_step(&lt);
+            if (st > 1) {
+                mov_rcx_imm((u64)st);
+                e8(0x48); e8(0x99);              /* cqo */
+                e8(0x48); e8(0xF7); e8(0xF9);    /* idiv rcx */
+            }
+            g_e.t.kind = CK_INT; g_e.t.ptr = 0; g_e.t.obj = 8;
+        } else {
+            apply_binop(op);
+            if ((op == '+' || op == '-') && lt.ptr > 0 && rt.t.ptr == 0)
+                g_e.t = lt;
+            else if (op == '+' && lt.ptr == 0 && rt.t.ptr > 0)
+                g_e.t = rt.t;
+            else {
+                g_e.t.kind = CK_INT; g_e.t.ptr = 0; g_e.t.obj = 8;
+            }
+        }
+        g_e.lval = false;
+        g_e.is_arr = false;
     }
 }
 
-static void p_add(void)
+static void gen_call(const char *name)
 {
-    p_mul();
+    advance();                          /* ID */
+    advance();                          /* '(' */
+    int nargs = 0;
+    if (cur.t != ')') {
+        for (;;) {
+            gen_value(0, 0);
+            push_rax();
+            nargs++;
+            if (nargs > MAX_ARGS) { fail("too many arguments"); return; }
+            if (accept(','))
+                continue;
+            break;
+        }
+    }
+    expect(')');
+
+    struct { const char *n; int nr; int args; } bi[] = {
+        { "putc", 1, 1 }, { "print", 11, 1 }, { "puts", 11, 1 },
+        { "print_int", 20, 1 }, { "getc", 2, 0 }, { "exit", 0, 1 },
+        { "sleep", 16, 1 }, { "uptime", 7, 0 },
+        { "open", 5, 2 }, { "read", 4, 3 }, { "write", 3, 3 },
+        { "close", 6, 1 }, { "seek", 12, 3 },
+        { "stat", 13, 2 }, { "statx", 19, 2 },
+        { "reboot", 8, 0 }, { "shutdown", 9, 0 },
+        { "netinfo", 21, 1 }, { "tcp_connect", 22, 2 },
+        { "tcp_send", 23, 3 }, { "tcp_recv", 24, 3 },
+        { "tcp_close", 25, 1 }, { "tcp_listen", 26, 1 },
+        { "tcp_accept", 27, 1 }, { "dhcp", 28, 0 },
+        { "dns", 29, 1 }, { "tftp_get", 30, 3 },
+        { "http_get", 31, 3 },
+        { "udp_open", 32, 1 }, { "udp_sendto", 33, 5 },
+        { "udp_recvfrom", 34, 6 }, { "icmp_err", 35, 1 },
+        { "udp_close", 36, 1 },
+        { NULL, 0, 0 }
+    };
+    int nr = -1;
+    for (int i = 0; bi[i].n; i++) {
+        if (!strcmp(bi[i].n, name)) {
+            if (bi[i].args != nargs) { fail("wrong argument count"); return; }
+            nr = bi[i].nr;
+            break;
+        }
+    }
+    if (!strcmp(name, "ip4")) {
+        if (nargs != 4) { fail("ip4 needs 4 arguments"); return; }
+        e8(0x5A); e8(0x59); e8(0x5E); e8(0x5F);   /* d,c,b,a */
+        e8(0x48); e8(0x89); e8(0xF8);             /* mov rax,rdi */
+        e8(0x48); e8(0xC1); e8(0xE0); e8(0x18);   /* shl rax,24 */
+        e8(0x49); e8(0x89); e8(0xF0);             /* mov r8,rsi */
+        e8(0x49); e8(0xC1); e8(0xE0); e8(0x10);   /* shl r8,16 */
+        e8(0x4C); e8(0x09); e8(0xC0);             /* or rax,r8 */
+        e8(0x49); e8(0x89); e8(0xC8);             /* mov r8,rcx */
+        e8(0x49); e8(0xC1); e8(0xE0); e8(0x08);   /* shl r8,8 */
+        e8(0x4C); e8(0x09); e8(0xC0);             /* or rax,r8 */
+        e8(0x48); e8(0x09); e8(0xD0);             /* or rax,rdx */
+    } else if (nr >= 0) {
+        static const u8 regs[MAX_ARGS][2] = {
+            { 0x5F, 0x00 }, { 0x5E, 0x00 }, { 0x5A, 0x00 },
+            { 0x59, 0x00 }, { 0x41, 0x58 }, { 0x41, 0x59 }
+        };
+        for (int i = nargs - 1; i >= 0; i--) {
+            if (regs[i][0] == 0x41) { e8(0x41); e8(regs[i][1]); }
+            else e8(regs[i][0]);
+        }
+        mov_rax_imm((u64)nr);
+        e8(0xCD); e8(0x21);
+    } else {
+        if (nfc >= MAX_FCALL) { fail("too many calls"); return; }
+        e8(0xE8);
+        fcs[nfc].pos = clen;
+        e32(0);
+        strncpy(fcs[nfc].name, name, 31);
+        fcs[nfc].name[31] = 0;
+        nfc++;
+        if (nargs)
+            add_rsp_imm(nargs * 8);
+    }
+
+    g_e.t.kind = CK_INT;
+    g_e.t.ptr = 0;
+    g_e.t.obj = 8;
+    g_e.lval = false;
+    g_e.is_arr = false;
+}
+
+/* ------------------------------------------------------------ 声明解析 */
+static bool parse_ctype(struct ctype *t)
+{
+    memset(t, 0, sizeof(*t));
+
     for (;;) {
-        int op = cur.t;
-        if (op != '+' && op != '-')
-            break;
+        if (accept_kw("static") || accept_kw("const") || accept_kw("volatile") ||
+            accept_kw("unsigned") || accept_kw("signed") || accept_kw("register") ||
+            accept_kw("long") || accept_kw("short") || accept_kw("extern") ||
+            accept_kw("inline"))
+            continue;
+        break;
+    }
+
+    if (is_kw("struct") || is_kw("union")) {
+        bool is_union = (cur.name[1] == 'n');
         advance();
-        push_rax();
-        p_mul();
-        pop_rcx();
-        apply_binop(op);
+        if (cur.t != T_ID) { fail("struct name expected"); return false; }
+        char sname[32];
+        strncpy(sname, cur.name, 31);
+        sname[31] = 0;
+        int sid = add_struct(sname, is_union);
+        advance();
+        t->kind = CK_STRUCT;
+        t->sid = sid;
+        t->obj = stypes[sid].complete ? stypes[sid].size : 0;
+    } else if (accept_kw("int")) {
+        t->kind = CK_INT;
+        t->obj = 8;
+    } else if (accept_kw("char")) {
+        t->kind = CK_CHAR;
+        t->obj = 1;
+    } else if (accept_kw("void")) {
+        t->kind = CK_VOID;
+        t->obj = 0;
+    } else if (is_kw("float") || is_kw("double")) {
+        fail("floating point not supported");
+        return false;
+    } else {
+        fail("type expected");
+        return false;
+    }
+
+    while (accept('*'))
+        t->ptr++;
+    return true;
+}
+
+static bool parse_declarator(struct ctype base, struct decl *d)
+{
+    memset(d, 0, sizeof(*d));
+    d->type = base;
+    d->nelem = 1;
+
+    while (accept('*'))
+        d->type.ptr++;
+
+    if (cur.t != T_ID) { fail("expected name"); return false; }
+    strncpy(d->name, cur.name, 31);
+    d->name[31] = 0;
+    advance();
+
+    while (accept('[')) {
+        i64 n = 0;
+        bool unsized = false;
+        if (cur.t == ']') {
+            unsized = true;
+        } else {
+            n = c_cond();
+            if (n < 0) { fail("bad array size"); return false; }
+        }
+        expect(']');
+        if (d->ndims >= MAX_DIM) { fail("too many dimensions"); return false; }
+        d->dims[d->ndims++] = (int)n;
+        if (unsized) {
+            d->incomplete = true;
+        } else if (n > 0) {
+            d->nelem *= (int)n;
+        }
+    }
+    if (d->incomplete)
+        d->nelem = 0;
+    return true;
+}
+
+static bool decl_validate(const struct decl *d)
+{
+    if (d->type.kind == CK_VOID && d->type.ptr == 0) {
+        fail("void variable");
+        return false;
+    }
+    if (d->type.kind == CK_STRUCT && d->type.ptr == 0 &&
+        !stypes[d->type.sid].complete) {
+        fail("incomplete struct type");
+        return false;
+    }
+    if (value_bytes(&d->type) <= 0) {
+        fail("bad variable type");
+        return false;
+    }
+    return true;
+}
+
+/* 初始化目标: 全局 (gaddr, 编译期写入) 或局部 (loff, 生成 store) */
+static void init_put_scalar(struct ctype t, bool global, i64 gaddr, int loff)
+{
+    if (global) {
+        i64 v = c_cond();
+        u32 off = (u32)(gaddr - TC_GLOB_BASE);
+        int n = value_bytes(&t);
+        for (int i = 0; i < n; i++)
+            if (off + (u32)i < sizeof(gmem))
+                gmem[off + (u32)i] = (u8)(v >> (i * 8));
+    } else {
+        gen_value(0, 0);
+        lea_rcx_local(loff);
+        store_at(&t);
     }
 }
 
-static void p_shift(void)
+static void init_put_byte(bool global, i64 gaddr, int loff, u8 v)
 {
-    p_add();
-    for (;;) {
-        int op = cur.t;
-        if (op != T_SHL && op != T_SHR)
-            break;
-        advance();
-        push_rax();
-        p_add();
-        pop_rcx();
-        apply_binop(op);
+    if (global) {
+        u32 off = (u32)(gaddr - TC_GLOB_BASE);
+        if (off < sizeof(gmem))
+            gmem[off] = v;
+    } else {
+        lea_rcx_local(loff);
+        e8(0xC6); e8(0x01); e8(v);           /* mov byte [rcx], imm8 */
     }
 }
 
-static void p_rel(void)
+static void init_object(struct ctype elem, int dims[], int ndims, int nelem,
+                        bool global, i64 gaddr, int loff)
 {
-    p_shift();
-    for (;;) {
-        int op = cur.t;
-        if (op != '<' && op != '>' && op != T_LE && op != T_GE)
-            break;
-        advance();
-        push_rax();
-        p_shift();
-        pop_rcx();
-        apply_cmp(op);
-    }
-}
+    int esize = value_bytes(&elem);
 
-static void p_eq(void)
-{
-    p_rel();
-    for (;;) {
-        int op = cur.t;
-        if (op != T_EQ && op != T_NE)
-            break;
-        advance();
-        push_rax();
-        p_rel();
-        pop_rcx();
-        apply_cmp(op);
-    }
-}
+    if (ndims > 0) {
+        int n0 = dims[0] > 0 ? dims[0] : nelem;
+        int stride = esize;
+        for (int i = 1; i < ndims; i++)
+            stride *= dims[i];
 
-static void p_band(void)
-{
-    p_eq();
-    while (cur.t == '&') {
-        advance();
-        push_rax();
-        p_eq();
-        pop_rcx();
-        apply_binop('&');
-    }
-}
+        /* char 数组 = "字符串" */
+        if (elem.kind == CK_CHAR && elem.ptr == 0 && ndims == 1 &&
+            cur.t == T_STR) {
+            int slen = cur.slen;
+            u32 soff = cur.soff;
+            advance();
+            int n = n0 < slen + 1 ? n0 : slen + 1;
+            for (int i = 0; i < n; i++) {
+                u8 b = (i < slen) ? str_pool[soff + (u32)i] : 0;
+                init_put_byte(global, gaddr + i, loff + i, b);
+            }
+            return;
+        }
 
-static void p_bxor(void)
-{
-    p_band();
-    while (cur.t == '^') {
-        advance();
-        push_rax();
-        p_band();
-        pop_rcx();
-        apply_binop('^');
-    }
-}
+        /* 多维数组也允许扁平初始化 {1,2,3,4} */
+        if (ndims > 1 && cur.t != '{') {
+            int total = 1;
+            for (int i = 0; i < ndims; i++)
+                total *= dims[i];
+            for (int i = 0; i < total; i++) {
+                init_object(elem, 0, 0, 1, global,
+                            gaddr + (i64)i * esize, loff + i * esize);
+                if (!accept(','))
+                    break;
+            }
+            return;
+        }
 
-static void p_bor(void)
-{
-    p_bxor();
-    while (cur.t == '|') {
-        advance();
-        push_rax();
-        p_bxor();
-        pop_rcx();
-        apply_binop('|');
-    }
-}
-
-static void p_land(void)
-{
-    p_bor();
-    while (cur.t == T_ANDAND) {
-        advance();
-        boolify();
-        push_rax();
-        p_bor();
-        boolify();
-        pop_rcx();
-        apply_binop('&');
-    }
-}
-
-static void p_lor(void)
-{
-    p_land();
-    while (cur.t == T_OROR) {
-        advance();
-        boolify();
-        push_rax();
-        p_land();
-        boolify();
-        pop_rcx();
-        apply_binop('|');
-    }
-}
-
-static void p_assign(void)
-{
-    if (cur.t == T_ID && nxt.t == '=') {
-        char name[32];
-        strncpy(name, cur.name, 31);
-        name[31] = 0;
-        advance();
-        advance();
-        p_assign();
-        store_var(name);
+        if (!accept('{')) { fail("initializer list expected"); return; }
+        for (int i = 0; i < n0; i++) {
+            if (cur.t == '}') break;
+            init_object(elem, dims + 1, ndims - 1, n0, global,
+                        gaddr + (i64)i * stride, loff + i * stride);
+            if (!accept(','))
+                break;
+        }
+        expect('}');
         return;
     }
-    if (cur.t == T_ID &&
-        (nxt.t == T_PLUSEQ || nxt.t == T_MINUSEQ || nxt.t == T_STAREQ ||
-         nxt.t == T_SLASHEQ || nxt.t == T_PERCENTEQ)) {
-        char name[32];
-        strncpy(name, cur.name, 31);
-        name[31] = 0;
-        int op = nxt.t;
-        advance();
-        advance();
-        load_var(name);
-        push_rax();
-        p_assign();
-        pop_rcx();
-        if (op == T_PLUSEQ) apply_binop('+');
-        else if (op == T_MINUSEQ) apply_binop('-');
-        else if (op == T_STAREQ) apply_binop('*');
-        else if (op == T_SLASHEQ) apply_binop('/');
-        else apply_binop('%');
-        store_var(name);
+
+    if (elem.kind == CK_STRUCT && elem.ptr == 0) {
+        struct stype *st = &stypes[elem.sid];
+        if (!accept('{')) { fail("initializer list expected"); return; }
+        for (int i = 0; i < st->nf; i++) {
+            if (cur.t == '}') break;
+            struct field *fd = &st->f[i];
+            init_object(fd->type, fd->dims, fd->ndims,
+                        fd->nelem, global, gaddr + fd->offset,
+                        loff + fd->offset);
+            if (!accept(','))
+                break;
+        }
+        expect('}');
         return;
     }
-    p_lor();
+
+    init_put_scalar(elem, global, gaddr, loff);
 }
 
-/* ------------------------------------------------------------------ 语句 */
+/* ---------------------------------------------------------------- 语句 */
 static void parse_stmt(void);
 
-static void parse_local_decl(void)
+static void parse_local_decl(struct ctype base)
 {
     for (;;) {
-        while (accept('*'))
-            ;
-        if (cur.t != T_ID) { fail("expected variable name"); return; }
-        char name[32];
-        strncpy(name, cur.name, 31);
-        name[31] = 0;
-        advance();
-        struct sym *s = add_local(name, -8 * (nloc + 1));
+        struct decl d;
+        if (!parse_declarator(base, &d))
+            return;
+        if (cur.t == '(') { fail("nested function"); return; }
+        if (!decl_validate(&d))
+            return;
+
+        /* 未定长数组: 仅支持 char s[] = "..." */
+        if (d.incomplete) {
+            if (cur.t == '=' && nxt.t == T_STR) {
+                d.nelem = nxt.slen + 1;
+                d.dims[d.ndims - 1] = d.nelem;
+                d.incomplete = false;
+            } else {
+                fail("array size unknown");
+                return;
+            }
+        }
+
+        int size = d.ndims ? d.nelem * value_bytes(&d.type)
+                           : value_bytes(&d.type);
+        if (size <= 0) { fail("bad variable size"); return; }
+        int off = alloc_local(size);
+        struct sym *s = new_local(&d, off);
         if (!s)
             return;
+
         if (accept('=')) {
-            p_assign();
+            if (d.ndims || (d.type.kind == CK_STRUCT && d.type.ptr == 0)) {
+                zero_local(off, size);
+                init_object(d.type, d.dims, d.ndims,
+                            d.ndims ? d.nelem : 1, false, 0, off);
+            } else {
+                gen_value(0, 0);
+                lea_rcx_local(off);
+                store_at(&d.type);
+            }
+        } else if (d.ndims || (d.type.kind == CK_STRUCT && d.type.ptr == 0)) {
+            zero_local(off, size);
         } else {
             mov_rax_imm(0);
+            lea_rcx_local(off);
+            store_at(&d.type);
         }
-        mov_local_rax(s->offset);
+
         if (accept(','))
             continue;
         break;
@@ -910,6 +1844,66 @@ static void parse_block(void)
     expect('}');
 }
 
+static bool is_type_start(void)
+{
+    return is_kw("int") || is_kw("char") || is_kw("void") ||
+           is_kw("struct") || is_kw("union") || is_kw("static") ||
+           is_kw("const") || is_kw("unsigned") || is_kw("signed") ||
+           is_kw("long") || is_kw("short") || is_kw("extern") ||
+           is_kw("inline");
+}
+
+static void parse_switch(void)
+{
+    expect('(');
+    gen_value(0, 0);
+    expect(')');
+
+    int tmp = alloc_local(8);
+    struct ctype it = { CK_INT, 0, 0, 8 };
+    lea_rcx_local(tmp);
+    store_at(&it);
+
+    u32 jdisp = emit_jmp();
+
+    if (nloop >= MAX_NEST) { fail("nesting too deep"); return; }
+    struct loopctx *lp = &loops[nloop++];
+    lp->nbreak = 0;
+    lp->cont = 0;
+    lp->is_switch = true;
+
+    if (nsw >= MAX_NEST) { fail("switch nesting too deep"); return; }
+    struct swctx *sw = &swstk[nsw++];
+    sw->tmp = tmp;
+    sw->ncase = 0;
+    sw->has_def = false;
+    sw->def_addr = 0;
+
+    parse_stmt();
+
+    u32 jend = emit_jmp();
+    u32 dispatch = clen;
+
+    for (int i = 0; i < sw->ncase; i++) {
+        mov_rax_local(tmp);
+        mov_rcx_imm((u64)sw->cases[i].val);
+        e8(0x48); e8(0x39); e8(0xC8);       /* cmp rax, rcx */
+        u32 j = emit_jcc(0x84);             /* je */
+        patch_rel(j, sw->cases[i].addr);
+    }
+    u32 jdef = emit_jmp();
+    u32 end = clen;
+
+    patch_rel(jdisp, dispatch);
+    patch_rel(jend, end);
+    patch_rel(jdef, sw->has_def ? sw->def_addr : end);
+    for (int i = 0; i < lp->nbreak; i++)
+        patch_rel(lp->breaks[i], end);
+
+    nsw--;
+    nloop--;
+}
+
 static void parse_stmt(void)
 {
     if (failed)
@@ -922,14 +1916,15 @@ static void parse_stmt(void)
     if (accept(';'))
         return;
 
-    if (is_kw("int") || is_kw("char")) {
-        advance();
-        parse_local_decl();
+    if (is_type_start()) {
+        struct ctype base;
+        if (parse_ctype(&base))
+            parse_local_decl(base);
         return;
     }
     if (accept_kw("if")) {
         expect('(');
-        p_assign();
+        gen_value(0, 0);
         expect(')');
         test_rax();
         u32 jz = emit_jcc(0x84);
@@ -947,7 +1942,7 @@ static void parse_stmt(void)
     if (accept_kw("while")) {
         expect('(');
         u32 start = clen;
-        p_assign();
+        gen_value(0, 0);
         expect(')');
         test_rax();
         u32 jz = emit_jcc(0x84);
@@ -955,6 +1950,7 @@ static void parse_stmt(void)
         struct loopctx *lp = &loops[nloop++];
         lp->nbreak = 0;
         lp->cont = start;
+        lp->is_switch = false;
         parse_stmt();
         u32 back = emit_jmp();
         patch_rel(back, start);
@@ -967,12 +1963,13 @@ static void parse_stmt(void)
     if (accept_kw("for")) {
         expect('(');
         if (!accept(';')) {
-            if (is_kw("int") || is_kw("char")) {
-                advance();
-                while (accept('*')) ;
-                parse_local_decl();
+            if (is_type_start()) {
+                struct ctype base;
+                if (!parse_ctype(&base)) return;
+                /* 声明自带分号 */
+                parse_local_decl(base);
             } else {
-                p_assign();
+                gen_value(0, 0);
                 expect(';');
             }
         }
@@ -980,17 +1977,16 @@ static void parse_stmt(void)
         u32 jz = 0;
         bool has_cond = false;
         if (cur.t != ';') {
-            p_assign();
+            gen_value(0, 0);
             test_rax();
             jz = emit_jcc(0x84);
             has_cond = true;
         }
         expect(';');
-        u32 jbody = emit_jmp();         /* 跳过 step 进入循环体 */
+        u32 jbody = emit_jmp();
         u32 step = clen;
-        if (cur.t != ')') {
-            p_assign();
-        }
+        if (cur.t != ')')
+            gen_value(0, 0);
         expect(')');
         u32 back = emit_jmp();
         patch_rel(back, cond);
@@ -1000,6 +1996,7 @@ static void parse_stmt(void)
         struct loopctx *lp = &loops[nloop++];
         lp->nbreak = 0;
         lp->cont = step;
+        lp->is_switch = false;
         parse_stmt();
         u32 to_step = emit_jmp();
         patch_rel(to_step, step);
@@ -1010,11 +2007,33 @@ static void parse_stmt(void)
         nloop--;
         return;
     }
+    if (accept_kw("switch")) {
+        parse_switch();
+        return;
+    }
+    if (accept_kw("case")) {
+        if (nsw == 0) { fail("case outside switch"); return; }
+        struct swctx *sw = &swstk[nsw - 1];
+        i64 v = c_cond();
+        expect(':');
+        if (sw->ncase >= MAX_CASES) { fail("too many cases"); return; }
+        sw->cases[sw->ncase].val = v;
+        sw->cases[sw->ncase].addr = clen;
+        sw->ncase++;
+        return;
+    }
+    if (accept_kw("default")) {
+        if (nsw == 0) { fail("default outside switch"); return; }
+        expect(':');
+        swstk[nsw - 1].has_def = true;
+        swstk[nsw - 1].def_addr = clen;
+        return;
+    }
     if (accept_kw("return")) {
         if (cur.t == ';') {
             mov_rax_imm(0);
         } else {
-            p_assign();
+            gen_value(0, 0);
         }
         e8(0xC9);                       /* leave */
         e8(0xC3);                       /* ret */
@@ -1022,17 +2041,20 @@ static void parse_stmt(void)
         return;
     }
     if (accept_kw("break")) {
-        if (nloop == 0) { fail("break outside loop"); return; }
+        if (nloop == 0) { fail("break outside loop/switch"); return; }
         struct loopctx *lp = &loops[nloop - 1];
-        if (lp->nbreak >= 32) { fail("too many breaks"); return; }
+        if (lp->nbreak >= 16) { fail("too many breaks"); return; }
         lp->breaks[lp->nbreak++] = emit_jmp();
         expect(';');
         return;
     }
     if (accept_kw("continue")) {
-        if (nloop == 0) { fail("continue outside loop"); return; }
+        int ci = nloop - 1;
+        while (ci >= 0 && loops[ci].is_switch)
+            ci--;
+        if (ci < 0) { fail("continue outside loop"); return; }
         u32 j = emit_jmp();
-        patch_rel(j, loops[nloop - 1].cont);
+        patch_rel(j, loops[ci].cont);
         expect(';');
         return;
     }
@@ -1041,111 +2063,134 @@ static void parse_stmt(void)
         return;
     }
 
-    p_assign();
+    gen_value(0, 0);
     expect(';');
 }
 
-/* ------------------------------------------------------------------ 顶层 */
-static u64 const_expr(void)
+/* ------------------------------------------------------------ 结构体定义 */
+static void parse_struct_body(int sid, bool is_union)
 {
-    bool neg = false;
-    if (accept('-'))
-        neg = true;
-    else
-        accept('+');
-    i64 v = 0;
-    if (cur.t == T_NUM || cur.t == T_STR) {
-        v = cur.v;
-        advance();
-    } else {
-        fail("constant expected");
-        return 0;
-    }
-    return neg ? (u64)(-v) : (u64)v;
-}
+    struct stype *st = &stypes[sid];
+    st->nf = 0;
+    st->size = 0;
+    st->complete = false;
 
-static void parse_globals(void)
-{
-    for (;;) {
-        while (accept('*'))
-            ;
-        if (cur.t != T_ID) { fail("expected name"); return; }
-        char name[32];
-        strncpy(name, cur.name, 31);
-        name[31] = 0;
-        advance();
-        struct sym *s = add_global(name);
-        if (!s)
+    if (!accept('{')) { fail("expected struct body"); return; }
+
+    while (!failed && cur.t != '}' && cur.t != T_EOF) {
+        struct ctype base;
+        if (!parse_ctype(&base))
             return;
-        if (accept('=')) {
-            int idx = (int)((s->addr - (i64)TC_GLOB_BASE) / 8);
-            ginit[idx] = const_expr();
+        for (;;) {
+            struct decl d;
+            if (!parse_declarator(base, &d))
+                return;
+            if (d.incomplete) { fail("array size unknown"); return; }
+            if (!decl_validate(&d))
+                return;
+            if (st->nf >= MAX_FIELDS) { fail("too many fields"); return; }
+            struct field *fd = &st->f[st->nf++];
+            memset(fd, 0, sizeof(*fd));
+            strncpy(fd->name, d.name, 31);
+            fd->type = d.type;
+            fd->ndims = d.ndims;
+            for (int i = 0; i < d.ndims; i++)
+                fd->dims[i] = d.dims[i];
+            fd->nelem = d.ndims ? d.nelem : 1;
+            int fsize = d.ndims ? d.nelem * value_bytes(&d.type)
+                                : value_bytes(&d.type);
+            if (is_union) {
+                fd->offset = 0;
+                if (fsize > st->size)
+                    st->size = fsize;
+            } else {
+                st->size = align_up(st->size, 8);
+                fd->offset = st->size;
+                st->size += fsize;
+            }
+            if (accept(','))
+                continue;
+            break;
         }
-        if (accept(','))
-            continue;
-        break;
+        expect(';');
     }
-    expect(';');
+    st->size = align_up(st->size, 8);
+    st->is_union = is_union;
+    st->complete = true;
+    expect('}');
 }
 
-static void parse_params(char names[][32], int *np)
+/* ------------------------------------------------------------ 顶层声明 */
+static void parse_function(struct decl *d)
 {
-    expect('(');
-    if (accept(')'))
-        return;
-    if (is_kw("void") && nxt.t == ')') {
-        advance();
-        advance();
-        return;
-    }
-    for (;;) {
-        if (is_kw("int") || is_kw("char") || is_kw("void"))
-            advance();
-        else { fail("parameter type expected"); return; }
-        while (accept('*'))
-            ;
-        if (cur.t != T_ID) { fail("parameter name expected"); return; }
-        if (*np >= MAX_ARGS) { fail("too many parameters"); return; }
-        strncpy(names[*np], cur.name, 31);
-        names[*np][31] = 0;
-        (*np)++;
-        advance();
-        if (accept(','))
-            continue;
-        break;
-    }
-    expect(')');
-}
-
-static void parse_function(void)
-{
-    char name[32];
-    strncpy(name, cur.name, 31);
-    name[31] = 0;
-    advance();
-
-    char pnames[MAX_ARGS][32];
-    int np = 0;
-    parse_params(pnames, &np);
-    if (failed)
-        return;
-
-    struct sym *fs = add_func(name);
+    struct sym *fs = add_func(d->name);
     if (!fs)
         return;
-    fs->addr = (i64)clen;
+
+    char pnames[MAX_ARGS][32];
+    struct ctype ptypes[MAX_ARGS];
+    int np = 0;
+
+    expect('(');
+    if (!accept(')')) {
+        if (is_kw("void") && nxt.t == ')') {
+            advance();
+            advance();
+        } else {
+            for (;;) {
+                struct ctype pt;
+                if (!parse_ctype(&pt))
+                    return;
+                char pn[32];
+                pn[0] = 0;
+                if (cur.t == T_ID) {
+                    strncpy(pn, cur.name, 31);
+                    pn[31] = 0;
+                    advance();
+                }
+                while (accept('[')) {
+                    int es = value_bytes(&pt);
+                    if (cur.t != ']')
+                        (void)c_cond();
+                    expect(']');
+                    pt.ptr = 1;
+                    pt.obj = es > 0 ? es : 1;
+                }
+                if (np >= MAX_ARGS) { fail("too many parameters"); return; }
+                strncpy(pnames[np], pn, 31);
+                pnames[np][31] = 0;
+                ptypes[np] = pt;
+                np++;
+                if (accept(','))
+                    continue;
+                break;
+            }
+            expect(')');
+        }
+    }
     fs->nparams = np;
-    fs->defined = true;
 
     if (accept(';'))                    /* 原型 */
         return;
     if (cur.t != '{') { fail("expected function body"); return; }
 
+    fs->addr = (i64)clen;
+    fs->defined = true;
+
     nloc = 0;
-    cur_nparams = np;
+    lused = 0;
     for (int i = 0; i < np; i++) {
+        if (!pnames[i][0]) {
+            pnames[i][0] = '_';
+            pnames[i][1] = (char)('0' + i);
+            pnames[i][2] = 0;
+        }
+        struct decl pd;
+        memset(&pd, 0, sizeof(pd));
+        strncpy(pd.name, pnames[i], 31);
+        pd.type = ptypes[i];
         int disp = 16 + 8 * (np - 1 - i);
-        if (!add_local(pnames[i], disp))
+        if (!new_local(&pd, disp))
             return;
     }
 
@@ -1154,43 +2199,108 @@ static void parse_function(void)
     e8(0x48); e8(0x81); e8(0xEC);       /* sub rsp, imm32 */
     locals_imm_pos = clen;
     e32(0);
-    u32 frame_patch = locals_imm_pos;
 
     parse_block();
 
     e8(0xC9);
     e8(0xC3);
 
-    u32 frame = (u32)nloc * 8;
-    code[frame_patch] = (u8)frame;
-    code[frame_patch + 1] = (u8)(frame >> 8);
-    code[frame_patch + 2] = (u8)(frame >> 16);
-    code[frame_patch + 3] = (u8)(frame >> 24);
-    (void)cur_nparams;
+    u32 frame = (u32)lused;
+    code[locals_imm_pos] = (u8)frame;
+    code[locals_imm_pos + 1] = (u8)(frame >> 8);
+    code[locals_imm_pos + 2] = (u8)(frame >> 16);
+    code[locals_imm_pos + 3] = (u8)(frame >> 24);
     nloc = 0;
+    lused = 0;
+}
+
+static void parse_global_var(struct decl *d)
+{
+    if (!decl_validate(d))
+        return;
+    if (d->incomplete) {
+        if (cur.t == '=' && nxt.t == T_STR) {
+            d->nelem = nxt.slen + 1;
+            d->dims[d->ndims - 1] = d->nelem;
+            d->incomplete = false;
+        } else {
+            fail("array size unknown");
+            return;
+        }
+    }
+    struct sym *s = new_global(d);
+    if (!s)
+        return;
+    if (accept('=')) {
+        init_object(d->type, d->dims, d->ndims, d->ndims ? d->nelem : 1,
+                    true, s->addr, 0);
+    }
+}
+
+static void parse_top_decl(struct ctype base)
+{
+    struct decl d;
+    if (!parse_declarator(base, &d))
+        return;
+    if (cur.t == '(') {
+        parse_function(&d);
+        return;
+    }
+    /* 全局变量 (可多个) */
+    for (;;) {
+        parse_global_var(&d);
+        if (accept(',')) {
+            if (!parse_declarator(base, &d))
+                return;
+            continue;
+        }
+        break;
+    }
+    expect(';');
 }
 
 static void parse_program(void)
 {
     while (!failed && cur.t != T_EOF) {
-        if (is_kw("int") || is_kw("char") || is_kw("void") ||
-            is_kw("static")) {
-            if (is_kw("static"))
-                advance();
-            advance();                  /* 类型 */
-            while (accept('*'))
-                ;
-            if (cur.t != T_ID) { fail("expected name"); return; }
-            if (nxt.t == '(')
-                parse_function();
-            else
-                parse_globals();
-        } else if (accept(';')) {
-            /* 空声明 */
-        } else {
-            fail("expected declaration");
-            return;
+        if (accept(';'))
+            continue;
+
+        if (is_kw("struct") || is_kw("union")) {
+            bool is_union = (cur.name[1] == 'n');
+            advance();
+            if (cur.t != T_ID) { fail("struct name expected"); return; }
+            char name[32];
+            strncpy(name, cur.name, 31);
+            name[31] = 0;
+            advance();
+            if (cur.t == '{') {
+                int sid = add_struct(name, is_union);
+                parse_struct_body(sid, is_union);
+                if (accept(';'))
+                    continue;
+                /* struct X { ... } v; 形式 */
+                struct ctype b2;
+                memset(&b2, 0, sizeof(b2));
+                b2.kind = CK_STRUCT;
+                b2.sid = sid;
+                b2.obj = stypes[sid].size;
+                parse_top_decl(b2);
+                continue;
+            }
+            int sid = add_struct(name, is_union);
+            struct ctype base;
+            memset(&base, 0, sizeof(base));
+            base.kind = CK_STRUCT;
+            base.sid = sid;
+            base.obj = stypes[sid].complete ? stypes[sid].size : 1;
+            parse_top_decl(base);
+            continue;
         }
+
+        struct ctype base;
+        if (!parse_ctype(&base))
+            return;
+        parse_top_decl(base);
     }
 }
 
@@ -1201,14 +2311,21 @@ const u8 *tc_compile(const char *src, u32 len, u32 *out_len)
     err_msg[0] = 0;
     clen = 0;
     str_used = 0;
+    gused = 0;
     nsyms = 0;
     nloc = 0;
-    nglob = 0;
     nfc = 0;
     nloop = 0;
+    nsw = 0;
+    nstypes = 0;
+    lused = 0;
     line_no = 1;
     sp = src;
     (void)len;
+
+    memset(code, 0, sizeof(code));
+    memset(gmem, 0, sizeof(gmem));
+    memset(stypes, 0, sizeof(stypes));
 
     cur = scan();
     nxt = scan();
@@ -1249,15 +2366,10 @@ const u8 *tc_compile(const char *src, u32 len, u32 *out_len)
     /* 代码 + 数据区 */
     memset(out_buf, 0, sizeof(out_buf));
     memcpy(out_buf, code, clen);
-    for (int i = 0; i < nglob; i++) {
-        u64 v = ginit[i];
-        u8 *p = out_buf + TC_CODE_MAX + (u32)i * 8;
-        for (int k = 0; k < 8; k++)
-            p[k] = (u8)(v >> (k * 8));
-    }
+    memcpy(out_buf + TC_CODE_MAX, gmem, (u32)gused);
     memcpy(out_buf + TC_CODE_MAX + TC_DATA_GLOB, str_pool, str_used);
 
-    u32 dlen = (u32)nglob * 8;
+    u32 dlen = (u32)gused;
     if (dlen < TC_DATA_GLOB + str_used)
         dlen = TC_DATA_GLOB + str_used;
     if (dlen > TC_DATA_MAX) {

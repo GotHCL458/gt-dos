@@ -107,6 +107,65 @@ def main():
     check("tc fib recursion + loop",
           vm.expect("0 1 1 2 3 5 8 13 21 34", 4000), vm.buf[-300:])
 
+    # 扩展语法: 数组 / 结构体 / 联合 / switch / 三目 / ++ --
+    prog = [
+        "struct P { int x; int y; };",
+        "union U { int a; int b; };",
+        "int g[4] = {3,1,4,1};",
+        "struct P pts[2];",
+        "char msg[8] = \"OK\";",
+        "int add(int a, int b) { return a + b; }",
+        "int sum(int *p, int n) { int s = 0; int i;"
+        " for (i = 0; i < n; i++) s += p[i]; return s; }",
+        "int main(void) {",
+        "int i = 0;",
+        "struct P p;",
+        "struct P *q = &p;",
+        "union U u;",
+        "int loc[3] = {5,6,7};",
+        "p.x = 10;",
+        "q->y = 20;",
+        "pts[0].x = 1;",
+        "pts[1].y = 2;",
+        "u.a = 5;",
+        "print_int(u.b); print(\" \");",
+        "int s = 0;",
+        "for (i = 0; i < 4; i++) s += g[i];",
+        "print(\"A\"); print_int(s); print(\" \");",
+        "print(\"B\"); print_int(p.x + p.y); print(\" \");",
+        "print(\"C\"); print_int(pts[0].x + pts[1].y); print(\" \");",
+        "print(\"D\"); print_int(loc[1]); print(\" \");",
+        "int t = i++ + ++i;",
+        "print(\"E\"); print_int(t); print(\" \");",
+        "switch (s) {",
+        "case 8: print(\"CASE8\"); break;",
+        "case 9: print(\"CASE9\"); break;",
+        "default: print(\"OTHER\"); break;",
+        "}",
+        "print(\" \");",
+        "print(s == 9 ? \"T\" : \"F\");",
+        "print(\" \");",
+        "print(msg);",
+        "print(\" \");",
+        "print_int(add(sum(g, 4), 1));",
+        "putc('\\n');",
+        "return 0;",
+        "}",
+    ]
+    vm.buf = ""
+    vm.cmd(f"put f.c {prog[0]}", 600)
+    for line in prog[1:]:
+        vm.cmd(f"append f.c {line}", 450)
+    vm.cmd("tc f.c", 2000)
+    check("tc compiles extended syntax", vm.expect("Compiled ", 8000),
+          vm.buf[-400:])
+    vm.cmd("run f.gtp", 2000)
+    check("tc arrays/structs/switch/ternary",
+          vm.expect("5 A9 B30 C3 D6 E10 CASE9 T OK 10", 6000),
+          vm.buf[-400:])
+    check("tc extended exit code", vm.expect("exited with code 0", 3000),
+          vm.buf[-300:])
+
     vm.buf = ""
     vm.cmd("put t.c int main(void){")
     vm.cmd('append t.c print("PUT OK\\n");')

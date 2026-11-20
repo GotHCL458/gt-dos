@@ -16,6 +16,7 @@ global _start
 extern kmain
 extern __bss_start
 extern __bss_end
+extern __ro_end                     ; 只读段结束边界 (4KB 对齐)
 
 _start:
     cli
@@ -104,9 +105,39 @@ pm_start:
     mov dword [pdpt + 24], eax
     mov dword [pdpt + 28], 0
 
-    ; ---- pd_low[i] = i*2MB | 0x83, i=0..15 (32MB) ----
+    ; ---- 前 2MB 拆成 4KB 页 (pt_low): 便于把内核代码/只读段设为只读 ----
     xor ecx, ecx
     xor eax, eax
+.L0:
+    mov edx, ecx
+    shl edx, 12                 ; i * 4KB
+    or  edx, 0x03               ; Present | RW
+    mov [pt_low + ecx * 8], edx
+    mov dword [pt_low + ecx * 8 + 4], 0
+    inc ecx
+    cmp ecx, 512
+    jb  .L0
+
+    ; 清除 [0x10000, __ro_end) 的 RW 位 (CR0.WP 已置位 -> 内核态也不可写)
+    mov ecx, 0x10               ; 0x10000 >> 12
+    mov eax, __ro_end
+    shr eax, 12
+.L3:
+    cmp ecx, eax
+    jae .L3done
+    and dword [pt_low + ecx * 8], 0xFFFFFFFD
+    inc ecx
+    jmp .L3
+.L3done:
+
+    ; pd_low[0] 指向 4KB 页表
+    mov eax, pt_low
+    or  eax, 0x03
+    mov [pd_low], eax
+    mov dword [pd_low + 4], 0
+
+    ; ---- pd_low[i] = i*2MB | 0x83, i=1..15 (2MB..32MB) ----
+    mov ecx, 1
 .L1:
     mov edx, ecx
     shl edx, 21                 ; i * 2MB
@@ -189,6 +220,8 @@ pml4:   resb 4096
 pdpt:   resb 4096
 pd_low: resb 4096
 pd_hi:  resb 4096
+align 4096
+pt_low: resb 4096                   ; 前 2MB 的 4KB 页表 (内核代码只读)
 align 16
 stack_bottom:
     resb 32768                      ; 32 KiB 内核栈
