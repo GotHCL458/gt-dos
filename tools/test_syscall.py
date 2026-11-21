@@ -203,6 +203,11 @@ def main():
         "int dn = 0;",
         "do { dn++; } while (dn < 3);",
         'printf("do=%d\\n", dn);',
+        "int gi = 0;",
+        "again:",
+        "gi++;",
+        "if (gi < 3) goto again;",
+        'printf("goto=%d\\n", gi);',
         "return 0;",
         "}",
     ]
@@ -226,6 +231,7 @@ def main():
           vm.expect("hex=31", 4000), vm.buf[-500:])
     check("tc strdup/do-while", vm.expect("dup=dup", 4000) and
           vm.expect("do=3", 4000), vm.buf[-500:])
+    check("tc goto/label", vm.expect("goto=3", 4000), vm.buf[-500:])
 
     # 未 include 时不编入库: strlen 应为未定义
     vm.buf = ""

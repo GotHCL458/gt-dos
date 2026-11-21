@@ -41,6 +41,7 @@ static char ed_yank[2048];
 static int  ed_yanklen;
 static int  ed_rows, ed_cols, ed_gutter;
 static bool ed_nums = true;
+static bool ed_hl;                    /* .c/.h 语法高亮 */
 static int  ed_nlines;
 static int  ed_cw, ed_ch;
 static bool ed_quit;
@@ -314,6 +315,251 @@ static int build_row(u32 start, int skip, char *out, int cap)
     return k;
 }
 
+/* --------------------------------------------------------- C 语法高亮 */
+#define HL_WS     0
+#define HL_NORMAL 1
+#define HL_KEY    2
+#define HL_TYPE   3
+#define HL_STR    4
+#define HL_CHR    5
+#define HL_NUM    6
+#define HL_COM    7
+#define HL_PRE    8
+
+static u32 hl_color(int k)
+{
+    switch (k) {
+    case HL_KEY:  return RGB(198, 120, 221);
+    case HL_TYPE: return RGB(78, 201, 176);
+    case HL_STR:  return RGB(152, 195, 121);
+    case HL_CHR:  return RGB(206, 145, 120);
+    case HL_NUM:  return RGB(209, 154, 102);
+    case HL_COM:  return RGB(106, 153, 85);
+    case HL_PRE:  return RGB(86, 156, 214);
+    default:      return COL_FG;
+    }
+}
+
+static bool word_eq(u32 p, int n, const char *w)
+{
+    int l = (int)strlen(w);
+    if (l != n)
+        return false;
+    for (int i = 0; i < n; i++)
+        if (buf()[p + (u32)i] != (u8)w[i])
+            return false;
+    return true;
+}
+
+static bool is_word_char(u8 c)
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_';
+}
+
+static u32 tok_end(u32 p, u32 end, int *kind)
+{
+    u8 c = buf()[p];
+    if (c == ' ' || c == '\t') {
+        u32 q = p;
+        while (q < end && (buf()[q] == ' ' || buf()[q] == '\t'))
+            q++;
+        *kind = HL_WS;
+        return q;
+    }
+    if (c == '/' && p + 1 < end && buf()[p + 1] == '/') {
+        *kind = HL_COM;
+        return end;
+    }
+    if (c == '/' && p + 1 < end && buf()[p + 1] == '*') {
+        u32 q = p + 2;
+        while (q + 1 < end && !(buf()[q] == '*' && buf()[q + 1] == '/'))
+            q++;
+        if (q + 1 < end)
+            q += 2;
+        else
+            q = end;
+        *kind = HL_COM;
+        return q;
+    }
+    if (c == '"' || c == '\'') {
+        u8 quote = c;
+        u32 q = p + 1;
+        while (q < end && buf()[q] != quote) {
+            if (buf()[q] == '\\' && q + 1 < end)
+                q++;
+            q++;
+        }
+        if (q < end)
+            q++;
+        *kind = (quote == '"') ? HL_STR : HL_CHR;
+        return q;
+    }
+    if ((c >= '0' && c <= '9') ||
+        (c == '.' && p + 1 < end && buf()[p + 1] >= '0' && buf()[p + 1] <= '9')) {
+        u32 q = p;
+        while (q < end) {
+            u8 d = buf()[q];
+            if ((d >= '0' && d <= '9') || (d >= 'a' && d <= 'f') ||
+                (d >= 'A' && d <= 'F') || d == 'x' || d == 'X' || d == '.' ||
+                d == 'u' || d == 'U' || d == 'l' || d == 'L')
+                q++;
+            else
+                break;
+        }
+        *kind = HL_NUM;
+        return q;
+    }
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_') {
+        u32 q = p;
+        while (q < end && is_word_char(buf()[q]))
+            q++;
+        int n = (int)(q - p);
+        static const char *types[] = {
+            "int", "char", "void", "long", "short", "unsigned", "signed",
+            "float", "double", "struct", "union", "enum", "typedef", "const",
+            "static", "extern", "volatile", "register", "inline", "bool",
+            "size_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t",
+            "int8_t", "int16_t", "int32_t", "int64_t", 0
+        };
+        static const char *keys[] = {
+            "if", "else", "while", "do", "for", "switch", "case", "default",
+            "break", "continue", "return", "goto", "sizeof", 0
+        };
+        *kind = HL_NORMAL;
+        for (int i = 0; types[i]; i++)
+            if (word_eq(p, n, types[i])) { *kind = HL_TYPE; break; }
+        if (*kind == HL_NORMAL)
+            for (int i = 0; keys[i]; i++)
+                if (word_eq(p, n, keys[i])) { *kind = HL_KEY; break; }
+        return q;
+    }
+    int n = utf8_len(c);
+    if (p + (u32)n > end)
+        n = (int)(end - p);
+    *kind = HL_NORMAL;
+    return p + (u32)n;
+}
+
+static int seg_cols(u32 a, u32 b, int col)
+{
+    u32 p = a;
+    while (p < b) {
+        u8 c = buf()[p];
+        if (c == '\t') {
+            col = (col + 4) & ~3;
+            p++;
+        } else {
+            int n = utf8_len(c);
+            col += cp_wide(utf8_cp(buf() + p, n)) ? 2 : 1;
+            p += (u32)n;
+        }
+    }
+    return col;
+}
+
+static u32 seg_skip(u32 a, u32 b, int col, int target, int *out_col)
+{
+    u32 p = a;
+    while (p < b && col < target) {
+        u8 c = buf()[p];
+        if (c == '\t') {
+            int nx = (col + 4) & ~3;
+            if (nx > target)
+                break;
+            col = nx;
+            p++;
+        } else {
+            int n = utf8_len(c);
+            int w = cp_wide(utf8_cp(buf() + p, n)) ? 2 : 1;
+            if (col + w > target)
+                break;
+            col += w;
+            p += (u32)n;
+        }
+    }
+    *out_col = col;
+    return p;
+}
+
+static int seg_copy(u32 a, u32 b, int col, char *out, int cap, int maxcol)
+{
+    int k = 0;
+    u32 p = a;
+    while (p < b && col < maxcol && k < cap - 5) {
+        u8 c = buf()[p];
+        if (c == '\t') {
+            int nx = (col + 4) & ~3;
+            while (col < nx && col < maxcol && k < cap - 5) {
+                out[k++] = ' ';
+                col++;
+            }
+            p++;
+        } else {
+            int n = utf8_len(c);
+            int w = cp_wide(utf8_cp(buf() + p, n)) ? 2 : 1;
+            if (col + w > maxcol)
+                break;
+            for (int i = 0; i < n && k < cap - 5; i++)
+                out[k++] = (char)buf()[p + (u32)i];
+            col += w;
+            p += (u32)n;
+        }
+    }
+    out[k] = 0;
+    return k;
+}
+
+static void draw_code(u32 start, int y, int xoff)
+{
+    u32 end = start;
+    while (end < ed_len && buf()[end] != '\n')
+        end++;
+
+    u32 q = start;
+    while (q < end && (buf()[q] == ' ' || buf()[q] == '\t'))
+        q++;
+    if (q < end && buf()[q] == '#') {
+        int col = 0, oc;
+        u32 a = (xoff > 0) ? seg_skip(start, end, 0, xoff, &oc) : start;
+        if (xoff > 0) col = oc;
+        char tmp[1200];
+        int n = seg_copy(a, end, col, tmp, sizeof(tmp), xoff + text_cols());
+        if (n)
+            gfx_text(ed_gutter * ed_cw +
+                     (col > xoff ? (col - xoff) * ed_cw : 0),
+                     y, tmp, hl_color(HL_PRE));
+        return;
+    }
+
+    int col = 0;
+    u32 p = start;
+    while (p < end && col < xoff + text_cols()) {
+        int kind;
+        u32 e = tok_end(p, end, &kind);
+        int end_col = seg_cols(p, e, col);
+        if (kind != HL_WS && end_col > xoff) {
+            int xcol = col, oc = col;
+            u32 a = p;
+            if (col < xoff) {
+                a = seg_skip(p, e, col, xoff, &oc);
+                xcol = oc;
+            }
+            if (a < e) {
+                char tmp[1200];
+                int n = seg_copy(a, e, xcol, tmp, sizeof(tmp),
+                                 xoff + text_cols());
+                if (n) {
+                    int x = (ed_gutter + (xcol >= xoff ? xcol - xoff : 0)) * ed_cw;
+                    gfx_text(x, y, tmp, hl_color(kind));
+                }
+            }
+        }
+        col = end_col;
+        p = e;
+    }
+}
+
 static void draw_status(void)
 {
     int sy = ed_rows * ed_ch;
@@ -404,9 +650,13 @@ static void draw_row(int r)
         gfx_text(x, y, num, COL_DIM);
     }
 
-    char tmp[1200];
-    build_row(start, ed_xoff, tmp, sizeof(tmp));
-    gfx_text(ed_gutter * ed_cw, y, tmp, COL_FG);
+    if (ed_hl) {
+        draw_code(start, y, ed_xoff);
+    } else {
+        char tmp[1200];
+        build_row(start, ed_xoff, tmp, sizeof(tmp));
+        gfx_text(ed_gutter * ed_cw, y, tmp, COL_FG);
+    }
 
     if (ln == line_index_of(ed_cur))
         draw_cursor(r, start);
@@ -632,6 +882,65 @@ static void normal_key(int k, bool *full)
     case '$': case KEY_END:
         ed_cur = en;
         break;
+    case 'w': {
+        u32 p = ed_cur;
+        if (p < ed_len) {
+            u8 c = buf()[p];
+            if (is_word_char(c) || c >= 0x80) {
+                while (p < ed_len && (is_word_char(buf()[p]) || buf()[p] >= 0x80))
+                    p++;
+            } else if (c != ' ' && c != '\t' && c != '\n') {
+                p++;
+            }
+        }
+        while (p < ed_len && (buf()[p] == ' ' || buf()[p] == '\t' ||
+                              buf()[p] == '\n'))
+            p++;
+        ed_cur = p;
+        break;
+    }
+    case 'b': {
+        u32 p = ed_cur;
+        while (p > 0 && (buf()[p - 1] == ' ' || buf()[p - 1] == '\t' ||
+                         buf()[p - 1] == '\n'))
+            p--;
+        if (p > 0) {
+            u8 c = buf()[p - 1];
+            if (is_word_char(c) || c >= 0x80) {
+                while (p > 0 && (is_word_char(buf()[p - 1]) ||
+                                 buf()[p - 1] >= 0x80))
+                    p--;
+            } else {
+                while (p > 0 && !is_word_char(buf()[p - 1]) &&
+                       buf()[p - 1] != ' ' && buf()[p - 1] != '\t' &&
+                       buf()[p - 1] != '\n' && buf()[p - 1] < 0x80)
+                    p--;
+            }
+        }
+        ed_cur = p;
+        break;
+    }
+    case 'J':
+        if (en < ed_len) {
+            snapshot();
+            delete_range(en, 1);
+            insert_bytes(" ", 1);
+            *full = true;
+        }
+        break;
+    case 'D':
+        if (ed_cur < en) {
+            snapshot();
+            delete_range(ed_cur, en - ed_cur);
+            *full = true;
+        }
+        break;
+    case 4:                             /* Ctrl+D 半页向下 */
+        move_vertical(ed_rows / 2 > 0 ? ed_rows / 2 : 1);
+        break;
+    case 21:                            /* Ctrl+U 半页向上 */
+        move_vertical(-(ed_rows / 2 > 0 ? ed_rows / 2 : 1));
+        break;
     case KEY_PGUP:
         for (int i = 0; i < ed_rows; i++) move_vertical(-1);
         break;
@@ -847,6 +1156,34 @@ static void input_loop(void)
     }
 }
 
+static bool ext_is(const char *e, const char *x)
+{
+    int i = 0;
+    for (; e[i] && x[i]; i++) {
+        char c = e[i];
+        if (c >= 'A' && c <= 'Z')
+            c = (char)(c + 32);
+        if (c != x[i])
+            return false;
+    }
+    return e[i] == 0 && x[i] == 0;
+}
+
+static bool is_c_source(const char *p)
+{
+    int n = (int)strlen(p);
+    int dot = -1;
+    for (int i = 0; i < n; i++)
+        if (p[i] == '.')
+            dot = i;
+    if (dot < 0 || dot + 1 >= n)
+        return false;
+    const char *e = p + dot + 1;
+    return ext_is(e, "c") || ext_is(e, "h") || ext_is(e, "cc") ||
+           ext_is(e, "hh") || ext_is(e, "cpp") || ext_is(e, "hpp") ||
+           ext_is(e, "cxx");
+}
+
 /* --------------------------------------------------------------- 入口 */
 int vim_run(const char *abs)
 {
@@ -856,6 +1193,7 @@ int vim_run(const char *abs)
         return -1;
 
     str_set(ed_path, abs, sizeof(ed_path));
+    ed_hl = is_c_source(ed_path);
     ed_cur = 0;
     ed_top = 0;
     ed_xoff = 0;

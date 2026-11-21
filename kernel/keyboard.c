@@ -136,6 +136,14 @@ void keyboard_input_byte(u8 sc)
         if (sc == 0xB8) { alt_down  = false; return; }   /* 右 Alt 松开 */
         if (sc & 0x80)
             return;                   /* 扩展键松开 */
+        if (sc == 0x1C) {             /* 小键盘 Enter (E0 1C) */
+            kb_push('\n');
+            return;
+        }
+        if (sc == 0x35) {             /* 小键盘 / (E0 35) */
+            kb_push('/');
+            return;
+        }
         if (sc == 0x53 && ctrl_down && alt_down) {       /* 主键盘 Del */
             kb_push(KEY_REBOOT);
             return;
@@ -244,7 +252,7 @@ void keyboard_init(void)
     ctrl_down = false;
     alt_down = false;
     caps_lock = false;
-    num_lock = false;
+    num_lock = true;                    /* 默认打开 NumLock, 小键盘直接出数字 */
     ext_pending = false;
     kbd_update_leds();                    /* 指示灯与驱动状态对齐 */
     softirq_set(SOFTIRQ_KBD, kbd_bottom_half);

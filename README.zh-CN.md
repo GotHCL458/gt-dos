@@ -121,7 +121,8 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
   执行的 `.gtp` 程序，全程不依赖外部工具链
 - 支持：`int`/`char`/指针、1–4 维数组、`struct`/`union`（字段、嵌套结构、`.` 与 `->`）、
   函数（最多 6 参数、递归、原型）、`if/else`、`while`、`do/while`、`for`、
-  `switch/case/default`（可穿透）、`break`/`continue`/`return`、完整整数表达式与
+  `switch/case/default`（可穿透）、`break`/`continue`/`return`/`goto` 与标签、
+  完整整数表达式与
   `?:`、前置/后置 `++`/`--`、复合赋值、`typedef`、`enum`、`sizeof`、强制类型转换、
   字符串字面量、全局/局部花括号与字符串初始化
 - `#include <...>` / `#include "..."` 在编译期展开（依次查找源文件目录、`\SDK`、
@@ -152,7 +153,10 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
   引用、代码块、表格与分隔线），同时支持 `<b>`、`<i>`、`<c=red>` 内联标签
 - `VIM <文件>` 全屏模态编辑器（normal/insert/command/search）：方向键、
   Home/End/PgUp/PgDn、`i I a A o O`、`x X`、`dd`、`yy`、`p`、一级 `u`、`gg/G`、
+  `w/b` 按词移动、`J` 合并行、`D` 删至行尾、Ctrl+D/Ctrl+U 半屏滚动、
   `/文本` + `n`、`:w :q :q! :wq`，带行号与状态栏，最大 256KB，退出后恢复控制台
+- `.c/.h/.cpp` 文件自动启用 C 语法高亮（预处理、注释、字符串、字符、数字、
+  类型与关键字），支持水平滚动与制表符对齐
 - `\SDK\DEMO.MD` 提供富文本示例
 
 **exFAT 厂商扩展**
@@ -271,7 +275,8 @@ qemu-system-x86_64 -hda gt-dos-hd.img -boot c
 PS/2 扫描码集 1 驱动，支持 E0 扩展键：方向键、Home/End、PgUp/PgDn、Ins/Del。
 Ctrl 组合键转换为 ASCII 控制码：`Ctrl+C` 取消当前行，`Ctrl+A`/`Ctrl+E` 跳到行首/行尾，
 `Ctrl+P`/`Ctrl+N` 翻阅历史；`Ctrl+上/下` 滚动控制台，`Ctrl+Alt+Del` 重启。
-`NumLock` 在小键盘数字/运算符与导航键（Home/End/PgUp/PgDn/Ins/Del）之间切换，
+`NumLock` 默认开启，开箱即用小键盘输入数字/运算符；关闭后变为导航键
+（Home/End/PgUp/PgDn/Ins/Del）。小键盘 `Enter` 与 `+ - * / .` 均可使用，
 CapsLock 与 NumLock 指示灯随驱动状态更新。
 
 ## 任务与系统服务
@@ -344,7 +349,7 @@ build.py             构建脚本与镜像组装
 
 ## 说明与限制
 
-- 内核目前为 529 扇区（270,656 字节，含 48 字节 `GTK1` 尾部），构建上限 640 扇区
+- 内核目前为 545 扇区（278,848 字节，含 48 字节 `GTK1` 尾部），构建上限 640 扇区
   （320KB），加载区间为 `0x10000` 到 `0x60000`；链接脚本同时断言
   `.bss <= 0xA0000` 与 `.highbss <= LIB_BASE`。
 - GDT 在低端内存（0x6800）由入口代码构造，而非放在 `.data`：CPU 装载段寄存器

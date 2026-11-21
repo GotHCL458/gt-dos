@@ -120,6 +120,31 @@ class VM:
                 pass
 
 
+def purple_pixels(path, wh):
+    """统计整屏紫色像素 (C 关键字高亮)."""
+    w, h = wh
+    with open(path, "rb") as f:
+        data = f.read()
+    i, toks = 0, []
+    while len(toks) < 4:
+        while i < len(data) and data[i] in (10, 32, 9):
+            i += 1
+        s = i
+        while i < len(data) and data[i] not in (10, 32, 9):
+            i += 1
+        toks.append(data[s:i])
+        i += 1
+    px = i
+    n = 0
+    for y in range(0, h, 2):
+        for x in range(0, w, 2):
+            k = px + (y * w + x) * 3
+            r, g, b = data[k], data[k + 1], data[k + 2]
+            if r > 140 and b > 160 and g < 175:
+                n += 1
+    return n
+
+
 def yellow_pixels(path, wh):
     """统计右下区域黄色像素 (滚动提示条)."""
     w, h = wh
@@ -160,13 +185,24 @@ def main():
     vm.serial_cmd("", 800)
     check("login via serial", vm.expect(">", 5000))
 
-    # 1) NumLock 打开 -> 小键盘出数字
-    stage("numlock on")
+    # 1) 默认 NumLock 开 -> 小键盘直接出数字/运算符
+    stage("numlock default on")
     vm.buf = ""
-    vm.key("num_lock")
     vm.keys(["kp_1", "kp_2", "kp_3"])
-    vm.key("ret")
     check("numlock keypad digits", vm.expect("123", 4000), vm.buf[-200:])
+    vm.keys(["kp_decimal", "kp_5"])
+    check("numlock keypad decimal", vm.expect("123.5", 4000), vm.buf[-200:])
+    vm.keys(["kp_add", "kp_divide"])
+    check("numlock keypad operators", vm.expect("123.5+/", 4000),
+          vm.buf[-200:])
+    vm.key("ctrl-c")
+    vm.feed(300)
+
+    # 小键盘 Enter (E0 1C) 应提交命令行
+    vm.buf = ""
+    vm.keys(["v", "e", "r"])
+    vm.key("kp_enter")
+    check("keypad enter submits", vm.expect("GT-DOS", 4000), vm.buf[-200:])
 
     # 2) NumLock 关闭 -> 小键盘 7 变成 Home (输入 z 后应插到行首)
     stage("numlock off")
@@ -213,7 +249,29 @@ def main():
     else:
         check("ctrl+up scroll indicator", False, "no screendump")
 
-    # 6) Ctrl+Alt+Del 重启
+    # 6) VIM 打开 .c 文件: 截屏统计关键字紫色像素
+    stage("vim syntax highlight")
+    vm.buf = ""
+    vm.serial_cmd("vim \\sdk\\hello.c", 1800)
+    vm.feed(800)
+    ppm2 = os.path.join(TMP, "kbd_ppm", "hl.ppm")
+    vm.dump(ppm2.replace("\\", "/"))
+    if os.path.exists(ppm2):
+        with open(ppm2, "rb") as f:
+            head = f.read(64)
+        dims = head.split(b"\n")[1].split()
+        n = purple_pixels(ppm2, (int(dims[0]), int(dims[1])))
+        check("vim c syntax highlight", n > 30, f"purple={n}")
+    else:
+        check("vim c syntax highlight", False, "no screendump")
+    vm.s.sendall(b"\x1b")
+    vm.feed(500)
+    vm.serial_cmd(":q!", 1500)
+    vm.feed(500)
+    check("vim closed after highlight", vm.expect("VIM:", 5000),
+          vm.buf[-200:])
+
+    # 7) Ctrl+Alt+Del 重启
     stage("ctrl+alt+del")
     vm.buf = ""
     vm.m.sendall(b"sendkey ctrl-alt-delete\n")

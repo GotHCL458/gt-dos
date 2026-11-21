@@ -197,6 +197,22 @@ static char inc_seen[TC_INC_SEEN][128];
 static int nseen;
 static bool want_lib_string, want_lib_stdlib, want_lib_ctype, want_lib_stdio;
 
+/* goto / 标签 (函数作用域) */
+#define MAX_LABEL 64
+struct label_ent {
+    char name[32];
+    u32 addr;
+    bool defined;
+};
+struct goto_ent {
+    char name[32];
+    u32 pos;
+};
+static struct label_ent labels[MAX_LABEL];
+static int nlabels;
+static struct goto_ent gotos[MAX_LABEL];
+static int ngotos;
+
 static u32 main_call_pos;
 static u32 locals_imm_pos;
 
@@ -2254,6 +2270,53 @@ static void parse_enum(void)
     accept(';');
 }
 
+static struct label_ent *find_label(const char *name)
+{
+    for (int i = 0; i < nlabels; i++)
+        if (!strcmp(labels[i].name, name))
+            return &labels[i];
+    return 0;
+}
+
+static void define_label(const char *name, u32 addr)
+{
+    struct label_ent *l = find_label(name);
+    if (l) {
+        if (l->defined) { fail("duplicate label"); return; }
+        l->defined = true;
+        l->addr = addr;
+        return;
+    }
+    if (nlabels >= MAX_LABEL) { fail("too many labels"); return; }
+    strncpy(labels[nlabels].name, name, 31);
+    labels[nlabels].name[31] = 0;
+    labels[nlabels].addr = addr;
+    labels[nlabels].defined = true;
+    nlabels++;
+}
+
+static void goto_label(const char *name)
+{
+    if (ngotos >= MAX_LABEL) { fail("too many gotos"); return; }
+    u32 pos = emit_jmp();
+    strncpy(gotos[ngotos].name, name, 31);
+    gotos[ngotos].name[31] = 0;
+    gotos[ngotos].pos = pos;
+    ngotos++;
+}
+
+static void resolve_gotos(void)
+{
+    for (int i = 0; i < ngotos; i++) {
+        struct label_ent *l = find_label(gotos[i].name);
+        if (!l || !l->defined) {
+            fail("undefined label");
+            return;
+        }
+        patch_rel(gotos[i].pos, l->addr);
+    }
+}
+
 static void parse_block(void)
 {
     expect('{');
@@ -2336,6 +2399,27 @@ static void parse_stmt(void)
     }
     if (accept(';'))
         return;
+
+    /* 标签: ID ':' (函数作用域, goto 可前向/后向跳转) */
+    if (cur.t == T_ID && nxt.t == ':') {
+        char n[32];
+        strncpy(n, cur.name, 31);
+        n[31] = 0;
+        advance();
+        advance();
+        define_label(n, clen);
+        return;
+    }
+    if (accept_kw("goto")) {
+        if (cur.t != T_ID) { fail("label expected"); return; }
+        char n[32];
+        strncpy(n, cur.name, 31);
+        n[31] = 0;
+        advance();
+        goto_label(n);
+        expect(';');
+        return;
+    }
 
     if (accept_kw("typedef")) {
         parse_typedef();
@@ -2649,6 +2733,8 @@ static void parse_function(struct decl *d)
 
     nloc = 0;
     lused = 0;
+    nlabels = 0;
+    ngotos = 0;
     for (int i = 0; i < np; i++) {
         if (!pnames[i][0]) {
             pnames[i][0] = '_';
@@ -2671,6 +2757,8 @@ static void parse_function(struct decl *d)
     e32(0);
 
     parse_block();
+    if (!failed)
+        resolve_gotos();
 
     e8(0xC9);
     e8(0xC3);

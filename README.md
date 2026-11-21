@@ -130,7 +130,7 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
 - Supported: `int`/`char`/pointers, 1-4D arrays, `struct`/`union` (fields, nested
   structs, `.` and `->`), functions (up to 6 parameters, recursion, prototypes),
   `if/else`, `while`, `do/while`, `for`, `switch/case/default` (fallthrough),
-  `break`/`continue`/`return`, full integer expressions with `?:`, prefix/postfix `++`/`--`, compound
+  `break`/`continue`/`return`/`goto` with labels, full integer expressions with `?:`, prefix/postfix `++`/`--`, compound
   assignments, `typedef`, `enum`, `sizeof`, casts, string literals, and brace/string
   initializers for globals and locals
 - `#include <...>` / `#include "..."` is resolved at compile time (source directory,
@@ -162,8 +162,11 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
   inline tags `<b>`, `<i>`, `<c=red>` are understood
 - `VIM <file>` is a full-screen modal editor (normal/insert/command/search) with arrows,
   Home/End/PgUp/PgDn, `i I a A o O`, `x X`, `dd`, `yy`, `p`, one-level `u`, `gg/G`,
+  `w/b` word motion, `J` join, `D` delete-to-EOL, Ctrl+D/Ctrl+U half-page scroll,
   `/text` + `n`, `:w :q :q! :wq`, line numbers and a status bar; files up to 256 KB,
   editing uses the program scratch region and returns to the console on exit
+- `.c/.h/.cpp` files are shown with C syntax highlighting (preprocessor, comments,
+  strings, chars, numbers, types and keywords), honouring horizontal scroll and tabs
 - `\SDK\DEMO.MD` is a ready-made rich-text sample
 
 **exFAT vendor extension**
@@ -291,8 +294,9 @@ PS/2 set-1 driver with E0 extended keys: arrows, Home/End, PgUp/PgDn and Ins/Del
 Ctrl combinations become ASCII control codes, so `Ctrl+C` cancels the current line,
 `Ctrl+A`/`Ctrl+E` jump to its start/end, and `Ctrl+P`/`Ctrl+N` walk the history.
 `Ctrl+Up`/`Ctrl+Down` scroll the console, `Ctrl+Alt+Del` reboots.
-`NumLock` switches the keypad between digits/operators and navigation
-(Home/End/PgUp/PgDn/Ins/Del); CapsLock and NumLock LEDs follow the driver state.
+`NumLock` is on by default, so the keypad types digits/operators out of the box; with
+NumLock off it becomes navigation (Home/End/PgUp/PgDn/Ins/Del). The keypad `Enter`,
+`+ - * / .` keys work too, and CapsLock/NumLock LEDs follow the driver state.
 
 ## Tasks and System Services
 
@@ -365,7 +369,7 @@ assert on real boot output rather than on mocks.
 
 ## Notes and Limitations
 
-- The kernel currently fits in 529 sectors (270,656 bytes including the 48-byte `GTK1`
+- The kernel currently fits in 545 sectors (278,848 bytes including the 48-byte `GTK1`
   trailer); the build cap is 640 sectors (320 KB), loaded between `0x10000` and `0x60000`.
   The linker also asserts `.bss <= 0xA0000` and `.highbss <= LIB_BASE`.
 - The GDT is built in low memory (0x6800) rather than `.data`: loading a segment register
