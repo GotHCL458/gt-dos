@@ -15,17 +15,17 @@ Files:
 Supported C subset:
   int/char/pointers, 1-4D arrays, struct/union (fields, . and ->),
   functions with up to 6 parameters (recursion and prototypes supported),
-  if/else, while, for, switch/case/default, break, continue, return,
+  if/else, while, do/while, for, switch/case/default, break, continue, return,
   full integer expressions with ?:, prefix/postfix ++ --, compound
   assignments, typedef, enum, sizeof, casts, string literals,
   brace/string initialisers, comments.
   Not supported: float/double, variadic functions (printf is built in),
-  function pointers, bitfields. #include lines are skipped.
+  function pointers, bitfields. #define/#if are skipped; #include is processed.
 
-Standard library (libc.c, compiled into every program):
-  string.h  strlen strcpy strncpy strcmp strncmp strcat strchr strrchr
-            memcpy memmove memset memcmp
-  stdlib.h  malloc calloc free abs atoi rand srand (16 KB heap)
+Standard library modules (compiled only when the matching header is included):
+  string.h  strlen strcpy strncpy strcmp strncmp strcat strncat strchr strrchr
+            strstr memcpy memmove memset memcmp
+  stdlib.h  malloc calloc free strdup abs atoi strtol rand srand (16 KB heap)
   ctype.h   isdigit isalpha isalnum isspace isupper islower toupper tolower
   stdio.h   printf putchar puts getchar
   printf: %d %i %u %x %X %c %s %p %%, up to 5 varargs.

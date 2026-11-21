@@ -1405,6 +1405,110 @@ static void cmd_type(const char *arg)
         console_putc('\n');
 }
 
+/* CAT: 一次显示多个文件, -n 显示行号 */
+static void cmd_cat(int argc, char **argv)
+{
+    if (!fat_ready()) { err("No volume mounted.\n"); return; }
+    bool nums = false;
+    int first = 1;
+    while (first < argc && argv[first][0] == '-' && argv[first][1]) {
+        for (const char *o = argv[first] + 1; *o; o++)
+            if (*o == 'n')
+                nums = true;
+        first++;
+    }
+    if (first >= argc) { err("Usage: CAT [-n] <file...>\n"); return; }
+
+    int line = 1;
+    for (int fi = first; fi < argc; fi++) {
+        char abs[PATHMAX];
+        resolve_path(argv[fi], abs);
+        if (read_denied(abs))
+            continue;
+        struct fat_dirent d;
+        if (!fat_find(abs, &d) || d.is_dir) {
+            err("CAT: %s: not a file\n", argv[fi]);
+            continue;
+        }
+        if (d.size >= FILE_BUF_MAX) {
+            err("CAT: %s: too large (max 64 KB)\n", argv[fi]);
+            continue;
+        }
+        u32 got = 0;
+        if (!fat_read_file(abs, file_buf, FILE_BUF_MAX - 1, &got)) {
+            err("CAT: cannot read %s\n", abs);
+            continue;
+        }
+        if (!nums) {
+            console_write((const char *)file_buf, got);
+            if (got && file_buf[got - 1] != '\n')
+                console_putc('\n');
+            continue;
+        }
+        u32 p = 0;
+        while (p < got) {
+            u32 q = p;
+            while (q < got && file_buf[q] != '\n')
+                q++;
+            kprintf("%6d  ", line++);
+            console_write((const char *)file_buf + p, q - p);
+            console_putc('\n');
+            p = q + 1;
+        }
+    }
+}
+
+/* RICH: Markdown 子集渲染 (标题/粗体/斜体/代码/列表/引用/表格) */
+static void cmd_rich(int argc, char **argv)
+{
+    if (!fat_ready()) { err("No volume mounted.\n"); return; }
+    if (argc < 2) { err("Usage: RICH <file.md>\n"); return; }
+    for (int fi = 1; fi < argc; fi++) {
+        char abs[PATHMAX];
+        resolve_path(argv[fi], abs);
+        if (read_denied(abs))
+            continue;
+        struct fat_dirent d;
+        if (!fat_find(abs, &d) || d.is_dir) {
+            err("RICH: %s: not a file\n", argv[fi]);
+            continue;
+        }
+        if (d.size >= FILE_BUF_MAX) {
+            err("RICH: %s: too large (max 64 KB)\n", argv[fi]);
+            continue;
+        }
+        u32 got = 0;
+        if (!fat_read_file(abs, file_buf, FILE_BUF_MAX - 1, &got)) {
+            err("RICH: cannot read %s\n", abs);
+            continue;
+        }
+        rich_render((const char *)file_buf, got, base_name(abs));
+    }
+}
+
+/* VIM: 全屏模态编辑器 (normal / insert / command / search) */
+static void cmd_vim(int argc, char **argv)
+{
+    if (!fat_ready()) { err("No volume mounted.\n"); return; }
+    if (argc < 2) { err("Usage: VIM <file>\n"); return; }
+    char abs[PATHMAX];
+    resolve_path(argv[1], abs);
+    if (read_denied(abs))
+        return;
+
+    int rc = vim_run(abs);
+    vga_refresh();
+    tui_status_refresh();
+    if (rc == -1)
+        err("VIM: graphics mode is required\n");
+    else if (rc == -2)
+        err("VIM: file too large (max 256 KB)\n");
+    else if (rc == -3)
+        err("VIM: read failed\n");
+    else
+        ok("VIM: %s\n", abs);
+}
+
 static void cmd_put(const char *name, const char *text)
 {
     if (!name) { err("Usage: PUT <file> <text>\n"); return; }
@@ -1622,8 +1726,14 @@ static void execute(char *line)
             arg = argc > 2 ? argv[2] : "";
         }
         list_dir(arg, showall);
-    } else if (!strncasecmp(cmd, "type", 8) || !strncasecmp(cmd, "cat", 8)) {
+    } else if (!strncasecmp(cmd, "type", 8)) {
         cmd_type(argc > 1 ? argv[1] : 0);
+    } else if (!strncasecmp(cmd, "cat", 8)) {
+        cmd_cat(argc, argv);
+    } else if (!strncasecmp(cmd, "rich", 8)) {
+        cmd_rich(argc, argv);
+    } else if (!strncasecmp(cmd, "vim", 8) || !strncasecmp(cmd, "vi", 8)) {
+        cmd_vim(argc, argv);
     } else if (!strncasecmp(cmd, "put", 8)) {
         static char text[LINE_MAX];
         text[0] = '\0';

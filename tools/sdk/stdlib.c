@@ -57,6 +57,62 @@ int atoi(char *s)
     return sign * v;
 }
 
+char *strdup(char *s)
+{
+    int n = 0;
+    while (s[n])
+        n++;
+    char *p = malloc(n + 1);
+    if (!p)
+        return 0;
+    int i = 0;
+    while (i <= n) {
+        p[i] = s[i];
+        i++;
+    }
+    return p;
+}
+
+int strtol(char *s, char **end, int base)
+{
+    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r')
+        s++;
+    int sign = 1;
+    if (*s == '-') {
+        sign = -1;
+        s++;
+    } else if (*s == '+') {
+        s++;
+    }
+    if (base == 0) {
+        if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+            base = 16;
+            s += 2;
+        } else if (s[0] == '0') {
+            base = 8;
+            s++;
+        } else {
+            base = 10;
+        }
+    }
+    int v = 0;
+    for (;;) {
+        int c = *s;
+        int d;
+        if (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+        else break;
+        if (d >= base)
+            break;
+        v = v * base + d;
+        s++;
+    }
+    if (end)
+        *end = s;
+    return sign * v;
+}
+
 int __seed = 1;
 
 void srand(int s)

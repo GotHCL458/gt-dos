@@ -39,7 +39,7 @@ BOOT_PART_SECTORS = 8192            # 启动分区 4MB (4bit 灰度字库 2.75MB
 BOOT_PART_LBA = DISK_SECTORS - BOOT_PART_SECTORS
 PART1_SECTORS = BOOT_PART_LBA - PART1_LBA
 
-MAX_KERNEL_SECTORS = 512            # 内核上限 256KB (受 0x10000..0x80000 限制)
+MAX_KERNEL_SECTORS = 640            # 内核上限 320KB (0x10000..0x60000)
 
 # --------------------------------------------------------------------- 工具查找
 CANDIDATES = {
@@ -202,6 +202,8 @@ C_SOURCES = [
     "exec.c",
     "task.c",
     "protect.c",
+    "richtext.c",
+    "vim.c",
 ]
 
 ASM_SOURCES = ["entry.asm", "isr.asm", "exec_asm.asm"]

@@ -129,16 +129,17 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
   writes a `.gtp` program that `RUN` can execute — no external toolchain involved
 - Supported: `int`/`char`/pointers, 1-4D arrays, `struct`/`union` (fields, nested
   structs, `.` and `->`), functions (up to 6 parameters, recursion, prototypes),
-  `if/else`, `while`, `for`, `switch/case/default` (fallthrough), `break`/`continue`/
-  `return`, full integer expressions with `?:`, prefix/postfix `++`/`--`, compound
+  `if/else`, `while`, `do/while`, `for`, `switch/case/default` (fallthrough),
+  `break`/`continue`/`return`, full integer expressions with `?:`, prefix/postfix `++`/`--`, compound
   assignments, `typedef`, `enum`, `sizeof`, casts, string literals, and brace/string
   initializers for globals and locals
 - `#include <...>` / `#include "..."` is resolved at compile time (source directory,
   `\SDK`, then `\GT-DOS\INCLUDE`); each file is included once. Standard modules
   (`string/stdlib/ctype/stdio`) are compiled into the program **only when their header
   is included**, so unused library code never bloats `out.gtp`
-- Standard library: `strlen strcpy strncpy strcmp strncmp strcat strchr strrchr`
-  `memcpy memmove memset memcmp`, `malloc calloc free abs atoi rand srand` (16 KB heap),
+- Standard library: `strlen strcpy strncpy strcmp strncmp strcat strncat strchr strrchr
+  strstr memcpy memmove memset memcmp`, `malloc calloc free strdup abs atoi strtol rand
+  srand` (16 KB heap),
   `isdigit isalpha isalnum isspace isupper islower toupper tolower`,
   `printf putchar puts getchar`; `printf` is a compiler builtin (SYS_PRINTF) supporting
   `%d %i %u %x %X %c %s %p %%` with up to 5 varargs
@@ -153,6 +154,17 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
   `README.TXT`; `PUT` + `APPEND` let you author sources line by line inside GT-DOS
 - Program layout: 128 KB code at `0x600000`, 128 KB data at `0x620000`
   (64 KB globals + 64 KB string pool)
+
+**Rich text and editor**
+- `CAT [-n] <file...>` concatenates one or more files; `-n` adds continuous line numbers
+- `RICH <file.md>` renders a Markdown subset with ANSI/VGA colours: headings, bold,
+  italic, inline code, links, lists, quotes, fenced code, tables and rules; the same
+  inline tags `<b>`, `<i>`, `<c=red>` are understood
+- `VIM <file>` is a full-screen modal editor (normal/insert/command/search) with arrows,
+  Home/End/PgUp/PgDn, `i I a A o O`, `x X`, `dd`, `yy`, `p`, one-level `u`, `gg/G`,
+  `/text` + `n`, `:w :q :q! :wq`, line numbers and a status bar; files up to 256 KB,
+  editing uses the program scratch region and returns to the console on exit
+- `\SDK\DEMO.MD` is a ready-made rich-text sample
 
 **exFAT vendor extension**
 - Each file/directory entry set carries three vendor entries (type `0xE0`):
@@ -255,9 +267,9 @@ Type `HELP` (or `?`) inside GT-DOS for the full list. Commands support both long
 `HOSTNAME`, `CONFIG`, `OOBE` (administrator privileges required for `USERADD`, `USERDEL`,
 `HOSTNAME`, `SHUTDOWN` and `REBOOT`)
 
-**Files and disks** — `CD`, `PWD`, `DRIVES`, `DIR`/`LS [/A]`, `TYPE`/`CAT`, `PUT`, `DEL`/`RM`,
-`MKDIR`/`MD`, `RMDIR`, `TOUCH`, `ATTRIB`, `CP`/`COPY`, `MV`/`REN`, `HEAD`, `WC`, `TREE`,
-`DF`, `DISK`, `MOUNT`, `APPEND`
+**Files and disks** — `CD`, `PWD`, `DRIVES`, `DIR`/`LS [/A]`, `TYPE`, `CAT [-n] <f...>`,
+`RICH <f.md>`, `VIM <f>`, `PUT`, `DEL`/`RM`, `MKDIR`/`MD`, `RMDIR`, `TOUCH`, `ATTRIB`,
+`CP`/`COPY`, `MV`/`REN`, `HEAD`, `WC`, `TREE`, `DF`, `DISK`, `MOUNT`, `APPEND`
 
 **Display and hardware** — `APIC`, `IRQSTAT`
 
@@ -315,6 +327,8 @@ kernel/
   protect.c          GTK1 kernel container, 4 KB write protection, self-check/watchdog
   gtlib.c            .gtl shared-library loader (Rust parses headers/exports)
   tc.c               built-in C compiler (arrays/structs/typedef/#include, x86-64)
+  richtext.c         Markdown/rich-text renderer (CAT/RICH)
+  vim.c              full-screen modal editor (VIM)
   net.c              RTL8139 driver + ARP/IPv4(fragmentation)/ICMP/UDP/DHCP
   tcp.c              TCP sockets (handshake, OOO, fast retransmit, congestion, close)
   netapp.c           DNS resolver, TFTP client, HTTP GET downloader
@@ -351,9 +365,9 @@ assert on real boot output rather than on mocks.
 
 ## Notes and Limitations
 
-- The kernel currently fits in 481 sectors (246,080 bytes including the 48-byte `GTK1`
-  trailer), loaded between `0x10000` and `0x80000` (31 sectors of headroom). Growing past
-  that window requires relocating the load address.
+- The kernel currently fits in 529 sectors (270,656 bytes including the 48-byte `GTK1`
+  trailer); the build cap is 640 sectors (320 KB), loaded between `0x10000` and `0x60000`.
+  The linker also asserts `.bss <= 0xA0000` and `.highbss <= LIB_BASE`.
 - The GDT is built in low memory (0x6800) rather than `.data`: loading a segment register
   sets the descriptor's accessed bit, which would otherwise invalidate the kernel hash.
 - The boot hash covers the whole image (code + rodata + data); the runtime watchdog only

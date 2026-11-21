@@ -12,6 +12,8 @@ int   strncmp(char *a, char *b, int n);
 char *strcat(char *d, char *s);
 char *strchr(char *s, int c);
 char *strrchr(char *s, int c);
+char *strstr(char *hay, char *needle);
+char *strncat(char *d, char *s, int n);
 char *memcpy(char *d, char *s, int n);
 char *memmove(char *d, char *s, int n);
 char *memset(char *d, int c, int n);

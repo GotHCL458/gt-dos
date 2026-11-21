@@ -6,7 +6,7 @@
  * Supported subset:
  *   int / char / pointers, 1-4D arrays, struct / union (fields, . and ->),
  *   functions (up to 6 parameters, recursion, prototypes), if/else, while,
- *   for, switch/case/default, break/continue/return, full integer
+ *   do/while, for, switch/case/default, break/continue/return, full integer
  *   expressions with ?:, prefix/postfix ++ --, compound assignments,
  *   typedef, enum, sizeof, casts, string literals, brace/string
  *   initialisers, and the builtins below.
@@ -14,10 +14,10 @@
  * Not supported: float/double, variadic functions (printf is a compiler
  * builtin), function pointers and bitfields.
  *
- * A small standard library (libc.c) is compiled into every program:
- *   string.h  strlen strcpy strncpy strcmp strncmp strcat strchr strrchr
- *             memcpy memmove memset memcmp
- *   stdlib.h  malloc calloc free abs atoi rand srand
+ * Standard library modules are compiled in only when #included:
+ *   string.h  strlen strcpy strncpy strcmp strncmp strcat strncat strchr strrchr
+ *             strstr memcpy memmove memset memcmp
+ *   stdlib.h  malloc calloc free strdup abs atoi strtol rand srand
  *   ctype.h   isdigit isalpha isalnum isspace isupper islower toupper tolower
  *   stdio.h   printf putchar puts getchar (printf supports up to 5 varargs)
  *
@@ -46,6 +46,8 @@ int  strncmp(char *a, char *b, int n);
 char *strcat(char *d, char *s);
 char *strchr(char *s, int c);
 char *strrchr(char *s, int c);
+char *strstr(char *hay, char *needle);
+char *strncat(char *d, char *s, int n);
 char *memcpy(char *d, char *s, int n);
 char *memmove(char *d, char *s, int n);
 char *memset(char *d, int c, int n);
@@ -55,8 +57,10 @@ int  memcmp(char *a, char *b, int n);
 char *malloc(int n);
 char *calloc(int n, int m);
 void  free(char *p);
+char *strdup(char *s);
 int   abs(int x);
 int   atoi(char *s);
+int   strtol(char *s, char **end, int base);
 int   rand(void);
 void  srand(int seed);
 

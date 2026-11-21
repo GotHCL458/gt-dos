@@ -117,6 +117,8 @@ struct fcall {
 struct loopctx {
     u32 breaks[16];
     int nbreak;
+    u32 conts[16];
+    int ncont;
     u32 cont;
     bool is_switch;
 };
@@ -150,16 +152,17 @@ static int gused;
 static bool failed;
 static char err_msg[96];
 
-static struct sym syms[MAX_SYM];
+/* 大表放 .highbss, 避免把 .bss 推过 0xA0000 显存孔径 */
+static struct sym syms[MAX_SYM] __attribute__((section(".highbss")));
 static int nsyms;
-static struct sym locs[MAX_LOCAL];
+static struct sym locs[MAX_LOCAL] __attribute__((section(".highbss")));
 static int nloc;
 static int lused;                  /* 局部变量已占用字节 */
 
 static struct stype stypes[MAX_STRUCT];
 static int nstypes;
 
-static struct fcall fcs[MAX_FCALL];
+static struct fcall fcs[MAX_FCALL] __attribute__((section(".highbss")));
 static int nfc;
 static struct loopctx loops[MAX_NEST];
 static int nloop;
@@ -2286,6 +2289,7 @@ static void parse_switch(void)
     if (nloop >= MAX_NEST) { fail("nesting too deep"); return; }
     struct loopctx *lp = &loops[nloop++];
     lp->nbreak = 0;
+    lp->ncont = 0;
     lp->cont = 0;
     lp->is_switch = true;
 
@@ -2376,6 +2380,7 @@ static void parse_stmt(void)
         if (nloop >= MAX_NEST) { fail("loop nesting too deep"); return; }
         struct loopctx *lp = &loops[nloop++];
         lp->nbreak = 0;
+        lp->ncont = 0;
         lp->cont = start;
         lp->is_switch = false;
         parse_stmt();
@@ -2384,6 +2389,8 @@ static void parse_stmt(void)
         patch_rel(jz, clen);
         for (int i = 0; i < lp->nbreak; i++)
             patch_rel(lp->breaks[i], clen);
+        for (int i = 0; i < lp->ncont; i++)
+            patch_rel(lp->conts[i], start);
         nloop--;
         return;
     }
@@ -2422,6 +2429,7 @@ static void parse_stmt(void)
         if (nloop >= MAX_NEST) { fail("loop nesting too deep"); return; }
         struct loopctx *lp = &loops[nloop++];
         lp->nbreak = 0;
+        lp->ncont = 0;
         lp->cont = step;
         lp->is_switch = false;
         parse_stmt();
@@ -2429,8 +2437,36 @@ static void parse_stmt(void)
         patch_rel(to_step, step);
         for (int i = 0; i < lp->nbreak; i++)
             patch_rel(lp->breaks[i], clen);
+        for (int i = 0; i < lp->ncont; i++)
+            patch_rel(lp->conts[i], step);
         if (has_cond)
             patch_rel(jz, clen);
+        nloop--;
+        return;
+    }
+    if (accept_kw("do")) {
+        u32 body = clen;
+        if (nloop >= MAX_NEST) { fail("loop nesting too deep"); return; }
+        struct loopctx *lp = &loops[nloop++];
+        lp->nbreak = 0;
+        lp->ncont = 0;
+        lp->cont = 0;
+        lp->is_switch = false;
+        parse_stmt();
+        u32 cond = clen;
+        lp->cont = cond;
+        if (!accept_kw("while")) { fail("expected while"); nloop--; return; }
+        expect('(');
+        gen_value(0, 0);
+        expect(')');
+        test_rax();
+        u32 jnz = emit_jcc(0x85);          /* jne -> 循环体 */
+        patch_rel(jnz, body);
+        expect(';');
+        for (int i = 0; i < lp->nbreak; i++)
+            patch_rel(lp->breaks[i], clen);
+        for (int i = 0; i < lp->ncont; i++)
+            patch_rel(lp->conts[i], cond);
         nloop--;
         return;
     }
@@ -2480,8 +2516,9 @@ static void parse_stmt(void)
         while (ci >= 0 && loops[ci].is_switch)
             ci--;
         if (ci < 0) { fail("continue outside loop"); return; }
-        u32 j = emit_jmp();
-        patch_rel(j, loops[ci].cont);
+        struct loopctx *lp = &loops[ci];
+        if (lp->ncont >= 16) { fail("too many continues"); return; }
+        lp->conts[lp->ncont++] = emit_jmp();
         expect(';');
         return;
     }

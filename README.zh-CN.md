@@ -120,15 +120,16 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 - `TC <源.c> [-o 输出.gtp]` 直接把 C 子集编译为 x86-64 机器码，生成可由 `RUN`
   执行的 `.gtp` 程序，全程不依赖外部工具链
 - 支持：`int`/`char`/指针、1–4 维数组、`struct`/`union`（字段、嵌套结构、`.` 与 `->`）、
-  函数（最多 6 参数、递归、原型）、`if/else`、`while`、`for`、
+  函数（最多 6 参数、递归、原型）、`if/else`、`while`、`do/while`、`for`、
   `switch/case/default`（可穿透）、`break`/`continue`/`return`、完整整数表达式与
   `?:`、前置/后置 `++`/`--`、复合赋值、`typedef`、`enum`、`sizeof`、强制类型转换、
   字符串字面量、全局/局部花括号与字符串初始化
 - `#include <...>` / `#include "..."` 在编译期展开（依次查找源文件目录、`\SDK`、
   `\GT-DOS\INCLUDE`），每个文件只包含一次；标准库模块（string/stdlib/ctype/stdio）
   **只有对应头文件被 include 时才编入程序**，未使用的库不会增大 `out.gtp`
-- 标准库：`strlen strcpy strncpy strcmp strncmp strcat strchr strrchr`
-  `memcpy memmove memset memcmp`、`malloc calloc free abs atoi rand srand`（16KB 堆）、
+- 标准库：`strlen strcpy strncpy strcmp strncmp strcat strncat strchr strrchr strstr`
+  `memcpy memmove memset memcmp`、`malloc calloc free strdup abs atoi strtol rand srand`
+  （16KB 堆）、
   `isdigit isalpha isalnum isspace isupper islower toupper tolower`、
   `printf putchar puts getchar`；`printf` 由编译器生成 SYS_PRINTF，
   支持 `%d %i %u %x %X %c %s %p %%`，最多 5 个可变参数
@@ -139,10 +140,20 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
   `reboot`、`shutdown`；`\SDK\NET.H` 另含 `ip4`、`tcp_connect`、`tcp_send`、
   `tcp_recv`、`tcp_close`、`dns`、`tftp_get`、`http_get`
 - `\SDK\` 提供明文只读 SDK：`TC.H`、`STRING.H`、`STDLIB.H`、`CTYPE.H`、`STDIO.H`、
-  `STRING.C`、`STDLIB.C`、`CTYPE.C`、`STDIO.C`、`HELLO.C`、`FIB.C`、`README.TXT`；
+  `STRING.C`、`STDLIB.C`、`CTYPE.C`、`STDIO.C`、`DEMO.MD`、`HELLO.C`、`FIB.C`、
+  `README.TXT`；
   配合 `PUT` 与 `APPEND` 可在系统内逐行编写源码
 - 程序布局：代码 128KB 位于 `0x600000`，数据 128KB 位于 `0x620000`
   （全局 64KB + 字符串池 64KB）
+
+**富文本与编辑器**
+- `CAT [-n] <文件...>` 依次显示多个文件；`-n` 连续编号
+- `RICH <文件.md>` 渲染 Markdown 子集（标题、粗体、斜体、行内代码、链接、列表、
+  引用、代码块、表格与分隔线），同时支持 `<b>`、`<i>`、`<c=red>` 内联标签
+- `VIM <文件>` 全屏模态编辑器（normal/insert/command/search）：方向键、
+  Home/End/PgUp/PgDn、`i I a A o O`、`x X`、`dd`、`yy`、`p`、一级 `u`、`gg/G`、
+  `/文本` + `n`、`:w :q :q! :wq`，带行号与状态栏，最大 256KB，退出后恢复控制台
+- `\SDK\DEMO.MD` 提供富文本示例
 
 **exFAT 厂商扩展**
 - 每个文件/目录的目录项集附带 3 个厂商扩展项（类型 `0xE0`）：
@@ -238,7 +249,8 @@ qemu-system-x86_64 -hda gt-dos-hd.img -boot c
 `HOSTNAME`、`CONFIG`、`OOBE`（`USERADD`、`USERDEL`、`HOSTNAME`、`SHUTDOWN`、`REBOOT`
 需要管理员权限）
 
-**文件与磁盘** — `CD`、`PWD`、`DRIVES`、`DIR`/`LS [/A]`、`TYPE`/`CAT`、`PUT`、`DEL`/`RM`、
+**文件与磁盘** — `CD`、`PWD`、`DRIVES`、`DIR`/`LS [/A]`、`TYPE`、`CAT [-n] <文件...>`、
+`RICH <文件.md>`、`VIM <文件>`、`PUT`、`DEL`/`RM`、
 `MKDIR`/`MD`、`RMDIR`、`TOUCH`、`ATTRIB`、`CP`/`COPY`、`MV`/`REN`、`HEAD`、`WC`、`TREE`、
 `DF`、`DISK`、`MOUNT`、`APPEND`
 
@@ -294,6 +306,8 @@ kernel/
   protect.c          GTK1 内核容器、4KB 写保护、自检与看门狗
   gtlib.c            .gtl 共享库加载器 (头部/导出表由 Rust 解析)
   tc.c               内置 C 编译器 (数组/结构体/typedef/#include, x86-64)
+  richtext.c         Markdown/富文本渲染 (CAT/RICH)
+  vim.c              全屏模态编辑器 (VIM)
   net.c              RTL8139 驱动 + ARP/IPv4/ICMP/UDP/DHCP
   tcp.c              TCP socket (握手/收发/重传/挥手)
   netapp.c           DNS 解析、TFTP 客户端、HTTP GET 下载
@@ -330,8 +344,9 @@ build.py             构建脚本与镜像组装
 
 ## 说明与限制
 
-- 内核目前为 481 扇区（246,080 字节，含 48 字节 `GTK1` 尾部），加载区间为
-  `0x10000` 到 `0x80000`（余量 31 扇区）。若要继续增大，需要调整加载地址。
+- 内核目前为 529 扇区（270,656 字节，含 48 字节 `GTK1` 尾部），构建上限 640 扇区
+  （320KB），加载区间为 `0x10000` 到 `0x60000`；链接脚本同时断言
+  `.bss <= 0xA0000` 与 `.highbss <= LIB_BASE`。
 - GDT 在低端内存（0x6800）由入口代码构造，而非放在 `.data`：CPU 装载段寄存器
   会置位描述符的 accessed 位，否则会破坏内核哈希。
 - 启动哈希覆盖完整镜像（代码 + 只读数据 + 数据段）；运行时看门狗只覆盖不可变的

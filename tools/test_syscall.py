@@ -194,6 +194,15 @@ def main():
         "free(m);",
         "int r = rand();",
         'printf("rand_ok=%d\\n", r >= 0 ? 1 : 0);',
+        'printf("sub=%s\\n", strstr(buf, "TC"));',
+        'int hexv = strtol("0x1f", 0, 0);',
+        'printf("hex=%d\\n", hexv);',
+        'char *d = strdup("dup");',
+        'printf("dup=%s\\n", d);',
+        "free(d);",
+        "int dn = 0;",
+        "do { dn++; } while (dn < 3);",
+        'printf("do=%d\\n", dn);',
         "return 0;",
         "}",
     ]
@@ -213,6 +222,10 @@ def main():
     check("tc malloc/memset", vm.expect("heap=AAAAAAAAAAAAAAA", 5000),
           vm.buf[-500:])
     check("tc rand", vm.expect("rand_ok=1", 5000), vm.buf[-500:])
+    check("tc strstr/strtol", vm.expect("sub=TC", 4000) and
+          vm.expect("hex=31", 4000), vm.buf[-500:])
+    check("tc strdup/do-while", vm.expect("dup=dup", 4000) and
+          vm.expect("do=3", 4000), vm.buf[-500:])
 
     # 未 include 时不编入库: strlen 应为未定义
     vm.buf = ""
@@ -223,6 +236,36 @@ def main():
     vm.cmd("tc n.c", 1500)
     check("tc library is on-demand", vm.expect("undefined function", 6000),
           vm.buf[-300:])
+
+    # cat / rich / vim
+    vm.buf = ""
+    vm.cmd("cat \\sdk\\demo.md", 1000)
+    check("cat reads file", vm.expect("GT-DOS Rich Text", 4000),
+          vm.buf[-300:])
+    vm.buf = ""
+    vm.cmd("cat -n \\sdk\\demo.md", 1200)
+    check("cat -n numbers lines", vm.expect("     1  ", 4000), vm.buf[-300:])
+    vm.buf = ""
+    vm.cmd("rich \\sdk\\demo.md", 1500)
+    check("rich renders markdown", vm.expect("GT-DOS Rich Text", 4000),
+          vm.buf[-400:])
+    check("rich table", vm.expect("Feature", 3000), vm.buf[-400:])
+
+    # vim: 新文件 -> i 输入 -> ESC -> :wq -> cat 验证
+    vm.buf = ""
+    vm.cmd("vim vt.txt", 1200)
+    vm.feed(800)
+    vm.s.sendall(b"i")
+    vm.feed(400)
+    vm.s.sendall(b"hello vim")
+    vm.feed(800)
+    vm.s.sendall(b"\x1b")
+    vm.feed(600)
+    vm.cmd(":wq", 1500)
+    check("vim returns to shell", vm.expect("VIM:", 5000), vm.buf[-300:])
+    vm.buf = ""
+    vm.cmd("cat vt.txt", 1000)
+    check("vim saved edit", vm.expect("hello vim", 4000), vm.buf[-300:])
 
     vm.buf = ""
     vm.cmd("put t.c int main(void){")

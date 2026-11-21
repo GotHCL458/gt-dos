@@ -328,6 +328,10 @@ const u8  *tc_compile(const char *src, u32 len, u32 *out_len,
                       const char *path);
 const char *tc_error(void);
 
+/* ------------------------------------------------------- 富文本 / 编辑器 */
+void rich_render(const char *text, u32 len, const char *title);
+int  vim_run(const char *abs);          /* 0=正常, -1 无图形, -2 过大, -3 读失败 */
+
 /* ------------------------------------------------------- 网络 (TCP/IP) */
 #define IP4(a, b, c, d) (((u32)(a) << 24) | ((u32)(b) << 16) | \
                          ((u32)(c) << 8) | (u32)(d))

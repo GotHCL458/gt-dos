@@ -89,6 +89,37 @@ char *strrchr(char *s, int c)
     return r;
 }
 
+char *strstr(char *h, char *n)
+{
+    if (!*n)
+        return h;
+    while (*h) {
+        char *a = h;
+        char *b = n;
+        while (*a && *b && *a == *b) {
+            a++;
+            b++;
+        }
+        if (!*b)
+            return h;
+        h++;
+    }
+    return 0;
+}
+
+char *strncat(char *d, char *s, int n)
+{
+    char *r = d;
+    while (*d)
+        d++;
+    while (n > 0 && *s) {
+        *d++ = *s++;
+        n--;
+    }
+    *d = 0;
+    return r;
+}
+
 int memcmp(char *a, char *b, int n)
 {
     while (n > 0) {
