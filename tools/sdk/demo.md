@@ -1,31 +1,45 @@
 # GT-DOS Rich Text
 
-This is **bold**, *italic*, `inline code`, and a [link](https://example.com).
+This is **bold**, *italic*, ***bold italic***, ~~struck~~, `inline code`,
+a [link](https://example.com) and an image ![logo](logo.png).
+
+Plain <b>HTML bold</b>, <i>italic</i> and <c=red>colored</c> text.
 
 ## Lists and Quotes
 
 - Arrays, structs and unions
 - switch / case / default
-- typedef, enum, sizeof
+  - nested item
+  - [x] done task
+  - [ ] open task
 
-> Rich text is rendered by the kernel and works on VGA and serial.
+1. First item
+2. Second item
+3. Third item
 
-## Code
+> Rich text is rendered by the kernel.
+>> Nested quotes work too.
+
+Setext Heading
+==============
+
+### Code
 
 ```c
 int main(void) {
-    printf("hello %d\n", 42);
+    printf("hello %d\n", 42);   // comment
     return 0;
 }
 ```
 
-## Table
+    indented code line
 
-| Feature | Status |
-|---------|--------|
-| cat     | done   |
-| rich    | done   |
-| vim     | done   |
+### Table
+
+| Left | Center | Right |
+|:-----|:------:|------:|
+| a    | b      | c     |
+| long | mid    | 42    |
 
 ---
 

@@ -95,6 +95,27 @@ int  statx(char *path, void *st);      /* SYS_STATX (19) */
 void reboot(void);
 void shutdown(void);
 
+/* console / UI (SYS_CLS = 38, SYS_COLOR = 39, SYS_SCREEN = 40) */
+void cls(void);
+void color(int fg, int bg);
+int  screen(void *sc);                 /* sc = { int cols; int rows; } */
+
+/* filesystem (SYS_UNLINK = 41, SYS_MKDIR = 42, SYS_RMDIR = 43) */
+int  unlink(char *path);
+int  mkdir(char *path);
+int  rmdir(char *path);
+
+/* system info (SYS_GETCWD = 44 .. SYS_UNIXTIME = 49) */
+int  getcwd(char *buf, int cap);
+int  hostname(char *buf, int cap);
+int  username(char *buf, int cap);
+int  isadmin(void);
+int  version(char *buf, int cap);
+int  unixtime(void);
+
+/* rich text: 用 Markdown 子集渲染到控制台 (SYS_RICH = 50) */
+int  rich(char *md, int len, char *title);
+
 /* TCP/IP (see NET.H) */
 int  ip4(int a, int b, int c, int d);
 int  tcp_connect(int ip, int port);

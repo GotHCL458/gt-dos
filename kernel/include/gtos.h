@@ -38,6 +38,28 @@
  *   29  SYS_DNS     name                                   IPv4 或 0
  *   30  SYS_TFTP_GET server, remote, local                 字节数或 -1
  *   31  SYS_HTTP_GET hostport, path, local                 字节数或 -1
+ *   32  SYS_UDP_OPEN port                                 socket 或 -1
+ *   33  SYS_UDP_SENDTO fd, ip, port, data, len            字节数或 -1
+ *   34  SYS_UDP_RECVFROM fd, buf, cap, timeout, src, sport 字节数或 -1
+ *   35  SYS_ICMP_ERR st                                    1/0
+ *   36  SYS_UDP_CLOSE fd                                   0
+ *   37  SYS_PRINTF  fmt, nargs, argptr                     0
+ *   38  SYS_CLS     -                                      0
+ *   39  SYS_COLOR   fg, bg                                 0
+ *   40  SYS_SCREEN  gt_screen*                             0 或 -1
+ *   41  SYS_UNLINK  path                                   0 或 -1
+ *   42  SYS_MKDIR   path                                   0 或 -1
+ *   43  SYS_RMDIR   path                                   0 或 -1
+ *   44  SYS_GETCWD  buf, cap                               长度或 -1
+ *   45  SYS_HOSTNAME buf, cap                              长度或 -1
+ *   46  SYS_USERNAME buf, cap                              长度或 -1
+ *   47  SYS_ISADMIN -                                      0/1
+ *   48  SYS_VERSION buf, cap                               长度或 -1
+ *   49  SYS_UNIXTIME-                                      Unix 秒或 -1
+ *   50  SYS_RICH    md, len, title                         0 或 -1
+ *
+ * SYS_RICH 直接用 Markdown 子集把一段文本渲染到控制台 (标题/粗体/斜体/
+ * 删除线/代码/链接/图片/引用/列表/任务/表格/围栏代码块).
  *
  * SYS_STAT 返回 {size, attr, is_dir}; SYS_STATX 额外带 exFAT 厂商扩展:
  * flags (0x01 = 内容加密), version, crc32, owner[16], mode.
@@ -71,6 +93,28 @@ int  gt_open(const char *path, int flags);
 int  gt_read(int fd, void *buf, unsigned n);
 int  gt_write(int fd, const void *buf, unsigned n);
 int  gt_close(int fd);
+
+/* 终端尺寸与样式 */
+typedef struct { unsigned long cols, rows; } gt_screen_t;
+int  gt_screen(gt_screen_t *sc);
+void gt_cls(void);
+void gt_setcolor(int fg, int bg);
+
+/* 目录/文件操作 */
+int  gt_unlink(const char *path);
+int  gt_mkdir(const char *path);
+int  gt_rmdir(const char *path);
+
+/* 系统信息 */
+int  gt_getcwd(char *buf, unsigned cap);
+int  gt_hostname(char *buf, unsigned cap);
+int  gt_username(char *buf, unsigned cap);
+int  gt_isadmin(void);
+int  gt_version(char *buf, unsigned cap);
+long gt_unixtime(void);
+
+/* 富文本 (Markdown 子集) */
+int  gt_rich(const char *md, unsigned len, const char *title);
 
 /* 进程/电源 */
 void gt_exit(int code);

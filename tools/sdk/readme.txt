@@ -38,6 +38,8 @@ Layout: 128 KB code at 0x600000, 128 KB data at 0x620000.
 
 Builtins (see TC.H): putc, print, print_int, getc, exit, sleep,
 uptime, open, read, write, close, seek, stat, statx, reboot, shutdown,
+cls, color, screen, getcwd, hostname, username, isadmin, version,
+unixtime, rich, unlink, mkdir, rmdir,
 tcp_connect/send/recv/close, udp_open/sendto/recvfrom/close, icmp_err,
 dns, dhcp, tftp_get, http_get.
 

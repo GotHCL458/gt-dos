@@ -13,7 +13,7 @@ static u8 file_buf[FILE_BUF_MAX] __attribute__((section(".highbss")));
 /* PIT 通道2 分频, 约 896 Hz 的提示音 */
 #define PIT_FREQ_DIV 1331
 
-static const char *version = "GT-DOS 0.10";
+static const char *version = GT_VERSION;
 
 /* ============================================================ 回滚视图 */
 /* 统一的滚动入口: delta>0 向上翻 (看历史), 带上下限钳制与状态指示.
@@ -55,6 +55,8 @@ void shell_wheel_cb(int delta)
 #define PATHMAX 160
 
 static char cwd[PATHMAX] = "";           /* 当前目录 (不含盘符), "" = 根 */
+
+const char *shell_cwd(void) { return cwd; }
 
 /* 规范化绝对路径 "C:\A\.\B\..\C" -> "C:\A\C"; 返回 false 表示非法 */
 static bool path_normalize(const char *in, char *out)

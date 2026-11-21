@@ -142,6 +142,36 @@ static void fmt_printf(const char *fmt, int nargs, const u64 *args)
     }
 }
 
+/* 把 C 字符串复制到用户缓冲 (始终 NUL 结尾), 返回长度或 -1 */
+static int out_str(const char *src, void *dst, u64 cap)
+{
+    if (!dst || cap == 0)
+        return -1;
+    if (cap > 0x100000)
+        cap = 0x100000;
+    char *d = (char *)dst;
+    u32 n = 0;
+    if (src) {
+        while (src[n] && n + 1 < (u32)cap) {
+            d[n] = src[n];
+            n++;
+        }
+    }
+    d[n] = 0;
+    return (int)n;
+}
+
+/* 公历日期 -> 1970 起的天数 */
+static i64 days_from_civil(int y, int m, int d)
+{
+    y -= (m <= 2);
+    int era = (y >= 0 ? y : y - 399) / 400;
+    int yoe = y - era * 400;
+    int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return (i64)era * 146097 + doe - 719468;
+}
+
 void syscall_handle(struct regs *r)
 {
     u64 nr = r->rax;
@@ -320,6 +350,76 @@ void syscall_handle(struct regs *r)
         if (n > 8) n = 8;
         if (r->rdi)
             fmt_printf((const char *)r->rdi, n, (const u64 *)r->rdx);
+        r->rax = 0;
+        break;
+    }
+    case SYS_CLS:
+        console_clear();
+        r->rax = 0;
+        break;
+    case SYS_COLOR:
+        gt_color2((u8)(r->rdi & 0xF), (u8)(r->rsi & 0xF));
+        r->rax = 0;
+        break;
+    case SYS_SCREEN: {
+        struct gt_screen *o = (struct gt_screen *)r->rdi;
+        if (!o) { r->rax = (u64)-1; break; }
+        u64 cols = VGA_COLS, rows = VGA_ROWS;
+        if (gfx_active() && gfx_cell_w() > 0 && gfx_cell_h() > 0) {
+            cols = (u64)(gfx_w() / gfx_cell_w());
+            rows = (u64)(gfx_h() / gfx_cell_h());
+        }
+        o->cols = cols;
+        o->rows = rows;
+        r->rax = 0;
+        break;
+    }
+    case SYS_UNLINK:
+        if (!r->rdi) { r->rax = (u64)-1; break; }
+        r->rax = fat_delete((const char *)r->rdi) ? 0 : (u64)-1;
+        break;
+    case SYS_MKDIR:
+        if (!r->rdi) { r->rax = (u64)-1; break; }
+        r->rax = fat_mkdir((const char *)r->rdi) ? 0 : (u64)-1;
+        break;
+    case SYS_RMDIR:
+        if (!r->rdi) { r->rax = (u64)-1; break; }
+        r->rax = fat_rmdir((const char *)r->rdi) ? 0 : (u64)-1;
+        break;
+    case SYS_GETCWD: {
+        const char *c = shell_cwd();
+        r->rax = (u64)out_str((c && c[0]) ? c : "\\", (void *)r->rdi, r->rsi);
+        break;
+    }
+    case SYS_HOSTNAME:
+        r->rax = (u64)out_str(gcfg.hostname, (void *)r->rdi, r->rsi);
+        break;
+    case SYS_USERNAME:
+        r->rax = (u64)out_str(user_name(), (void *)r->rdi, r->rsi);
+        break;
+    case SYS_ISADMIN:
+        r->rax = user_is_admin() ? 1 : 0;
+        break;
+    case SYS_VERSION:
+        r->rax = (u64)out_str(GT_VERSION, (void *)r->rdi, r->rsi);
+        break;
+    case SYS_UNIXTIME: {
+        int yy, mm, dd, hh, mi, ss;
+        rtc_read(&yy, &mm, &dd, &hh, &mi, &ss);
+        if (yy < 1970 || mm < 1 || mm > 12 || dd < 1 || dd > 31) {
+            r->rax = (u64)-1;
+            break;
+        }
+        i64 secs = days_from_civil(yy, mm, dd) * 86400 +
+                   (i64)hh * 3600 + (i64)mi * 60 + ss;
+        r->rax = (u64)secs;
+        break;
+    }
+    case SYS_RICH: {
+        u32 len = (u32)r->rsi;
+        if (!r->rdi) { r->rax = (u64)-1; break; }
+        if (len > 0x10000) len = 0x10000;
+        rich_render((const char *)r->rdi, len, (const char *)r->rdx);
         r->rax = 0;
         break;
     }

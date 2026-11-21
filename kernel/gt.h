@@ -416,6 +416,17 @@ void gt_color2(u8 fg, u8 bg);
 void gt_color_reset(void);
 void gt_bold(bool on);
 
+/* 终端尺寸 (SYS_SCREEN) */
+struct gt_screen {
+    u64 cols;
+    u64 rows;
+};
+
+#define GT_VERSION "GT-DOS 0.10"
+
+/* 当前 shell 工作目录 (不含盘符, "" = 根) */
+const char *shell_cwd(void);
+
 /* 行编辑器刷新: 重画 prompt+buf, 光标停在 cur 处 */
 void console_line_refresh(const char *prompt, const char *buf, int len,
                           int cur, int prev_len);
@@ -455,7 +466,12 @@ enum {
     SYS_TCP_ACCEPT = 27, SYS_DHCP = 28, SYS_DNS = 29,
     SYS_TFTP_GET = 30, SYS_HTTP_GET = 31,
     SYS_UDP_OPEN = 32, SYS_UDP_SENDTO = 33, SYS_UDP_RECVFROM = 34,
-    SYS_ICMP_ERR = 35, SYS_UDP_CLOSE = 36, SYS_PRINTF = 37
+    SYS_ICMP_ERR = 35, SYS_UDP_CLOSE = 36, SYS_PRINTF = 37,
+    SYS_CLS = 38, SYS_COLOR = 39, SYS_SCREEN = 40,
+    SYS_UNLINK = 41, SYS_MKDIR = 42, SYS_RMDIR = 43,
+    SYS_GETCWD = 44, SYS_HOSTNAME = 45, SYS_USERNAME = 46,
+    SYS_ISADMIN = 47, SYS_VERSION = 48, SYS_UNIXTIME = 49,
+    SYS_RICH = 50
 };
 void syscall_handle(struct regs *r);    /* 由 isr_handler 分派 */
 

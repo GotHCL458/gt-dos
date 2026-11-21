@@ -87,6 +87,15 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
 | | | 34 | `SYS_UDP_RECVFROM` |
 | | | 35 | `SYS_ICMP_ERR` |
 | | | 36 | `SYS_UDP_CLOSE` |
+| | | 37 | `SYS_PRINTF` |
+| 38 | `SYS_CLS` | 43 | `SYS_RMDIR` |
+| 39 | `SYS_COLOR` | 44 | `SYS_GETCWD` |
+| 40 | `SYS_SCREEN` | 45 | `SYS_HOSTNAME` |
+| 41 | `SYS_UNLINK` | 46 | `SYS_USERNAME` |
+| 42 | `SYS_MKDIR` | 47 | `SYS_ISADMIN` |
+| | | 48 | `SYS_VERSION` |
+| | | 49 | `SYS_UNIXTIME` |
+| | | 50 | `SYS_RICH` |
 
 - Socket calls may use up to six arguments (`rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9`); the first
   three follow the original ABI, so existing programs are unaffected
@@ -152,6 +161,8 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
   pasting/stringizing (`##`/`#`), and `#if` conditionals
 - Builtins (`\SDK\TC.H`): `putc`, `print`, `print_int`, `getc`, `exit`, `sleep`,
   `uptime`, `open`, `read`, `write`, `close`, `seek`, `stat`, `statx`, `reboot`, `shutdown`;
+  console/system calls `cls`, `color`, `screen`, `getcwd`, `hostname`, `username`,
+  `isadmin`, `version`, `unixtime`, `rich`; filesystem `unlink`, `mkdir`, `rmdir`;
   `\SDK\NET.H` adds `ip4`, `tcp_connect`, `tcp_send`, `tcp_recv`, `tcp_close`,
   `dns`, `tftp_get`, `http_get`
 - SDK at `\SDK\` (plain, read-only): `TC.H`, `STRING.H`, `STDLIB.H`, `CTYPE.H`,
@@ -162,9 +173,14 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
 
 **Rich text and editor**
 - `CAT [-n] <file...>` concatenates one or more files; `-n` adds continuous line numbers
-- `RICH <file.md>` renders a Markdown subset with ANSI/VGA colours: headings, bold,
-  italic, inline code, links, lists, quotes, fenced code, tables and rules; the same
-  inline tags `<b>`, `<i>`, `<c=red>` are understood
+- `RICH <file.md>` renders Markdown with ANSI/VGA colours: ATX and Setext headings,
+  bold/italic/bold-italic/strikethrough, inline code, links and images, nested
+  lists (ordered/unordered/task), nested quotes, horizontal rules, fenced code
+  blocks with lightweight C-family highlighting, and tables with automatic column
+  widths and `:---:`/`---:` alignment; inline tags `<b> <i> <c=red> </c> <br>`
+  are also understood
+- Programs can render Markdown through `SYS_RICH` (TC builtin `rich`), and read the
+  terminal size via `SYS_SCREEN`
 - `VIM <file>` is a full-screen modal editor (normal/insert/command/search) with arrows,
   Home/End/PgUp/PgDn, `i I a A o O`, `x X`, `dd`, `yy`, `p`, one-level `u`, `gg/G`,
   `w/b` word motion, `J` join, `D` delete-to-EOL, Ctrl+D/Ctrl+U half-page scroll,
@@ -374,7 +390,7 @@ assert on real boot output rather than on mocks.
 
 ## Notes and Limitations
 
-- The kernel currently fits in 593 sectors (303,424 bytes including the 48-byte `GTK1`
+- The kernel currently fits in 609 sectors (311,616 bytes including the 48-byte `GTK1`
   trailer); the build cap is 640 sectors (320 KB), loaded between `0x10000` and `0x60000`.
   The linker also asserts `.bss <= 0xA0000` and `.highbss <= LIB_BASE`.
 - The GDT is built in low memory (0x6800) rather than `.data`: loading a segment register

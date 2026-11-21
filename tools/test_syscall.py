@@ -319,7 +319,64 @@ def main():
     vm.cmd("rich \\sdk\\demo.md", 1500)
     check("rich renders markdown", vm.expect("GT-DOS Rich Text", 4000),
           vm.buf[-400:])
-    check("rich table", vm.expect("Feature", 3000), vm.buf[-400:])
+    check("rich table", vm.expect("Left", 3000), vm.buf[-400:])
+    check("rich inline styles", vm.expect("bold italic", 3000) and
+          vm.expect("struck", 3000) and vm.expect("[img:", 3000),
+          vm.buf[-500:])
+    check("rich lists/tasks", vm.expect("[x]", 3000) and
+          vm.expect("open task", 3000), vm.buf[-500:])
+    check("rich quotes/setext", vm.expect("Nested quotes", 3000) and
+          vm.expect("Setext Heading", 3000), vm.buf[-500:])
+    check("rich code block", vm.expect("[c]", 3000) and
+          vm.expect("hello %d", 3000), vm.buf[-500:])
+
+    # 新 GTAPI: 控制台/屏幕/目录/文件/系统信息/富文本
+    api = [
+        "#include <stdio.h>",
+        "#include <string.h>",
+        "int main(void) {",
+        "char buf[64];",
+        'getcwd(buf,64); printf("cwd=%s\\n", buf);',
+        'hostname(buf,64); printf("host=%s\\n", buf);',
+        'username(buf,64); printf("user=%s\\n", buf);',
+        'version(buf,64); printf("ver=%s\\n", buf);',
+        'printf("admin=%d time=%d\\n", isadmin(), unixtime() > 1600000000);',
+        "int sc[2];",
+        'printf("scr=%d\\n", (screen(sc) == 0 && sc[0] > 0 && sc[1] > 0));',
+        'int m = mkdir("apitest");',
+        'int r = rmdir("apitest");',
+        'printf("fs dir=%d,%d\\n", m, r);',
+        'int fd = open("apifile.txt", 0x100);',
+        'int wr = (fd >= 0) ? (write(fd, "x", 1) == 1) : 0;',
+        "if (fd >= 0) close(fd);",
+        'int dl = unlink("apifile.txt");',
+        'printf("fs file=%d,%d\\n", wr, dl);',
+        'color(14,1); printf("colored\\n"); color(7,0);',
+        'char *md = "# API Rich\\n\\n- alpha\\n- **beta**\\n";',
+        'printf("rich_ret=%d\\n", rich(md, strlen(md), "API"));',
+        "return 0;",
+        "}",
+    ]
+    vm.buf = ""
+    vm.cmd(f"put api.c {api[0]}", 600)
+    for line in api[1:]:
+        vm.cmd(f"append api.c {line}", 450)
+    vm.cmd("tc api.c", 3000)
+    check("tc new gtapi compiles", vm.expect("Compiled ", 8000),
+          vm.buf[-500:])
+    vm.cmd("run api.gtp", 3000)
+    check("gtapi system info", vm.expect("cwd=", 4000) and
+          vm.expect("host=SBOX", 4000) and vm.expect("user=admin", 4000) and
+          vm.expect("ver=GT-DOS", 4000) and vm.expect("admin=1 time=1", 4000),
+          vm.buf[-500:])
+    check("gtapi screen", vm.expect("scr=1", 4000), vm.buf[-500:])
+    check("gtapi dirs", vm.expect("fs dir=0,0", 4000), vm.buf[-500:])
+    check("gtapi file create/unlink", vm.expect("fs file=1,0", 4000),
+          vm.buf[-500:])
+    check("gtapi color", vm.expect("colored", 4000), vm.buf[-500:])
+    check("gtapi rich", vm.expect("rich_ret=0", 4000) and
+          vm.expect("API Rich", 4000) and vm.expect("alpha", 4000),
+          vm.buf[-500:])
 
     # vim: 新文件 -> i 输入 -> ESC -> :wq -> cat 验证
     vm.buf = ""

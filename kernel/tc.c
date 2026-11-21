@@ -189,9 +189,9 @@ struct enum_ent {
 static struct enum_ent enums[MAX_ENUM];
 static int nenums;
 
-/* #include 处理: 最多 4 层, 每层 4KB; 标准库按包含的头文件按需编入 */
+/* #include 处理: 最多 4 层, 每层 8KB; 标准库按包含的头文件按需编入 */
 #define TC_INC_MAX 4
-#define TC_INC_BUF 4096
+#define TC_INC_BUF 8192
 #define TC_INC_SEEN 16
 static char inc_buf[TC_INC_MAX][TC_INC_BUF] __attribute__((section(".highbss")));
 static const char *inc_ret_sp[TC_INC_MAX];
@@ -2701,6 +2701,11 @@ static void gen_call(const char *name)
         { "udp_open", 32, 1 }, { "udp_sendto", 33, 5 },
         { "udp_recvfrom", 34, 6 }, { "icmp_err", 35, 1 },
         { "udp_close", 36, 1 },
+        { "cls", 38, 0 }, { "color", 39, 2 }, { "screen", 40, 1 },
+        { "unlink", 41, 1 }, { "mkdir", 42, 1 }, { "rmdir", 43, 1 },
+        { "getcwd", 44, 2 }, { "hostname", 45, 2 }, { "username", 46, 2 },
+        { "isadmin", 47, 0 }, { "version", 48, 2 }, { "unixtime", 49, 0 },
+        { "rich", 50, 3 },
         { NULL, 0, 0 }
     };
     int nr = -1;

@@ -36,6 +36,19 @@
 #define GT_SYS_LIBSYM   18
 #define GT_SYS_STATX    19
 #define GT_SYS_IPRINT   20
+#define GT_SYS_CLS      38
+#define GT_SYS_COLOR    39
+#define GT_SYS_SCREEN   40
+#define GT_SYS_UNLINK   41
+#define GT_SYS_MKDIR    42
+#define GT_SYS_RMDIR    43
+#define GT_SYS_GETCWD   44
+#define GT_SYS_HOSTNAME 45
+#define GT_SYS_USERNAME 46
+#define GT_SYS_ISADMIN  47
+#define GT_SYS_VERSION  48
+#define GT_SYS_UNIXTIME 49
+#define GT_SYS_RICH     50
 
 static inline long gt_syscall3(long nr, long a, long b, long c)
 {
@@ -71,5 +84,40 @@ static inline int gt_getc(void)
 { return (int)gt_syscall(GT_SYS_GETC, 0, 0, 0); }
 static inline void gt_exit(int code)
 { gt_syscall(GT_SYS_EXIT, code, 0, 0); for (;;) ; }
+
+/* 控制台 */
+typedef struct { unsigned long cols, rows; } gt_screen_t;
+static inline void gt_cls(void)
+{ gt_syscall(GT_SYS_CLS, 0, 0, 0); }
+static inline void gt_color(int fg, int bg)
+{ gt_syscall(GT_SYS_COLOR, fg, bg, 0); }
+static inline int gt_screen(gt_screen_t *sc)
+{ return (int)gt_syscall(GT_SYS_SCREEN, (long)sc, 0, 0); }
+
+/* 文件系统 */
+static inline int gt_unlink(const char *path)
+{ return (int)gt_syscall(GT_SYS_UNLINK, (long)path, 0, 0); }
+static inline int gt_mkdir(const char *path)
+{ return (int)gt_syscall(GT_SYS_MKDIR, (long)path, 0, 0); }
+static inline int gt_rmdir(const char *path)
+{ return (int)gt_syscall(GT_SYS_RMDIR, (long)path, 0, 0); }
+
+/* 系统信息 */
+static inline int gt_getcwd(char *buf, unsigned cap)
+{ return (int)gt_syscall(GT_SYS_GETCWD, (long)buf, cap, 0); }
+static inline int gt_hostname(char *buf, unsigned cap)
+{ return (int)gt_syscall(GT_SYS_HOSTNAME, (long)buf, cap, 0); }
+static inline int gt_username(char *buf, unsigned cap)
+{ return (int)gt_syscall(GT_SYS_USERNAME, (long)buf, cap, 0); }
+static inline int gt_isadmin(void)
+{ return (int)gt_syscall(GT_SYS_ISADMIN, 0, 0, 0); }
+static inline int gt_version(char *buf, unsigned cap)
+{ return (int)gt_syscall(GT_SYS_VERSION, (long)buf, cap, 0); }
+static inline long gt_unixtime(void)
+{ return gt_syscall(GT_SYS_UNIXTIME, 0, 0, 0); }
+
+/* 富文本 */
+static inline int gt_rich(const char *md, unsigned len, const char *title)
+{ return (int)gt_syscall(GT_SYS_RICH, (long)md, len, (long)title); }
 
 #endif /* _GT_UNISTD_H */

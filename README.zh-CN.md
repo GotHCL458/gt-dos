@@ -83,6 +83,15 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 | | | 34 | `SYS_UDP_RECVFROM` |
 | | | 35 | `SYS_ICMP_ERR` |
 | | | 36 | `SYS_UDP_CLOSE` |
+| | | 37 | `SYS_PRINTF` |
+| 38 | `SYS_CLS` | 43 | `SYS_RMDIR` |
+| 39 | `SYS_COLOR` | 44 | `SYS_GETCWD` |
+| 40 | `SYS_SCREEN` | 45 | `SYS_HOSTNAME` |
+| 41 | `SYS_UNLINK` | 46 | `SYS_USERNAME` |
+| 42 | `SYS_MKDIR` | 47 | `SYS_ISADMIN` |
+| | | 48 | `SYS_VERSION` |
+| | | 49 | `SYS_UNIXTIME` |
+| | | 50 | `SYS_RICH` |
 
 - 套接字调用最多使用六个参数（`rdi`、`rsi`、`rdx`、`rcx`、`r8`、`r9`）；
   前三项与原 ABI 相同，既有程序不受影响
@@ -140,7 +149,9 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
   记号拼接与字符串化，以及 `#if` 条件编译
 - 内置函数（`\SDK\TC.H`）：`putc`、`print`、`print_int`、`getc`、`exit`、
   `sleep`、`uptime`、`open`、`read`、`write`、`close`、`seek`、`stat`、`statx`、
-  `reboot`、`shutdown`；`\SDK\NET.H` 另含 `ip4`、`tcp_connect`、`tcp_send`、
+  `reboot`、`shutdown`；控制台/系统 `cls`、`color`、`screen`、`getcwd`、`hostname`、
+  `username`、`isadmin`、`version`、`unixtime`、`rich`；文件系统 `unlink`、`mkdir`、
+  `rmdir`；`\SDK\NET.H` 另含 `ip4`、`tcp_connect`、`tcp_send`、
   `tcp_recv`、`tcp_close`、`dns`、`tftp_get`、`http_get`
 - `\SDK\` 提供明文只读 SDK：`TC.H`、`STRING.H`、`STDLIB.H`、`CTYPE.H`、`STDIO.H`、
   `STDARG.H`、
@@ -152,8 +163,12 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 
 **富文本与编辑器**
 - `CAT [-n] <文件...>` 依次显示多个文件；`-n` 连续编号
-- `RICH <文件.md>` 渲染 Markdown 子集（标题、粗体、斜体、行内代码、链接、列表、
-  引用、代码块、表格与分隔线），同时支持 `<b>`、`<i>`、`<c=red>` 内联标签
+- `RICH <文件.md>` 渲染 Markdown：ATX/Setext 标题、粗体/斜体/粗斜体/删除线、
+  行内代码、链接与图片、嵌套列表（无序/有序/任务）、多级引用、分隔线、带
+  C 系语言简易高亮的围栏代码块，以及自动列宽并按 `:---:`/`---:` 对齐的表格；
+  同时支持 `<b> <i> <c=red> </c> <br>` 内联标签
+- 程序可通过 `SYS_RICH`（TC 内建 `rich`）直接渲染 Markdown，并用 `SYS_SCREEN`
+  读取终端尺寸
 - `VIM <文件>` 全屏模态编辑器（normal/insert/command/search）：方向键、
   Home/End/PgUp/PgDn、`i I a A o O`、`x X`、`dd`、`yy`、`p`、一级 `u`、`gg/G`、
   `w/b` 按词移动、`J` 合并行、`D` 删至行尾、Ctrl+D/Ctrl+U 半屏滚动、
@@ -352,7 +367,7 @@ build.py             构建脚本与镜像组装
 
 ## 说明与限制
 
-- 内核目前为 593 扇区（303,424 字节，含 48 字节 `GTK1` 尾部），构建上限 640 扇区
+- 内核目前为 609 扇区（311,616 字节，含 48 字节 `GTK1` 尾部），构建上限 640 扇区
   （320KB），加载区间为 `0x10000` 到 `0x60000`；链接脚本同时断言
   `.bss <= 0xA0000` 与 `.highbss <= LIB_BASE`。
 - GDT 在低端内存（0x6800）由入口代码构造，而非放在 `.data`：CPU 装载段寄存器

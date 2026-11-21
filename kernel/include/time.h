@@ -16,4 +16,12 @@ static inline unsigned gt_uptime_ms(void)
                          : "rcx", "r11", "memory");
     return (unsigned)ret;
 }
+/* Unix 时间 (秒, RTC 本地时间按 UTC 处理), 失败返回 -1 */
+static inline long gt_unixtime(void)
+{
+    long ret;
+    __asm__ __volatile__("int $0x21" : "=a"(ret) : "a"(49L)
+                         : "rcx", "r11", "memory");
+    return ret;
+}
 #endif /* _GT_TIME_H */
