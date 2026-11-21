@@ -193,7 +193,7 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
   `dns`, `tftp_get`, `http_get`
 - SDK at `\SDK\` (plain, read-only): `TC.H`, `STRING.H`, `STDLIB.H`, `CTYPE.H`,
   `STDIO.H`, `STDARG.H`, `NET.H`, `STRING.C`, `STDLIB.C`, `CTYPE.C`, `STDIO.C`,
-  `NET.C`, `HELLO.C`, `HELLO.S`, `FIB.C`,
+  `NET.C`, `HELLO.C`, `HELLO.S`, `FIB.C`, `THREAD.C`,
   `README.TXT`; `PUT` + `APPEND` let you author sources line by line inside GT-DOS
 - Program layout: 128 KB code at `0x600000`, 128 KB data at `0x620000`
   (64 KB globals + 64 KB string pool)
@@ -210,6 +210,22 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
   `je/jne/jl/jle/jg/jge/jb/jbe/ja/jae/js/jns` use rel32 branches
 - Entry is code offset 0; call the kernel via `INT 0x21` (`rax` = call number)
   and exit with `rdi`=code, `rax=0`; see `\SDK\HELLO.S`
+
+**Multithreading**
+- Round-robin scheduler: the main thread plus up to 7 children, each with its
+  own 8 KB stack; the 100 Hz timer preempts every 5 ticks (≈50 ms) and threads
+  may also yield (TC `yield()` / `INT 0x2F`)
+- Threads run in ring0 and share the program address space and globals; timer
+  preemption is disabled while a system call runs, so console, file and network
+  calls stay atomic
+- TC builtins: `thread_create(fn, arg)` → tid (51), `yield()` (52),
+  `thread_exit(code)` (53), `thread_join(tid)` (54), `gettid()` (55);
+  see `\SDK\THREAD.C`; the shell's `THREADS` command dumps the thread table
+- Entry functions receive the argument with TC's calling convention (on the
+  stack); `exit()` in a child only ends that thread, and the kernel reaps all
+  threads a program created when it exits
+- Limits: no priorities or sleep queues (`thread_join` polls by yielding), and
+  the malloc heap is shared without locking, so avoid data races yourself
 
 **Rich text and editor**
 - `CAT [-n] <file...>` concatenates one or more files; `-n` adds continuous line numbers

@@ -498,7 +498,9 @@ enum {
     SYS_UNLINK = 41, SYS_MKDIR = 42, SYS_RMDIR = 43,
     SYS_GETCWD = 44, SYS_HOSTNAME = 45, SYS_USERNAME = 46,
     SYS_ISADMIN = 47, SYS_VERSION = 48, SYS_UNIXTIME = 49,
-    SYS_RICH = 50
+    SYS_RICH = 50,
+    SYS_THREAD_CREATE = 51, SYS_YIELD = 52, SYS_THREAD_EXIT = 53,
+    SYS_THREAD_JOIN = 54, SYS_GETTID = 55
 };
 void syscall_handle(struct regs *r);    /* 由 isr_handler 分派 */
 
@@ -526,6 +528,26 @@ void task_dump(void);
 int  exec_run(const char *abs);         /* 载入并运行, 返回退出码(<0 为错误) */
 void exec_exit(int code);               /* SYS_EXIT 调用: 回跳到 shell */
 bool exec_is_active(void);
+
+/* ------------------------------------------------ 多线程调度 (sched.c)
+   线程运行在 ring0、共享程序地址空间; 每个线程独立栈, 定时器按时间片抢占,
+   也可用 INT 0x2F (SYS_YIELD) 主动让出. 内核系统调用期间不抢占. */
+#define SCHED_YIELD_VECTOR 0x2F
+#define THREAD_MAX 8                    /* 含主线程 */
+typedef void (*thread_fn_t)(void *);
+
+void sched_init(void);
+void sched_tick(struct regs *r);        /* 定时器中断调用 */
+void sched_yield_isr(struct regs *r);   /* INT 0x2F 调用 */
+void sched_syscall_enter(void);         /* 系统调用期间禁止定时抢占 */
+void sched_syscall_exit(void);
+int  sched_current_id(void);
+bool sched_current_is_main(void);
+int  thread_create(thread_fn_t fn, void *arg);   /* 返回 tid, <0 失败 */
+int  thread_join(int tid);                       /* 等待并取回退出码 */
+void thread_exit_current(int code);               /* 当前线程退出(不返回) */
+void thread_reap_all(void);                       /* 程序结束时回收用户线程 */
+void sched_dump(void);
 
 /* ---------------------------------------------------- 共享库 (.gtl) */
 #define LIB_BASE     0x580000ULL

@@ -27,6 +27,7 @@ void kmain(void)
     pic_init();
     softirq_init();
     task_init();                  /* 登记内核系统服务任务 (SYS) */
+    sched_init();                 /* 主线程 + 调度器 */
 
     /* 3) 外设 */
     timer_init(100);

@@ -59,6 +59,7 @@ int exec_run(const char *abs)
     int tid = task_register(base_name(abs), sys ? TASK_SYS : TASK_USR,
                             (d.size + 1023) / 1024);
     u64 code = exec_enter(PROG_BASE, PROG_STACK_TOP, exec_ctx);
+    thread_reap_all();              /* 回收程序创建的所有线程 */
     task_end(tid);
     exec_active = false;
     return (int)code;

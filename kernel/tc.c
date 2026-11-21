@@ -3578,6 +3578,9 @@ static void gen_call(const char *name)
         { "getcwd", 44, 2 }, { "hostname", 45, 2 }, { "username", 46, 2 },
         { "isadmin", 47, 0 }, { "version", 48, 2 }, { "unixtime", 49, 0 },
         { "rich", 50, 3 },
+        { "thread_create", 51, 2 }, { "yield", 52, 0 },
+        { "thread_exit", 53, 1 }, { "thread_join", 54, 1 },
+        { "gettid", 55, 0 },
         { NULL, 0, 0 }
     };
     int nr = -1;

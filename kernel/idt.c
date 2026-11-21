@@ -33,6 +33,8 @@ static struct idt_entry idt[IDT_ENTRIES];
 static struct idt_ptr   idtr;
 static irq_handler_t    irq_handlers[16];
 
+extern void schedyield(void);          /* sched_asm.asm: INT 0x2F 入口 */
+
 /* ---------------------------------------------------------- 嵌套状态 */
 static volatile int in_irq;           /* 当前正在服务的中断层数 */
 static int nest_max;                  /* 历史最大嵌套深度 */
@@ -164,7 +166,14 @@ void isr_handler(struct regs *r)
         return;                       /* 杂散中断: 直接返回, 无需 EOI */
 
     if (r->int_no == SYSCALL_VECTOR) { /* INT 0x21 系统调用门 */
+        sched_syscall_enter();         /* 内核临界区: 定时器不抢占 */
         syscall_handle(r);
+        sched_syscall_exit();
+        return;
+    }
+
+    if (r->int_no == SCHED_YIELD_VECTOR) { /* INT 0x2F 主动让出 */
+        sched_yield_isr(r);
         return;
     }
 
@@ -271,6 +280,7 @@ void idt_init(void)
     }
     idt_set_gate(SPURIOUS_VECTOR, (u64)isrspl, 0x18, 0x8E);
     idt_set_gate(SYSCALL_VECTOR, (u64)sysint, 0x18, 0x8E);   /* INT 0x21 */
+    idt_set_gate(SCHED_YIELD_VECTOR, (u64)schedyield, 0x18, 0x8E); /* INT 0x2F */
 
     __asm__ __volatile__("lidt %0" ::"m"(idtr));
 }

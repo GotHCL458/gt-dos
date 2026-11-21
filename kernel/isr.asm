@@ -7,6 +7,7 @@
 BITS 64
 section .text
 extern isr_handler
+extern sched_next_sp
 
 ; ---- 无错误码的异常: 压入占位错误码 ----
 %macro ISR_NOERR 1
@@ -125,6 +126,7 @@ sysint:
     jmp isr_common
 
 ; ----------------------------------------------------------------------------
+global isr_common
 isr_common:
     push rax
     push rcx
@@ -147,6 +149,14 @@ isr_common:
     and rsp, -16                        ; SysV ABI: call 前 rsp 须 16 字节对齐
     call isr_handler
     mov rsp, rbx                        ; 恢复到 regs 起始
+
+    ; 调度器请求切换: 改用另一线程保存的同样格式的帧
+    mov rax, [rel sched_next_sp]
+    test rax, rax
+    jz .no_switch
+    mov rsp, rax
+    mov qword [rel sched_next_sp], 0
+.no_switch:
 
     pop r15
     pop r14

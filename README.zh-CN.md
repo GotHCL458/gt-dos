@@ -175,7 +175,7 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 - `\SDK\` 提供明文只读 SDK：`TC.H`、`STRING.H`、`STDLIB.H`、`CTYPE.H`、`STDIO.H`、
   `STDARG.H`、`NET.H`、
   `STRING.C`、`STDLIB.C`、`CTYPE.C`、`STDIO.C`、`NET.C`、`DEMO.MD`、`HELLO.C`、
-  `HELLO.S`、`FIB.C`、`README.TXT`；
+  `HELLO.S`、`FIB.C`、`THREAD.C`、`README.TXT`；
   配合 `PUT` 与 `APPEND` 可在系统内逐行编写源码
 - 程序布局：代码 128KB 位于 `0x600000`，数据 128KB 位于 `0x620000`
   （全局 64KB + 字符串池 64KB）
@@ -191,6 +191,19 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
   支持 `je/jne/jl/jle/jg/jge/jb/jbe/ja/jae/js/jns` 等条件跳转（rel32）
 - 入口为代码偏移 0；通过 `INT 0x21`（`rax` = 调用号）访问内核，
   `rdi`=退出码、`rax=0` 调用 `SYS_EXIT`；`\SDK\HELLO.S` 为示例
+
+**多线程**
+- 轮转调度: 主线程 + 最多 7 个子线程，每个线程独立 8KB 栈；100Hz 定时器
+  按 5 tick（约 50ms）时间片抢占，也可主动让出（TC `yield()` / `INT 0x2F`）
+- 线程运行在 ring0、共享程序地址空间与全局变量；系统调用执行期间不抢占，
+  因此控制台输出、文件与网络调用保持原子性
+- TC 内建：`thread_create(fn, arg)` → tid（51）、`yield()`（52）、
+  `thread_exit(code)`（53）、`thread_join(tid)`（54）、`gettid()`（55）；
+  `\SDK\THREAD.C` 为示例，Shell 的 `THREADS` 可查看线程表
+- 线程入口按 TC 调用约定接收参数（参数在栈上）；子线程调用 `exit()` 只结束
+  自身，程序退出时内核自动回收其创建的所有线程
+- 限制：无优先级/睡眠等待队列，`thread_join` 以让出方式轮询；线程共享
+  malloc 堆且无锁，需自行避免数据竞争
 
 **富文本与编辑器**
 - `CAT [-n] <文件...>` 依次显示多个文件；`-n` 连续编号

@@ -12,8 +12,8 @@ static u32 tick_hz = 100;
 
 static void timer_irq(struct regs *r)
 {
-    (void)r;
     ticks++;
+    sched_tick(r);                  /* 时间片轮转/抢占 */
 }
 
 void timer_init(u32 hz)

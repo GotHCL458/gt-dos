@@ -20,7 +20,7 @@
 #include "gt.h"
 
 #define AS_CODE_MAX  0x20000            /* 代码窗口 128KB */
-#define AS_DATA_MAX  0x20000            /* 数据窗口 128KB */
+#define AS_DATA_MAX  0x10000            /* 数据区 (输出到 0x620000 起) */
 #define AS_CODE_BASE 0x600000ULL
 #define AS_DATA_BASE 0x620000ULL
 

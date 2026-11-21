@@ -1145,6 +1145,12 @@ static void cmd_tasks(void)
     task_dump();
 }
 
+/* THREADS: 当前线程表 (主线程 + 程序创建的线程) */
+static void cmd_threads(void)
+{
+    sched_dump();
+}
+
 /* 系统服务是 \GT-DOS\SERVICES 下的 .gtp 程序, 以 SYS 任务身份运行且受保护 */
 static void cmd_service(int argc, char **argv)
 {
@@ -1894,6 +1900,8 @@ static void execute(char *line)
         cmd_http(argc, argv);
     } else if (!strcasecmp(cmd, "tasks") || !strcasecmp(cmd, "ps")) {
         cmd_tasks();
+    } else if (!strcasecmp(cmd, "threads")) {
+        cmd_threads();
     } else if (!strcasecmp(cmd, "service") || !strcasecmp(cmd, "services")) {
         cmd_service(argc, argv);
     } else if (!strcasecmp(cmd, "tc")) {

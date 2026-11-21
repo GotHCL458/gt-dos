@@ -330,6 +330,89 @@ def main():
     check("asm SDK hello.s runs", vm.expect("Hello from ASM!", 4000),
           vm.buf[-300:])
 
+    # 多线程: create / yield / join 与共享全局变量
+    vm.buf = ""
+    th_src = [
+        "#include <stdio.h>",
+        "int g;",
+        "int worker(int id) {",
+        "int i;",
+        "for (i = 0; i < 3; i++) {",
+        "g = g + 1;",
+        "print_int(gettid());",
+        "putc(' ');",
+        "yield();",
+        "}",
+        "return id * 10;",
+        "}",
+        "int main(void) {",
+        "int t1 = thread_create(worker, 1);",
+        "int t2 = thread_create(worker, 2);",
+        'printf("tids=%d,%d main=%d\\n", t1, t2, gettid());',
+        "int r1 = thread_join(t1);",
+        "int r2 = thread_join(t2);",
+        'printf("join=%d,%d g=%d\\n", r1, r2, g);',
+        "return 0;",
+        "}",
+    ]
+    vm.cmd(f"put th.c {th_src[0]}", 600)
+    for line in th_src[1:]:
+        vm.cmd(f"append th.c {line}", 450)
+    vm.cmd("tc th.c", 2000)
+    check("thread program compiles", vm.expect("Compiled ", 8000),
+          vm.buf[-300:])
+    vm.cmd("run th.gtp", 2000)
+    check("thread tids", vm.expect("tids=2,3 main=1", 8000), vm.buf[-500:])
+    check("thread round-robin output", vm.expect("2 3 2 3 2 3", 8000),
+          vm.buf[-500:])
+    check("thread join/exit codes", vm.expect("join=10,20 g=6", 8000),
+          vm.buf[-500:])
+    check("thread program exit", vm.expect("exited with code 0", 3000),
+          vm.buf[-300:])
+
+    # 定时器抢占: 子线程不让出, 主线程忙等也能被切换
+    vm.buf = ""
+    pre_src = [
+        "#include <stdio.h>",
+        "int flag;",
+        "int spin(int x) {",
+        "int i;",
+        "for (i = 0; i < 3000000; i++) {",
+        "if (i == 2999999) flag = 1;",
+        "}",
+        "return 7;",
+        "}",
+        "int main(void) {",
+        "int t = thread_create(spin, 0);",
+        "int w = 0;",
+        "while (!flag) w = w + 1;",
+        "int r = thread_join(t);",
+        'printf("preempt=%d r=%d\\n", w > 0 ? 1 : 0, r);',
+        "return 0;",
+        "}",
+    ]
+    vm.cmd(f"put pre.c {pre_src[0]}", 600)
+    for line in pre_src[1:]:
+        vm.cmd(f"append pre.c {line}", 450)
+    vm.cmd("tc pre.c", 2000)
+    check("preempt program compiles", vm.expect("Compiled ", 8000),
+          vm.buf[-300:])
+    vm.cmd("run pre.gtp", 2000)
+    check("timer preemption", vm.expect("preempt=1 r=7", 15000),
+          vm.buf[-500:])
+
+    vm.buf = ""
+    vm.cmd("threads", 800)
+    check("threads command", vm.expect("main", 3000), vm.buf[-300:])
+
+    vm.buf = ""
+    vm.cmd("tc sdk\\thread.c", 2000)
+    check("SDK THREAD.C compiles", vm.expect("Compiled ", 8000),
+          vm.buf[-300:])
+    vm.cmd("run thread.gtp", 2000)
+    check("SDK THREAD.C runs", vm.expect("join 10 20 counter 6", 8000),
+          vm.buf[-500:])
+
     # 未 include 时不编入库: strlen 应为未定义
     vm.buf = ""
     vm.cmd("put n.c int main(void){")

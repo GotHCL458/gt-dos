@@ -423,9 +423,30 @@ void syscall_handle(struct regs *r)
         r->rax = 0;
         break;
     }
+    case SYS_THREAD_CREATE:
+        r->rax = (u64)thread_create((thread_fn_t)r->rdi, (void *)r->rsi);
+        break;
+    case SYS_YIELD:
+        __asm__ __volatile__("int $0x2f" ::: "memory");
+        r->rax = 0;
+        break;
+    case SYS_THREAD_EXIT:
+        thread_exit_current((int)r->rdi);   /* 不返回 */
+        break;
+    case SYS_THREAD_JOIN:
+        r->rax = (u64)thread_join((int)r->rdi);
+        break;
+    case SYS_GETTID:
+        r->rax = (u64)sched_current_id();
+        break;
     case SYS_EXIT:
-        if (exec_is_active()) exec_exit((int)r->rdi);
-        r->rax = (u64)-1;
+        if (!exec_is_active()) { r->rax = (u64)-1; break; }
+        if (!sched_current_is_main()) {
+            thread_exit_current((int)r->rdi);   /* 子线程退出, 不结束程序 */
+            break;
+        }
+        sched_syscall_exit();                   /* exec_exit 不返回, 先释放调度锁 */
+        exec_exit((int)r->rdi);
         break;
     default:
         r->rax = (u64)-1;
