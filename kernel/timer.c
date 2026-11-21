@@ -33,6 +33,7 @@ void timer_init(u32 hz)
 }
 
 u32 timer_ticks(void) { return ticks; }
+u32 timer_hz(void) { return tick_hz; }
 
 u32 timer_uptime_ms(void)
 {

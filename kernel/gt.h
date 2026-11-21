@@ -500,7 +500,9 @@ enum {
     SYS_ISADMIN = 47, SYS_VERSION = 48, SYS_UNIXTIME = 49,
     SYS_RICH = 50,
     SYS_THREAD_CREATE = 51, SYS_YIELD = 52, SYS_THREAD_EXIT = 53,
-    SYS_THREAD_JOIN = 54, SYS_GETTID = 55
+    SYS_THREAD_JOIN = 54, SYS_GETTID = 55,
+    SYS_MUTEX_CREATE = 56, SYS_MUTEX_LOCK = 57, SYS_MUTEX_UNLOCK = 58,
+    SYS_THREAD_DETACH = 59
 };
 void syscall_handle(struct regs *r);    /* 由 isr_handler 分派 */
 
@@ -545,8 +547,14 @@ int  sched_current_id(void);
 bool sched_current_is_main(void);
 int  thread_create(thread_fn_t fn, void *arg);   /* 返回 tid, <0 失败 */
 int  thread_join(int tid);                       /* 等待并取回退出码 */
+int  thread_detach(int tid);                     /* 分离: 退出即回收 */
+void thread_yield(void);                          /* 让出一个时间片 */
+void thread_sleep_ms(u32 ms);                     /* 只阻塞当前线程 */
 void thread_exit_current(int code);               /* 当前线程退出(不返回) */
 void thread_reap_all(void);                       /* 程序结束时回收用户线程 */
+int  mutex_create(void);                          /* 互斥量: 返回 id */
+int  mutex_lock(int id);                          /* 阻塞直到加锁 */
+int  mutex_unlock(int id);
 void sched_dump(void);
 
 /* ---------------------------------------------------- 共享库 (.gtl) */
@@ -625,6 +633,7 @@ void shell_wheel_cb(int delta);      /* 滚轮回调: 正=向上看历史 */
 /* ---------------------------------------------------------------- 定时器 */
 void timer_init(u32 hz);
 u32  timer_ticks(void);
+u32  timer_hz(void);
 u32  timer_uptime_ms(void);
 void timer_sleep_ms(u32 ms);
 

@@ -4,12 +4,15 @@
 #include <stdio.h>
 
 int counter;
+int lock_id;
 
 int worker(int id)
 {
     int i;
     for (i = 0; i < 3; i++) {
+        mutex_lock(lock_id);
         counter = counter + 1;
+        mutex_unlock(lock_id);
         print_int(gettid());
         putc(' ');
         yield();
@@ -19,6 +22,7 @@ int worker(int id)
 
 int main(void)
 {
+    lock_id = mutex_create();
     int a = thread_create(worker, 1);
     int b = thread_create(worker, 2);
     printf("threads %d %d main %d\n", a, b, gettid());

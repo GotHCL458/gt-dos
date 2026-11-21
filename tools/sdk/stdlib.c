@@ -2,16 +2,24 @@
 
 char __heap[16384];
 int  __heap_used = 0;
+int  __heap_mx = 0;                     /* 惰性创建的多线程堆锁 */
 
 char *malloc(int n)
 {
+    char *p = 0;
     if (n <= 0)
         return 0;
+    if (__heap_mx == 0)
+        __heap_mx = mutex_create();
+    if (__heap_mx > 0)
+        mutex_lock(__heap_mx);
     __heap_used = (__heap_used + 7) & ~7;
-    if (__heap_used + n > 16384)
-        return 0;
-    char *p = __heap + __heap_used;
-    __heap_used = __heap_used + n;
+    if (__heap_used + n <= 16384) {
+        p = __heap + __heap_used;
+        __heap_used = __heap_used + n;
+    }
+    if (__heap_mx > 0)
+        mutex_unlock(__heap_mx);
     return p;
 }
 

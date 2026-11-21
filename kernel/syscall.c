@@ -314,10 +314,7 @@ void syscall_handle(struct regs *r)
         break;
     }
     case SYS_SLEEP:
-        /* 中断门进入时 IF=0, 而 timer_sleep_ms 依赖 hlt 被时钟中断唤醒 */
-        cpu_sti();
-        timer_sleep_ms((u32)r->rdi);
-        cpu_cli();
+        thread_sleep_ms((u32)r->rdi);   /* 只阻塞当前线程 */
         r->rax = 0;
         break;
     case SYS_LIBLOAD:
@@ -427,7 +424,7 @@ void syscall_handle(struct regs *r)
         r->rax = (u64)thread_create((thread_fn_t)r->rdi, (void *)r->rsi);
         break;
     case SYS_YIELD:
-        __asm__ __volatile__("int $0x2f" ::: "memory");
+        thread_yield();
         r->rax = 0;
         break;
     case SYS_THREAD_EXIT:
@@ -438,6 +435,18 @@ void syscall_handle(struct regs *r)
         break;
     case SYS_GETTID:
         r->rax = (u64)sched_current_id();
+        break;
+    case SYS_MUTEX_CREATE:
+        r->rax = (u64)mutex_create();
+        break;
+    case SYS_MUTEX_LOCK:
+        r->rax = (u64)mutex_lock((int)r->rdi);
+        break;
+    case SYS_MUTEX_UNLOCK:
+        r->rax = (u64)mutex_unlock((int)r->rdi);
+        break;
+    case SYS_THREAD_DETACH:
+        r->rax = (u64)thread_detach((int)r->rdi);
         break;
     case SYS_EXIT:
         if (!exec_is_active()) { r->rax = (u64)-1; break; }

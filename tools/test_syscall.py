@@ -413,6 +413,60 @@ def main():
     check("SDK THREAD.C runs", vm.expect("join 10 20 counter 6", 8000),
           vm.buf[-500:])
 
+    # 互斥量 / 阻塞 join / 睡眠 / detach
+    vm.buf = ""
+    mt_src = [
+        "#include <stdio.h>",
+        "int c;",
+        "int m;",
+        "int flag;",
+        "int dflag;",
+        "int adder(int n) {",
+        "int i;",
+        "for (i = 0; i < n; i++) {",
+        "mutex_lock(m);",
+        "c = c + 1;",
+        "mutex_unlock(m);",
+        "}",
+        "return n;",
+        "}",
+        "int setf(int x) { flag = 1; return 5; }",
+        "int setd(int x) { dflag = 1; return 9; }",
+        "int main(void) {",
+        "int r1; int r2; int ts; int td;",
+        "m = mutex_create();",
+        "int t1 = thread_create(adder, 300);",
+        "int t2 = thread_create(adder, 300);",
+        "r1 = thread_join(t1);",
+        "r2 = thread_join(t2);",
+        'printf("mutex=%d r=%d,%d\\n", c, r1, r2);',
+        "ts = thread_create(setf, 0);",
+        "sleep(120);",
+        'printf("sleepflag=%d\\n", flag);',
+        'printf("sleepjoin=%d\\n", thread_join(ts));',
+        "td = thread_create(setd, 0);",
+        "thread_detach(td);",
+        "sleep(120);",
+        'printf("detach=%d join=%d\\n", dflag, thread_join(td));',
+        "return 0;",
+        "}",
+    ]
+    vm.cmd(f"put mt.c {mt_src[0]}", 600)
+    for line in mt_src[1:]:
+        vm.cmd(f"append mt.c {line}", 450)
+    vm.cmd("tc mt.c", 2000)
+    check("mutex/sleep program compiles", vm.expect("Compiled ", 8000),
+          vm.buf[-300:])
+    vm.cmd("run mt.gtp", 2000)
+    check("mutex protects counter", vm.expect("mutex=600 r=300,300", 8000),
+          vm.buf[-600:])
+    check("sleep lets other thread run", vm.expect("sleepflag=1", 8000),
+          vm.buf[-600:])
+    check("blocking join returns code", vm.expect("sleepjoin=5", 8000),
+          vm.buf[-600:])
+    check("detach then join fails", vm.expect("detach=1 join=-1", 8000),
+          vm.buf[-600:])
+
     # 未 include 时不编入库: strlen 应为未定义
     vm.buf = ""
     vm.cmd("put n.c int main(void){")

@@ -195,15 +195,21 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 **多线程**
 - 轮转调度: 主线程 + 最多 7 个子线程，每个线程独立 8KB 栈；100Hz 定时器
   按 5 tick（约 50ms）时间片抢占，也可主动让出（TC `yield()` / `INT 0x2F`）
+- 阻塞等待：`thread_join(tid)`、`mutex_lock(id)`、`sleep(ms)` 会把线程置为
+  BLOCKED 并切换；线程退出/解锁唤醒等待者，定时器负责睡眠到期唤醒
+- 互斥量（内核对象，最多 16 个）：`mutex_create()`、`mutex_lock(id)`、
+  `mutex_unlock(id)`；持有者退出时自动释放并唤醒下一个等待者；
+  `stdlib` 的 malloc 已用互斥量保护，可在多线程中共用堆
 - 线程运行在 ring0、共享程序地址空间与全局变量；系统调用执行期间不抢占，
   因此控制台输出、文件与网络调用保持原子性
-- TC 内建：`thread_create(fn, arg)` → tid（51）、`yield()`（52）、
-  `thread_exit(code)`（53）、`thread_join(tid)`（54）、`gettid()`（55）；
+- TC 内建：`thread_create(fn, arg)`→tid（51）、`yield()`（52）、
+  `thread_exit(code)`（53）、`thread_join(tid)`（54）、`gettid()`（55）、
+  `mutex_create/lock/unlock`（56–58）、`thread_detach(tid)`（59）；
   `\SDK\THREAD.C` 为示例，Shell 的 `THREADS` 可查看线程表
 - 线程入口按 TC 调用约定接收参数（参数在栈上）；子线程调用 `exit()` 只结束
-  自身，程序退出时内核自动回收其创建的所有线程
-- 限制：无优先级/睡眠等待队列，`thread_join` 以让出方式轮询；线程共享
-  malloc 堆且无锁，需自行避免数据竞争
+  自身，程序退出时内核自动回收其创建的所有线程；`thread_detach` 后无需 join
+- 限制：无优先级与条件变量；每线程栈固定 8KB；线程共享地址空间（ring0，
+  无隔离），跨线程共享数据请使用互斥量
 
 **富文本与编辑器**
 - `CAT [-n] <文件...>` 依次显示多个文件；`-n` 连续编号
@@ -423,7 +429,7 @@ build.py             构建脚本与镜像组装
 
 ## 说明与限制
 
-- 内核目前为 545 扇区（278,848 字节，含 48 字节 `GTK1` 尾部），构建上限 640 扇区
+- 内核目前为 553 扇区（282,944 字节，含 48 字节 `GTK1` 尾部），构建上限 640 扇区
   （320KB），加载区间为 `0x10000` 到 `0x60000`；链接脚本同时断言
   `.bss <= 0xA0000` 与 `.highbss <= LIB_BASE`。
 - GDT 在低端内存（0x6800）由入口代码构造，而非放在 `.data`：CPU 装载段寄存器

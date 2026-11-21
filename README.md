@@ -215,17 +215,25 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
 - Round-robin scheduler: the main thread plus up to 7 children, each with its
   own 8 KB stack; the 100 Hz timer preempts every 5 ticks (≈50 ms) and threads
   may also yield (TC `yield()` / `INT 0x2F`)
+- Blocking waits: `thread_join(tid)`, `mutex_lock(id)` and `sleep(ms)` put the
+  caller in BLOCKED state; exit/unlock wake the waiters and the timer handles
+  sleep deadlines
+- Kernel mutex objects (up to 16): `mutex_create()`, `mutex_lock(id)`,
+  `mutex_unlock(id)`; a mutex owned by an exiting thread is released and its
+  next waiter woken. The `stdlib` malloc heap is mutex-protected for threads
 - Threads run in ring0 and share the program address space and globals; timer
   preemption is disabled while a system call runs, so console, file and network
   calls stay atomic
 - TC builtins: `thread_create(fn, arg)` → tid (51), `yield()` (52),
-  `thread_exit(code)` (53), `thread_join(tid)` (54), `gettid()` (55);
+  `thread_exit(code)` (53), `thread_join(tid)` (54), `gettid()` (55),
+  `mutex_create/lock/unlock` (56–58) and `thread_detach(tid)` (59);
   see `\SDK\THREAD.C`; the shell's `THREADS` command dumps the thread table
 - Entry functions receive the argument with TC's calling convention (on the
   stack); `exit()` in a child only ends that thread, and the kernel reaps all
-  threads a program created when it exits
-- Limits: no priorities or sleep queues (`thread_join` polls by yielding), and
-  the malloc heap is shared without locking, so avoid data races yourself
+  threads a program created when it exits; detached threads need no join
+- Limits: no priorities or condition variables, fixed 8 KB stacks, and threads
+  share one address space (ring0, no isolation) — protect shared data with
+  mutexes
 
 **Rich text and editor**
 - `CAT [-n] <file...>` concatenates one or more files; `-n` adds continuous line numbers
@@ -461,7 +469,7 @@ live in stack slots, no register allocation).
 
 ## Notes and Limitations
 
-- The kernel currently fits in 545 sectors (278,848 bytes including the 48-byte `GTK1`
+- The kernel currently fits in 553 sectors (282,944 bytes including the 48-byte `GTK1`
   trailer); the build cap is 640 sectors (320 KB), loaded between `0x10000` and `0x60000`.
   The linker also asserts `.bss <= 0xA0000` and `.highbss <= LIB_BASE`.
 - The GDT is built in low memory (0x6800) rather than `.data`: loading a segment register

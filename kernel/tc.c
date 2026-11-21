@@ -3581,6 +3581,8 @@ static void gen_call(const char *name)
         { "thread_create", 51, 2 }, { "yield", 52, 0 },
         { "thread_exit", 53, 1 }, { "thread_join", 54, 1 },
         { "gettid", 55, 0 },
+        { "mutex_create", 56, 0 }, { "mutex_lock", 57, 1 },
+        { "mutex_unlock", 58, 1 }, { "thread_detach", 59, 1 },
         { NULL, 0, 0 }
     };
     int nr = -1;

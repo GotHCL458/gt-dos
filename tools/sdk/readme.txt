@@ -80,6 +80,7 @@ uptime, open, read, write, close, seek, stat, statx, reboot, shutdown,
 cls, color, screen, getcwd, hostname, username, isadmin, version,
 unixtime, rich, unlink, mkdir, rmdir,
 thread_create(fn,arg), yield, thread_exit(code), thread_join(tid), gettid,
+mutex_create, mutex_lock(id), mutex_unlock(id), thread_detach(tid),
 tcp_connect/send/recv/close, udp_open/sendto/recvfrom/close, icmp_err,
 dns, dhcp, tftp_get, http_get.
 
