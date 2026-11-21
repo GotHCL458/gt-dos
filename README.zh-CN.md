@@ -122,14 +122,24 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 - 支持：`int`/`char`/指针、1–4 维数组、`struct`/`union`（字段、嵌套结构、`.` 与 `->`）、
   函数（最多 6 参数、递归、原型）、`if/else`、`while`、`for`、
   `switch/case/default`（可穿透）、`break`/`continue`/`return`、完整整数表达式与
-  `?:`、前置/后置 `++`/`--`、复合赋值、字符串字面量、全局/局部花括号与字符串初始化
-- 不支持：浮点、可变参数函数、函数指针、`typedef`/`enum`/`sizeof`、强制类型转换与位域；
-  预处理仅跳过指令行
-- 内置函数（`\SDK\TC.H`）：`putc`、`print`、`puts`、`print_int`、`getc`、`exit`、
+  `?:`、前置/后置 `++`/`--`、复合赋值、`typedef`、`enum`、`sizeof`、强制类型转换、
+  字符串字面量、全局/局部花括号与字符串初始化
+- `#include <...>` / `#include "..."` 在编译期展开（依次查找源文件目录、`\SDK`、
+  `\GT-DOS\INCLUDE`），每个文件只包含一次；标准库模块（string/stdlib/ctype/stdio）
+  **只有对应头文件被 include 时才编入程序**，未使用的库不会增大 `out.gtp`
+- 标准库：`strlen strcpy strncpy strcmp strncmp strcat strchr strrchr`
+  `memcpy memmove memset memcmp`、`malloc calloc free abs atoi rand srand`（16KB 堆）、
+  `isdigit isalpha isalnum isspace isupper islower toupper tolower`、
+  `printf putchar puts getchar`；`printf` 由编译器生成 SYS_PRINTF，
+  支持 `%d %i %u %x %X %c %s %p %%`，最多 5 个可变参数
+- 不支持：浮点、用户自定义可变参数函数、函数指针与位域；`#define/#if` 仍跳过
+  （头文件保护由 include-once 实现）
+- 内置函数（`\SDK\TC.H`）：`putc`、`print`、`print_int`、`getc`、`exit`、
   `sleep`、`uptime`、`open`、`read`、`write`、`close`、`seek`、`stat`、`statx`、
   `reboot`、`shutdown`；`\SDK\NET.H` 另含 `ip4`、`tcp_connect`、`tcp_send`、
   `tcp_recv`、`tcp_close`、`dns`、`tftp_get`、`http_get`
-- `\SDK\` 提供明文只读 SDK：`TC.H`、`HELLO.C`、`FIB.C`、`README.TXT`；
+- `\SDK\` 提供明文只读 SDK：`TC.H`、`STRING.H`、`STDLIB.H`、`CTYPE.H`、`STDIO.H`、
+  `STRING.C`、`STDLIB.C`、`CTYPE.C`、`STDIO.C`、`HELLO.C`、`FIB.C`、`README.TXT`；
   配合 `PUT` 与 `APPEND` 可在系统内逐行编写源码
 - 程序布局：代码 128KB 位于 `0x600000`，数据 128KB 位于 `0x620000`
   （全局 64KB + 字符串池 64KB）
@@ -283,7 +293,7 @@ kernel/
   exec.c             RUN 程序加载器 (把 .gtp 载入 PROG_BASE, 校验 CRC)
   protect.c          GTK1 内核容器、4KB 写保护、自检与看门狗
   gtlib.c            .gtl 共享库加载器 (头部/导出表由 Rust 解析)
-  tc.c               内置 C 编译器 (数组/结构体/switch/三目, x86-64)
+  tc.c               内置 C 编译器 (数组/结构体/typedef/#include, x86-64)
   net.c              RTL8139 驱动 + ARP/IPv4/ICMP/UDP/DHCP
   tcp.c              TCP socket (握手/收发/重传/挥手)
   netapp.c           DNS 解析、TFTP 客户端、HTTP GET 下载
@@ -320,8 +330,8 @@ build.py             构建脚本与镜像组装
 
 ## 说明与限制
 
-- 内核目前为 449 扇区（229,696 字节，含 48 字节 `GTK1` 尾部），加载区间为
-  `0x10000` 到 `0x80000`（余量 63 扇区）。若要继续增大，需要调整加载地址。
+- 内核目前为 481 扇区（246,080 字节，含 48 字节 `GTK1` 尾部），加载区间为
+  `0x10000` 到 `0x80000`（余量 31 扇区）。若要继续增大，需要调整加载地址。
 - GDT 在低端内存（0x6800）由入口代码构造，而非放在 `.data`：CPU 装载段寄存器
   会置位描述符的 accessed 位，否则会破坏内核哈希。
 - 启动哈希覆盖完整镜像（代码 + 只读数据 + 数据段）；运行时看门狗只覆盖不可变的
@@ -329,8 +339,9 @@ build.py             构建脚本与镜像组装
 - 大块零初始化缓冲（`font_buf`、码点表、后台缓冲）被放置在 1 MB 以上、
   标记为 `NOLOAD` 的 `.highbss` 段。若放在普通 `.bss` 中，会与 `0xA0000`
   处的 VGA 显存孔径重叠并破坏帧缓冲。
-- TC 已支持数组、结构体/联合、`switch`、`?:`、`++/--`；仍不支持浮点、可变参数、
-  函数指针、`typedef`/`enum`/`sizeof`。程序代码上限 128KB，数据上限 128KB
+- TC 已支持数组、结构体/联合、`switch`、`?:`、`++/--`、`typedef`/`enum`/`sizeof`
+  与强制转换；`#include` 会展开头文件并在需要时链接对应标准库模块。仍不支持浮点、
+  用户自定义可变参数、函数指针与位域。程序代码上限 128KB，数据上限 128KB
   （全局 64KB + 字符串 64KB）。
 - 内核 `.bss` 必须保持在 `0xA0000`（VGA 孔径）以下，`.highbss` 必须低于 `LIB_BASE`；
   链接脚本对两者都有断言，表过大时会直接构建失败。

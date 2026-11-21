@@ -131,15 +131,26 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
   structs, `.` and `->`), functions (up to 6 parameters, recursion, prototypes),
   `if/else`, `while`, `for`, `switch/case/default` (fallthrough), `break`/`continue`/
   `return`, full integer expressions with `?:`, prefix/postfix `++`/`--`, compound
-  assignments, string literals, and brace/string initializers for globals and locals
-- Not supported: floating point, variadic functions, function pointers,
-  `typedef`/`enum`/`sizeof`, casts and bitfields; the preprocessor only skips directives
-- Builtins (`\SDK\TC.H`): `putc`, `print`, `puts`, `print_int`, `getc`, `exit`, `sleep`,
+  assignments, `typedef`, `enum`, `sizeof`, casts, string literals, and brace/string
+  initializers for globals and locals
+- `#include <...>` / `#include "..."` is resolved at compile time (source directory,
+  `\SDK`, then `\GT-DOS\INCLUDE`); each file is included once. Standard modules
+  (`string/stdlib/ctype/stdio`) are compiled into the program **only when their header
+  is included**, so unused library code never bloats `out.gtp`
+- Standard library: `strlen strcpy strncpy strcmp strncmp strcat strchr strrchr`
+  `memcpy memmove memset memcmp`, `malloc calloc free abs atoi rand srand` (16 KB heap),
+  `isdigit isalpha isalnum isspace isupper islower toupper tolower`,
+  `printf putchar puts getchar`; `printf` is a compiler builtin (SYS_PRINTF) supporting
+  `%d %i %u %x %X %c %s %p %%` with up to 5 varargs
+- Not supported: floating point, user-defined variadic functions, function pointers and
+  bitfields; `#define/#if` are still skipped (include-once replaces header guards)
+- Builtins (`\SDK\TC.H`): `putc`, `print`, `print_int`, `getc`, `exit`, `sleep`,
   `uptime`, `open`, `read`, `write`, `close`, `seek`, `stat`, `statx`, `reboot`, `shutdown`;
   `\SDK\NET.H` adds `ip4`, `tcp_connect`, `tcp_send`, `tcp_recv`, `tcp_close`,
   `dns`, `tftp_get`, `http_get`
-- SDK at `\SDK\` (plain, read-only): `TC.H`, `HELLO.C`, `FIB.C`, `README.TXT`;
-  `PUT` + `APPEND` let you author sources line by line inside GT-DOS
+- SDK at `\SDK\` (plain, read-only): `TC.H`, `STRING.H`, `STDLIB.H`, `CTYPE.H`,
+  `STDIO.H`, `STRING.C`, `STDLIB.C`, `CTYPE.C`, `STDIO.C`, `HELLO.C`, `FIB.C`,
+  `README.TXT`; `PUT` + `APPEND` let you author sources line by line inside GT-DOS
 - Program layout: 128 KB code at `0x600000`, 128 KB data at `0x620000`
   (64 KB globals + 64 KB string pool)
 
@@ -303,7 +314,7 @@ kernel/
   exec.c             RUN program loader (loads a .gtp into PROG_BASE, checks CRC)
   protect.c          GTK1 kernel container, 4 KB write protection, self-check/watchdog
   gtlib.c            .gtl shared-library loader (Rust parses headers/exports)
-  tc.c               built-in C compiler (arrays/structs/switch/ternary, x86-64)
+  tc.c               built-in C compiler (arrays/structs/typedef/#include, x86-64)
   net.c              RTL8139 driver + ARP/IPv4(fragmentation)/ICMP/UDP/DHCP
   tcp.c              TCP sockets (handshake, OOO, fast retransmit, congestion, close)
   netapp.c           DNS resolver, TFTP client, HTTP GET downloader
@@ -340,8 +351,8 @@ assert on real boot output rather than on mocks.
 
 ## Notes and Limitations
 
-- The kernel currently fits in 449 sectors (229,696 bytes including the 48-byte `GTK1`
-  trailer), loaded between `0x10000` and `0x80000` (63 sectors of headroom). Growing past
+- The kernel currently fits in 481 sectors (246,080 bytes including the 48-byte `GTK1`
+  trailer), loaded between `0x10000` and `0x80000` (31 sectors of headroom). Growing past
   that window requires relocating the load address.
 - The GDT is built in low memory (0x6800) rather than `.data`: loading a segment register
   sets the descriptor's accessed bit, which would otherwise invalidate the kernel hash.
@@ -350,10 +361,11 @@ assert on real boot output rather than on mocks.
 - Large zero-initialised buffers (`font_buf`, the code page table, the back buffer) are placed in
   a `NOLOAD` `.highbss` section above 1 MB. If they were in ordinary `.bss` they would overlap the
   `0xA0000` VGA aperture and corrupt the framebuffer.
-- TC implements a practical C subset: arrays, structs/unions, `switch` and `?:`/`++`/`--`
-  are supported; floating point, variadic functions, function pointers and
-  `typedef`/`enum`/`sizeof` remain unsupported. Programs are limited to 128 KB of code and
-  128 KB of data (64 KB globals + 64 KB strings).
+- TC implements a practical C subset: arrays, structs/unions, `switch`, `?:`/`++`/`--`,
+  `typedef`/`enum`/`sizeof` and casts are supported; `#include` expands headers and links
+  the matching standard-library module on demand. Floating point, user-defined variadic
+  functions, function pointers and bitfields remain unsupported. Programs are limited to
+  128 KB of code and 128 KB of data (64 KB globals + 64 KB strings).
 - Kernel `.bss` must stay below `0xA0000` (the VGA aperture) and `.highbss` below
   `LIB_BASE`; the linker script asserts both bounds, so oversized tables fail the build.
 - Shell file commands (`TYPE`/`CP`/`MV`/`HEAD`/`WC`/`APPEND`) operate on files up to 64 KB.

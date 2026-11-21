@@ -166,6 +166,64 @@ def main():
     check("tc extended exit code", vm.expect("exited with code 0", 3000),
           vm.buf[-300:])
 
+    # 按需 #include: 头文件 + 标准库模块 (typedef/enum/sizeof/printf)
+    lib = [
+        "#include <tc.h>",
+        "#include <string.h>",
+        "#include <stdlib.h>",
+        "#include <stdio.h>",
+        "#include <ctype.h>",
+        "struct P { int x; int y; };",
+        "typedef struct P Point;",
+        "enum { BASE = 10, NEXT };",
+        "int main(void) {",
+        "char buf[32];",
+        'strcpy(buf, "Hello");',
+        'strcat(buf, " TC");',
+        'printf("%s len=%d\\n", buf, strlen(buf));',
+        'printf("atoi=%d abs=%d up=%c size=%d\\n",'
+        ' atoi("-42"), abs(-7), toupper(\'a\'), sizeof(Point));',
+        "Point p;",
+        "p.x = BASE;",
+        "p.y = NEXT;",
+        'printf("p=%d,%d isz=%d\\n", p.x, p.y, sizeof(int));',
+        "char *m = malloc(16);",
+        "memset(m, 'A', 15);",
+        "m[15] = 0;",
+        'printf("heap=%s\\n", m);',
+        "free(m);",
+        "int r = rand();",
+        'printf("rand_ok=%d\\n", r >= 0 ? 1 : 0);',
+        "return 0;",
+        "}",
+    ]
+    vm.buf = ""
+    vm.cmd(f"put lib.c {lib[0]}", 600)
+    for line in lib[1:]:
+        vm.cmd(f"append lib.c {line}", 450)
+    vm.cmd("tc lib.c", 3000)
+    check("tc compiles stdlib includes", vm.expect("Compiled ", 8000),
+          vm.buf[-500:])
+    vm.cmd("run lib.gtp", 2500)
+    check("tc printf/string", vm.expect("Hello TC len=8", 5000),
+          vm.buf[-500:])
+    check("tc ctype/stdlib/sizeof",
+          vm.expect("atoi=-42 abs=7 up=A size=16", 5000), vm.buf[-500:])
+    check("tc typedef/enum", vm.expect("p=10,11 isz=8", 5000), vm.buf[-500:])
+    check("tc malloc/memset", vm.expect("heap=AAAAAAAAAAAAAAA", 5000),
+          vm.buf[-500:])
+    check("tc rand", vm.expect("rand_ok=1", 5000), vm.buf[-500:])
+
+    # 未 include 时不编入库: strlen 应为未定义
+    vm.buf = ""
+    vm.cmd("put n.c int main(void){")
+    vm.cmd('append n.c char *s = "x";')
+    vm.cmd("append n.c return strlen(s);")
+    vm.cmd("append n.c }")
+    vm.cmd("tc n.c", 1500)
+    check("tc library is on-demand", vm.expect("undefined function", 6000),
+          vm.buf[-300:])
+
     vm.buf = ""
     vm.cmd("put t.c int main(void){")
     vm.cmd('append t.c print("PUT OK\\n");')

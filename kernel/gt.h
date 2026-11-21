@@ -324,7 +324,8 @@ bool kernel_protected_info(u32 *image_len, u32 *crc, u8 digest[32]);
 
 /* ------------------------------------------------- 内置 C 编译器 (TC) */
 #define TC_SRC_MAX 32768
-const u8  *tc_compile(const char *src, u32 len, u32 *out_len);
+const u8  *tc_compile(const char *src, u32 len, u32 *out_len,
+                      const char *path);
 const char *tc_error(void);
 
 /* ------------------------------------------------------- 网络 (TCP/IP) */
@@ -450,7 +451,7 @@ enum {
     SYS_TCP_ACCEPT = 27, SYS_DHCP = 28, SYS_DNS = 29,
     SYS_TFTP_GET = 30, SYS_HTTP_GET = 31,
     SYS_UDP_OPEN = 32, SYS_UDP_SENDTO = 33, SYS_UDP_RECVFROM = 34,
-    SYS_ICMP_ERR = 35, SYS_UDP_CLOSE = 36
+    SYS_ICMP_ERR = 35, SYS_UDP_CLOSE = 36, SYS_PRINTF = 37
 };
 void syscall_handle(struct regs *r);    /* 由 isr_handler 分派 */
 

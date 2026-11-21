@@ -165,6 +165,7 @@ CFLAGS = [
     "-Wextra",
     "-Wno-unused-parameter",
     "-I", "kernel",
+    "-I", os.path.join(ROOT, "build"),
     "-O2",
     "-g",
 ]
@@ -502,8 +503,44 @@ def make_hd_image(mbr, boot2, kernel, font, cpm, assets, services, mkfs_tool,
     return path
 
 
+TC_LIB_MODULES = [
+    ("string", "string.c"),
+    ("stdlib", "stdlib.c"),
+    ("ctype", "ctype.c"),
+    ("stdio", "stdio.c"),
+]
+
+
+def gen_tc_lib():
+    """把按模块拆分的 tools/sdk/*.c 转成 C 字符串头.
+
+    TC 在源文件 #include 对应头文件后, 才把该模块编入程序."""
+    parts = ["/* 自动生成: tools/sdk 下各模块 -> TC 按需编入的标准库源码 */",
+             "#ifndef GT_TC_LIB_H", "#define GT_TC_LIB_H"]
+    total = 0
+    for mod, fn in TC_LIB_MODULES:
+        path = os.path.join(ROOT, "tools", "sdk", fn)
+        if not os.path.isfile(path):
+            print(f"[!] 缺少 tools/sdk/{fn}")
+            sys.exit(1)
+        text = open(path, encoding="utf-8").read()
+        total += len(text)
+        lines = []
+        for line in text.splitlines():
+            esc = line.replace("\\", "\\\\").replace('"', '\\"')
+            lines.append('    "%s\\n"' % esc)
+        parts.append(f"static const char tc_lib_{mod}[] =\n" +
+                     "\n".join(lines) + ";")
+    parts.append("#endif")
+    with open(os.path.join(BUILD, "tc_lib.h"), "w",
+              encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(parts) + "\n")
+    print(f"==> 生成 TC 标准库 ({total} 字节, {len(TC_LIB_MODULES)} 个模块)")
+
+
 def build():
     os.makedirs(BUILD, exist_ok=True)
+    gen_tc_lib()
     mkfs_tool, mkfont_tool = build_rust_tools()
     print("==> 编译 MBR / stage2 (NASM, 16-bit)")
     mbr = build_mbr()

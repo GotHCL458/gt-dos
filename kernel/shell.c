@@ -664,7 +664,7 @@ static void cmd_tc(int argc, char **argv)
     srcbuf[got] = 0;
 
     u32 plen = 0;
-    const u8 *prog = tc_compile((const char *)srcbuf, got, &plen);
+    const u8 *prog = tc_compile((const char *)srcbuf, got, &plen, sa);
     if (!prog) {
         err("TC: %s\n", tc_error());
         return;

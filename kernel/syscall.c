@@ -2,6 +2,83 @@
    程序运行于 ring0, 本门是 API 入口而非权限边界; reboot/shutdown 需管理员. */
 #include "gt.h"
 
+/* ------------------------------------------- SYS_PRINTF: 小型格式化输出
+   rdi=fmt, rsi=可变参数个数, rdx=参数数组 (指向最后一个参数).
+   参数由 TC 在调用点压栈, 顺序为 args[0]=最后一个参数. 支持
+   %d %i %u %x %X %c %s %p %%; 宽度/精度修饰被忽略. */
+static void fmt_u64(u64 v, u32 base, bool upper)
+{
+    static const char lo[] = "0123456789abcdef";
+    static const char up[] = "0123456789ABCDEF";
+    const char *dig = upper ? up : lo;
+    char buf[24];
+    int n = 0;
+    if (v == 0) {
+        console_putc('0');
+        return;
+    }
+    while (v) {
+        buf[n++] = dig[v % base];
+        v /= base;
+    }
+    while (n)
+        console_putc(buf[--n]);
+}
+
+static void fmt_i64(i64 v)
+{
+    if (v < 0) {
+        console_putc('-');
+        fmt_u64((u64)(-(v + 1)) + 1u, 10, false);
+    } else {
+        fmt_u64((u64)v, 10, false);
+    }
+}
+
+static void fmt_printf(const char *fmt, int nargs, const u64 *args)
+{
+    int ai = nargs - 1;              /* args[nargs-1] 是第一个可变参数 */
+    for (const char *p = fmt; *p; p++) {
+        if (*p != '%') {
+            console_putc(*p);
+            continue;
+        }
+        p++;
+        if (*p == '%') {
+            console_putc('%');
+            continue;
+        }
+        while (*p >= '0' && *p <= '9')
+            p++;                     /* 跳过宽度 */
+        while (*p == 'l' || *p == 'h' || *p == 'z')
+            p++;                     /* 长度修饰: 统一按 64 位处理 */
+        u64 v = (ai >= 0) ? args[ai--] : 0;
+        switch (*p) {
+        case 'd':
+        case 'i': fmt_i64((i64)v); break;
+        case 'u': fmt_u64(v, 10, false); break;
+        case 'x': fmt_u64(v, 16, false); break;
+        case 'X': fmt_u64(v, 16, true); break;
+        case 'p':
+            console_puts("0x");
+            fmt_u64(v, 16, false);
+            break;
+        case 'c': console_putc((char)v); break;
+        case 's':
+            if (v) console_puts((const char *)v);
+            else console_puts("(null)");
+            break;
+        case 0:
+            return;
+        default:
+            console_putc('%');
+            console_putc(*p);
+            ai++;                    /* 未知格式不消耗参数 */
+            break;
+        }
+    }
+}
+
 void syscall_handle(struct regs *r)
 {
     u64 nr = r->rax;
@@ -174,6 +251,15 @@ void syscall_handle(struct regs *r)
         if (user_is_admin()) power_shutdown();
         r->rax = (u64)-1;
         break;
+    case SYS_PRINTF: {
+        int n = (int)r->rsi;
+        if (n < 0) n = 0;
+        if (n > 8) n = 8;
+        if (r->rdi)
+            fmt_printf((const char *)r->rdi, n, (const u64 *)r->rdx);
+        r->rax = 0;
+        break;
+    }
     case SYS_EXIT:
         if (exec_is_active()) exec_exit((int)r->rdi);
         r->rax = (u64)-1;

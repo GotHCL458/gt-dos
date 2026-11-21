@@ -14,6 +14,8 @@
    布局: 代码 128KB @0x600000, 数据 128KB @0x620000
          (全局 64KB, 字符串池 64KB). 数值一律按 64 位整数处理. */
 #include "gt.h"
+/* 内置标准库源码 (tools/sdk/libc.c -> build/tc_lib.h, 由 build.py 生成) */
+#include "tc_lib.h"
 
 #define TC_CODE_MAX  0x20000
 #define TC_DATA_GLOB 0x10000
@@ -34,6 +36,8 @@
 #define MAX_STRUCT 12
 #define MAX_FIELDS 16
 #define MAX_CASES 32
+#define MAX_TYPEDEF 32
+#define MAX_ENUM 64
 
 enum {
     T_EOF = 0, T_ID = 256, T_NUM, T_STR,
@@ -162,6 +166,34 @@ static int nloop;
 static struct swctx swstk[MAX_NEST];
 static int nsw;
 
+struct typedef_ent {
+    char name[32];
+    struct ctype type;
+};
+static struct typedef_ent typedefs[MAX_TYPEDEF];
+static int ntypedefs;
+
+struct enum_ent {
+    char name[32];
+    i64 val;
+};
+static struct enum_ent enums[MAX_ENUM];
+static int nenums;
+
+/* #include 处理: 最多 4 层, 每层 4KB; 标准库按包含的头文件按需编入 */
+#define TC_INC_MAX 4
+#define TC_INC_BUF 4096
+#define TC_INC_SEEN 16
+static char inc_buf[TC_INC_MAX][TC_INC_BUF] __attribute__((section(".highbss")));
+static const char *inc_ret_sp[TC_INC_MAX];
+static int inc_ret_line[TC_INC_MAX];
+static char inc_ret_dir[TC_INC_MAX][96];
+static int inc_depth;
+static char inc_cur_dir[96];
+static char inc_seen[TC_INC_SEEN][128];
+static int nseen;
+static bool want_lib_string, want_lib_stdlib, want_lib_ctype, want_lib_stdio;
+
 static u32 main_call_pos;
 static u32 locals_imm_pos;
 
@@ -177,6 +209,8 @@ struct ety {
 };
 
 static struct ety g_e;
+
+static bool parse_ctype(struct ctype *t);
 
 /* ------------------------------------------------------------------ 错误 */
 static void fail(const char *msg)
@@ -209,6 +243,159 @@ static void add_str_byte(u8 b)
     str_pool[str_used++] = b;
 }
 
+/* ------------------------------------------------------ #include 支持 */
+static void path_copy(char *d, const char *s, int cap)
+{
+    int i = 0;
+    while (s[i] && i < cap - 1) { d[i] = s[i]; i++; }
+    d[i] = 0;
+}
+
+static void dir_of(const char *path, char out[96])
+{
+    int last = -1;
+    for (int i = 0; path[i]; i++)
+        if (path[i] == '\\' || path[i] == '/')
+            last = i;
+    int n = last < 0 ? 0 : last;
+    if (n > 95) n = 95;
+    memcpy(out, path, (u32)n);
+    out[n] = 0;
+}
+
+static void join_path(char *out, int cap, const char *dir, const char *name)
+{
+    int k = 0;
+    if (dir && dir[0]) {
+        while (dir[k] && k < cap - 2) { out[k] = dir[k]; k++; }
+        if (k > 0 && out[k - 1] != '\\' && out[k - 1] != '/')
+            out[k++] = '\\';
+    }
+    int i = 0;
+    while (name[i] && k < cap - 1) out[k++] = name[i++];
+    out[k] = 0;
+}
+
+static void drive_path(char *out, int cap, const char *rel)
+{
+    int k = 0;
+    out[k++] = fat_drive();
+    out[k++] = ':';
+    int i = 0;
+    while (rel[i] && k < cap - 1) out[k++] = rel[i++];
+    out[k] = 0;
+}
+
+static bool path_seen(const char *p)
+{
+    for (int i = 0; i < nseen; i++)
+        if (!strcasecmp(inc_seen[i], p))
+            return true;
+    return false;
+}
+
+static void path_remember(const char *p)
+{
+    if (nseen >= TC_INC_SEEN)
+        return;
+    path_copy(inc_seen[nseen], p, 128);
+    nseen++;
+}
+
+static void mark_module(const char *name)
+{
+    const char *b = name;
+    for (const char *p = name; *p; p++)
+        if (*p == '\\' || *p == '/')
+            b = p + 1;
+    if (!strcasecmp(b, "string.h")) want_lib_string = true;
+    else if (!strcasecmp(b, "stdlib.h")) want_lib_stdlib = true;
+    else if (!strcasecmp(b, "ctype.h")) want_lib_ctype = true;
+    else if (!strcasecmp(b, "stdio.h")) want_lib_stdio = true;
+}
+
+/* 读入头文件并压栈; 找不到返回 false */
+static bool do_include(const char *name, bool quoted)
+{
+    if (inc_depth >= TC_INC_MAX) {
+        fail("include nested too deep");
+        return true;
+    }
+    char cand[160];
+    for (int pass = 0; pass < 3; pass++) {
+        if (pass == 0) {
+            if (!quoted)
+                continue;
+            join_path(cand, sizeof(cand), inc_cur_dir, name);
+        } else if (pass == 1) {
+            char rel[144];
+            int k = 0;
+            const char *pre = "\\SDK\\";
+            while (*pre && k < 130) rel[k++] = *pre++;
+            int i = 0;
+            while (name[i] && k < 143) rel[k++] = name[i++];
+            rel[k] = 0;
+            drive_path(cand, sizeof(cand), rel);
+        } else {
+            char rel[144];
+            int k = 0;
+            const char *pre = "\\GT-DOS\\INCLUDE\\";
+            while (*pre && k < 120) rel[k++] = *pre++;
+            int i = 0;
+            while (name[i] && k < 143) rel[k++] = name[i++];
+            rel[k] = 0;
+            drive_path(cand, sizeof(cand), rel);
+        }
+        if (path_seen(cand))
+            return true;
+
+        u32 got = 0;
+        if (fat_read_file(cand, inc_buf[inc_depth], TC_INC_BUF - 1, &got) &&
+            got > 0) {
+            inc_buf[inc_depth][got] = 0;
+            path_remember(cand);
+            inc_ret_sp[inc_depth] = sp;
+            inc_ret_line[inc_depth] = line_no;
+            path_copy(inc_ret_dir[inc_depth], inc_cur_dir, 96);
+            char nd[96];
+            dir_of(cand, nd);
+            path_copy(inc_cur_dir, nd, 96);
+            sp = inc_buf[inc_depth];
+            line_no = 1;
+            inc_depth++;
+            mark_module(name);
+            return true;
+        }
+    }
+    return false;
+}
+
+/* 取 "#include" 之后的名字: <name> 或 "name" */
+static bool parse_inc_name(char *out, int cap, bool *quoted)
+{
+    while (*sp == ' ' || *sp == '\t')
+        sp++;
+    char close;
+    if (*sp == '"') {
+        *quoted = true;
+        close = '"';
+        sp++;
+    } else if (*sp == '<') {
+        *quoted = false;
+        close = '>';
+        sp++;
+    } else {
+        return false;
+    }
+    int k = 0;
+    while (*sp && *sp != close && *sp != '\n' && k < cap - 1)
+        out[k++] = *sp++;
+    out[k] = 0;
+    if (*sp == close)
+        sp++;
+    return k > 0;
+}
+
 static struct token scan(void)
 {
     struct token t;
@@ -216,6 +403,14 @@ static struct token scan(void)
     t.line = line_no;
 
     for (;;) {
+        /* 头文件结束: 回到上一层源文件 */
+        if (!*sp && inc_depth > 0) {
+            inc_depth--;
+            sp = inc_ret_sp[inc_depth];
+            line_no = inc_ret_line[inc_depth];
+            path_copy(inc_cur_dir, inc_ret_dir[inc_depth], 96);
+            continue;
+        }
         char c = *sp;
         if (!c) { t.t = T_EOF; return t; }
         if (c == ' ' || c == '\t' || c == '\r') { sp++; continue; }
@@ -233,7 +428,27 @@ static struct token scan(void)
             if (*sp) sp += 2;
             continue;
         }
-        if (c == '#') {                     /* 预处理指令: 跳过整行 */
+        if (c == '#') {
+            sp++;
+            while (*sp == ' ' || *sp == '\t')
+                sp++;
+            /* 仅处理 #include; 其余指令跳过整行 */
+            if (sp[0] == 'i' && sp[1] == 'n' && sp[2] == 'c' &&
+                sp[3] == 'l' && sp[4] == 'u' && sp[5] == 'd' &&
+                sp[6] == 'e' &&
+                !((sp[7] >= 'a' && sp[7] <= 'z') ||
+                  (sp[7] >= 'A' && sp[7] <= 'Z') ||
+                  (sp[7] >= '0' && sp[7] <= '9') || sp[7] == '_')) {
+                sp += 7;
+                char nm[120];
+                bool quoted = false;
+                if (!parse_inc_name(nm, sizeof(nm), &quoted) ||
+                    !do_include(nm, quoted)) {
+                    fail("include not found");
+                }
+                if (failed) { t.t = T_EOF; return t; }
+                continue;
+            }
             while (*sp && *sp != '\n') sp++;
             continue;
         }
@@ -702,6 +917,64 @@ static struct field *find_field(int sid, const char *name)
     return 0;
 }
 
+/* ---------------------------------------------------------- typedef/enum */
+static int find_typedef(const char *name)
+{
+    for (int i = 0; i < ntypedefs; i++)
+        if (!strcmp(typedefs[i].name, name))
+            return i;
+    return -1;
+}
+
+static bool is_typedef_name(const char *name)
+{
+    return find_typedef(name) >= 0;
+}
+
+static bool find_enum(const char *name, i64 *out)
+{
+    for (int i = 0; i < nenums; i++) {
+        if (!strcmp(enums[i].name, name)) {
+            if (out) *out = enums[i].val;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void add_enum(const char *name, i64 val)
+{
+    if (nenums >= MAX_ENUM) { fail("too many enum constants"); return; }
+    strncpy(enums[nenums].name, name, 31);
+    enums[nenums].name[31] = 0;
+    enums[nenums].val = val;
+    nenums++;
+}
+
+static void add_typedef(const char *name, struct ctype t)
+{
+    if (ntypedefs >= MAX_TYPEDEF) { fail("too many typedefs"); return; }
+    strncpy(typedefs[ntypedefs].name, name, 31);
+    typedefs[ntypedefs].name[31] = 0;
+    typedefs[ntypedefs].type = t;
+    ntypedefs++;
+}
+
+/* 当前 token 是否为一个类型起始 (供 sizeof / 强制转换区分括号表达式) */
+static bool tok_is_type(const struct token *t)
+{
+    if (t->t != T_ID)
+        return false;
+    const char *n = t->name;
+    return !strcmp(n, "int") || !strcmp(n, "char") || !strcmp(n, "void") ||
+           !strcmp(n, "struct") || !strcmp(n, "union") ||
+           !strcmp(n, "const") || !strcmp(n, "unsigned") ||
+           !strcmp(n, "signed") || !strcmp(n, "long") || !strcmp(n, "short") ||
+           !strcmp(n, "static") || !strcmp(n, "volatile") ||
+           !strcmp(n, "extern") || !strcmp(n, "inline") ||
+           is_typedef_name(n);
+}
+
 /* ------------------------------------------------------------------ 符号 */
 static struct sym *find_sym(const char *name)
 {
@@ -836,6 +1109,13 @@ static i64 c_unary(void)
         i64 v = cur.v;
         advance();
         return v;
+    }
+    if (cur.t == T_ID) {
+        i64 v;
+        if (find_enum(cur.name, &v)) {
+            advance();
+            return v;
+        }
     }
     fail("constant expected");
     return 0;
@@ -1259,6 +1539,15 @@ static void gen_primary(void)
             return;
         }
 
+        i64 ev;
+        if (find_enum(name, &ev)) {
+            mov_rax_imm((u64)ev);
+            g_e.t.kind = CK_INT;
+            g_e.t.obj = 8;
+            advance();
+            return;
+        }
+
         struct sym *s = lookup_var(name);
         if (!s) { fail("undefined variable"); return; }
         gen_sym_addr(s);
@@ -1289,6 +1578,59 @@ static void gen_primary(void)
 
 static void gen_unary(void)
 {
+    /* sizeof(type) / sizeof 变量 (编译期常量) */
+    if (is_kw("sizeof")) {
+        advance();
+        bool paren = accept('(');
+        if (paren && tok_is_type(&cur)) {
+            struct ctype t;
+            if (!parse_ctype(&t))
+                return;
+            expect(')');
+            mov_rax_imm((u64)value_bytes(&t));
+        } else if (cur.t == T_ID) {
+            int sz;
+            int ti = find_typedef(cur.name);
+            if (ti >= 0) {
+                sz = value_bytes(&typedefs[ti].type);
+                advance();
+            } else {
+                struct sym *s = lookup_var(cur.name);
+                if (!s) { fail("sizeof unknown name"); return; }
+                sz = s->size > 0 ? s->size : value_bytes(&s->type);
+                advance();
+            }
+            if (paren)
+                expect(')');
+            mov_rax_imm((u64)sz);
+        } else {
+            fail("sizeof requires a type or name");
+            return;
+        }
+        memset(&g_e, 0, sizeof(g_e));
+        g_e.t.kind = CK_INT;
+        g_e.t.obj = 8;
+        return;
+    }
+
+    /* 强制类型转换: (type)expr */
+    if (cur.t == '(' && tok_is_type(&nxt)) {
+        advance();
+        struct ctype t;
+        if (!parse_ctype(&t))
+            return;
+        expect(')');
+        gen_unary();
+        mat_value();
+        if (t.ptr == 0 && t.kind == CK_CHAR) {
+            e8(0x48); e8(0x0F); e8(0xB6); e8(0xC0);   /* movzx rax, al */
+        }
+        g_e.t = t;
+        g_e.lval = false;
+        g_e.is_arr = false;
+        return;
+    }
+
     if (cur.t == T_INC) { gen_incdec(true, true); return; }
     if (cur.t == T_DEC) { gen_incdec(false, true); return; }
     if (accept('-')) {
@@ -1507,8 +1849,31 @@ static void gen_call(const char *name)
     }
     expect(')');
 
+    /* printf: 参数已压栈, 把栈指针交给内核格式化 (SYS_PRINTF) */
+    if (!strcmp(name, "printf")) {
+        if (nargs < 1) { fail("printf needs a format"); return; }
+        e8(0x48); e8(0x89); e8(0xE2);            /* mov rdx, rsp */
+        e8(0x48); e8(0xC7); e8(0xC6);
+        e32((u32)(nargs - 1));                   /* mov rsi, nargs-1 */
+        int disp = (nargs - 1) * 8;
+        if (disp <= 127) {
+            e8(0x48); e8(0x8B); e8(0x7C); e8(0x24); e8((u8)disp);
+        } else {
+            e8(0x48); e8(0x8B); e8(0xBC); e8(0x24); e32((u32)disp);
+        }
+        mov_rax_imm((u64)SYS_PRINTF);
+        e8(0xCD); e8(0x21);
+        add_rsp_imm(nargs * 8);
+        g_e.t.kind = CK_INT;
+        g_e.t.ptr = 0;
+        g_e.t.obj = 8;
+        g_e.lval = false;
+        g_e.is_arr = false;
+        return;
+    }
+
     struct { const char *n; int nr; int args; } bi[] = {
-        { "putc", 1, 1 }, { "print", 11, 1 }, { "puts", 11, 1 },
+        { "putc", 1, 1 }, { "print", 11, 1 },
         { "print_int", 20, 1 }, { "getc", 2, 0 }, { "exit", 0, 1 },
         { "sleep", 16, 1 }, { "uptime", 7, 0 },
         { "open", 5, 2 }, { "read", 4, 3 }, { "write", 3, 3 },
@@ -1611,6 +1976,9 @@ static bool parse_ctype(struct ctype *t)
     } else if (accept_kw("void")) {
         t->kind = CK_VOID;
         t->obj = 0;
+    } else if (cur.t == T_ID && find_typedef(cur.name) >= 0) {
+        *t = typedefs[find_typedef(cur.name)].type;
+        advance();
     } else if (is_kw("float") || is_kw("double")) {
         fail("floating point not supported");
         return false;
@@ -1836,6 +2204,53 @@ static void parse_local_decl(struct ctype base)
     expect(';');
 }
 
+/* typedef (已消费关键字) */
+static void parse_typedef(void)
+{
+    struct ctype base;
+    if (!parse_ctype(&base))
+        return;
+    for (;;) {
+        struct ctype t = base;
+        while (accept('*'))
+            t.ptr++;
+        if (cur.t != T_ID) { fail("typedef name expected"); return; }
+        char n[32];
+        strncpy(n, cur.name, 31);
+        n[31] = 0;
+        advance();
+        add_typedef(n, t);
+        if (accept(','))
+            continue;
+        break;
+    }
+    expect(';');
+}
+
+/* enum { A, B=5, C }; (已消费关键字, 标签可选) */
+static void parse_enum(void)
+{
+    if (cur.t == T_ID)
+        advance();
+    if (!accept('{')) { fail("enum body expected"); return; }
+    i64 v = 0;
+    while (!failed && cur.t != '}' && cur.t != T_EOF) {
+        if (cur.t != T_ID) { fail("enum name expected"); return; }
+        char n[32];
+        strncpy(n, cur.name, 31);
+        n[31] = 0;
+        advance();
+        if (accept('='))
+            v = c_cond();
+        add_enum(n, v);
+        v++;
+        if (!accept(','))
+            break;
+    }
+    expect('}');
+    accept(';');
+}
+
 static void parse_block(void)
 {
     expect('{');
@@ -1846,6 +2261,8 @@ static void parse_block(void)
 
 static bool is_type_start(void)
 {
+    if (cur.t == T_ID && is_typedef_name(cur.name))
+        return true;
     return is_kw("int") || is_kw("char") || is_kw("void") ||
            is_kw("struct") || is_kw("union") || is_kw("static") ||
            is_kw("const") || is_kw("unsigned") || is_kw("signed") ||
@@ -1915,6 +2332,16 @@ static void parse_stmt(void)
     }
     if (accept(';'))
         return;
+
+    if (accept_kw("typedef")) {
+        parse_typedef();
+        return;
+    }
+    if (is_kw("enum")) {
+        advance();
+        parse_enum();
+        return;
+    }
 
     if (is_type_start()) {
         struct ctype base;
@@ -2138,6 +2565,12 @@ static void parse_function(struct decl *d)
             advance();
         } else {
             for (;;) {
+                if (cur.t == '.') {          /* ... 可变参数原型 */
+                    accept('.');
+                    accept('.');
+                    accept('.');
+                    break;
+                }
                 struct ctype pt;
                 if (!parse_ctype(&pt))
                     return;
@@ -2265,6 +2698,16 @@ static void parse_program(void)
         if (accept(';'))
             continue;
 
+        if (accept_kw("typedef")) {
+            parse_typedef();
+            continue;
+        }
+        if (is_kw("enum")) {
+            advance();
+            parse_enum();
+            continue;
+        }
+
         if (is_kw("struct") || is_kw("union")) {
             bool is_union = (cur.name[1] == 'n');
             advance();
@@ -2304,8 +2747,22 @@ static void parse_program(void)
     }
 }
 
+/* 编译一个按需引入的标准库模块 (调用点稍后统一解析) */
+static void compile_lib_module(const char *mod_src)
+{
+    if (failed || !mod_src || !mod_src[0])
+        return;
+    sp = mod_src;
+    line_no = 1;
+    inc_depth = 0;
+    inc_cur_dir[0] = 0;
+    cur = scan();
+    nxt = scan();
+    parse_program();
+}
+
 /* ------------------------------------------------------------------ 入口 */
-const u8 *tc_compile(const char *src, u32 len, u32 *out_len)
+const u8 *tc_compile(const char *src, u32 len, u32 *out_len, const char *path)
 {
     failed = false;
     err_msg[0] = 0;
@@ -2318,7 +2775,16 @@ const u8 *tc_compile(const char *src, u32 len, u32 *out_len)
     nloop = 0;
     nsw = 0;
     nstypes = 0;
+    ntypedefs = 0;
+    nenums = 0;
     lused = 0;
+    inc_depth = 0;
+    nseen = 0;
+    want_lib_string = want_lib_stdlib = want_lib_ctype = want_lib_stdio = false;
+    if (path && path[0])
+        dir_of(path, inc_cur_dir);
+    else
+        inc_cur_dir[0] = 0;
     line_no = 1;
     sp = src;
     (void)len;
@@ -2326,9 +2792,6 @@ const u8 *tc_compile(const char *src, u32 len, u32 *out_len)
     memset(code, 0, sizeof(code));
     memset(gmem, 0, sizeof(gmem));
     memset(stypes, 0, sizeof(stypes));
-
-    cur = scan();
-    nxt = scan();
 
     /* 入口: call main; exit(rax) */
     e8(0xE8);
@@ -2338,7 +2801,22 @@ const u8 *tc_compile(const char *src, u32 len, u32 *out_len)
     mov_rax_imm(0);
     e8(0xCD); e8(0x21);
 
+    /* 编译用户源码; #include 在扫描时按需展开 */
+    sp = src;
+    line_no = 1;
+    cur = scan();
+    nxt = scan();
     parse_program();
+
+    /* 只有被 include 的头文件才把对应标准库模块编入程序 */
+    if (want_lib_string)
+        compile_lib_module(tc_lib_string);
+    if (want_lib_stdlib)
+        compile_lib_module(tc_lib_stdlib);
+    if (want_lib_ctype)
+        compile_lib_module(tc_lib_ctype);
+    if (want_lib_stdio)
+        compile_lib_module(tc_lib_stdio);
 
     /* 解析函数调用 */
     for (int i = 0; i < nfc && !failed; i++) {
