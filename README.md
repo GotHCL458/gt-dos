@@ -152,8 +152,11 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
   (`while(0)`, `while(1)`, `do..while(0/1)`). All levels use direct
   local-variable access (`mov [rbp+d]` without a `lea`/stack round-trip),
   shortest immediate encodings (`xor`, `imm32`, `imm8` forms), and emit
-  `cmp` + `jcc` directly for conditions instead of materialising 0/1;
-  the benchmark code is 2049 bytes at `-O0` and 1988 at `-O4`
+  `cmp` + `jcc` directly for conditions instead of materialising 0/1.
+  Binary/assignment/incdec/subscript temporaries live in `r11`/`r10`
+  (constant right operands defer the save; only deeper expressions spill to
+  the stack), and a `for`-step `i++` becomes an in-place memory increment;
+  the benchmark code is 2091 bytes at `-O0` and 1846 at `-O4`
 - Supported: `int`/`char`/`double`/pointers, 1-4D arrays, `struct`/`union` (fields,
   nested structs, `.` and `->`, bitfields), function pointers and function-pointer
   arrays, functions (up to 6 parameters, recursion, prototypes, user variadic
@@ -420,15 +423,15 @@ assert on real boot output rather than on mocks.
 `tools/test_perf.py` compiles and runs `\SDK\BENCH.C` inside GT-DOS at both
 `-O0` and `-O4`, runs the same workloads natively (`rustc -O`) and writes
 `build/perf_report.md`. On the QEMU test host the benchmark's code section is
-2049 bytes at `-O0` and 1988 at `-O4`; the constant-expression loop is ≈1.6×
-faster at `-O4` (80→50 ms), the integer loop is 60 ms and array indexing 70 ms
-(5M iterations). Programs remain 14–150× slower than native depending on the
+2091 bytes at `-O0` and 1846 at `-O4`; the integer loop is ≈50 ms, the
+constant-expression loop is ≈1.2–1.6× faster at `-O4` (70→50 ms) and array
+indexing ≈60 ms (5M iterations, 10 ms timer resolution). Programs remain 14–150× slower than native depending on the
 workload — mostly QEMU TCG emulation plus TC's simple code generation (values
 live in stack slots, no register allocation).
 
 ## Notes and Limitations
 
-- The kernel currently fits in 545 sectors (278,848 bytes including the 48-byte `GTK1`
+- The kernel currently fits in 513 sectors (262,464 bytes including the 48-byte `GTK1`
   trailer); the build cap is 640 sectors (320 KB), loaded between `0x10000` and `0x60000`.
   The linker also asserts `.bss <= 0xA0000` and `.highbss <= LIB_BASE`.
 - The GDT is built in low memory (0x6800) rather than `.data`: loading a segment register

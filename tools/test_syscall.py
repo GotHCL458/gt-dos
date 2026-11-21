@@ -256,6 +256,26 @@ def main():
     check("tc multi-module missing file", vm.expect("Cannot read", 4000),
           vm.buf[-300:])
 
+    # 深表达式 + 中途函数调用 + 位域: 覆盖 r11/r10 临时值与调用点落槽
+    vm.buf = ""
+    vm.cmd("put deep.c #include <stdio.h>")
+    vm.cmd("append deep.c struct B { int x:5; };")
+    vm.cmd("append deep.c int f(int x) { return x + 1; }")
+    vm.cmd("append deep.c int main(void) {")
+    vm.cmd("append deep.c int a[4]; int s; struct B b;")
+    vm.cmd("append deep.c a[0]=1; a[1]=2; a[2]=3; a[3]=4; b.x=7;")
+    vm.cmd("append deep.c s = (a[0]+a[1])*(a[2]+a[3]) + f((a[0]+1)*(a[1]+2));")
+    vm.cmd("append deep.c s = s + (b.x+1)*(b.x+2);")
+    vm.cmd('append deep.c printf("deep=%d\\n", s);')
+    vm.cmd("append deep.c return 0;")
+    vm.cmd("append deep.c }")
+    vm.cmd("tc deep.c", 2000)
+    check("tc deep expression compiles", vm.expect("Compiled ", 8000),
+          vm.buf[-300:])
+    vm.cmd("run deep.gtp", 2000)
+    check("tc deep expression result", vm.expect("deep=102", 4000),
+          vm.buf[-300:])
+
     # 未 include 时不编入库: strlen 应为未定义
     vm.buf = ""
     vm.cmd("put n.c int main(void){")

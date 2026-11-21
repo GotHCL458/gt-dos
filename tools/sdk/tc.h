@@ -20,6 +20,8 @@
  *
  * Multiple .c files may be passed to TC; they are flattened automatically in
  * the given order into one program (shared symbols/macros, include-once).
+ * Expression temporaries use r11/r10 with deferred saves; deeper expressions
+ * spill to the stack, and user calls only save live temporaries.
  *
  * Standard library modules are compiled in only when #included:
  *   string.h  strlen strcpy strncpy strcmp strncmp strcat strncat strchr strrchr

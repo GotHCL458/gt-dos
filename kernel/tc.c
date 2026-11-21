@@ -1181,8 +1181,15 @@ static bool accept_kw(const char *k)
 }
 
 /* ------------------------------------------------------------------ 出码 */
+/* 延迟保存: 左值仍在 rax 时先不落寄存器; RHS 第一条指令发出前才落.
+   这样常量右操作数 (比较/加常数等) 完全省掉一次保存与回读. */
+static bool tmp_pending;
+static void temp_flush(void);
+
 static void e8(u8 b)
 {
+    if (tmp_pending)
+        temp_flush();
     if (clen >= TC_CODE_MAX) { fail("program too large"); return; }
     code[clen++] = b;
 }
@@ -1232,6 +1239,7 @@ static void mov_r8_imm(u64 v)
 
 static void push_rax(void) { e8(0x50); }
 static void pop_rcx(void)  { e8(0x59); }
+static void pop_rax(void)  { e8(0x58); }
 
 /* [rbp + disp] 的 ModRM; reg 为寄存器字段 */
 static void modrm_rbp(int disp, u8 reg)
@@ -1377,6 +1385,124 @@ static void add_rsp_imm(int n)
     }
 }
 
+/* ---------------------------------------------- 表达式临时值 (r11/r10/栈)
+   二元运算/赋值/自增/下标不再 push/pop 走栈, 而是把左值放进 r11/r10;
+   寄存器不够时退化为栈. 用户函数调用会破坏 r11/r10, 调用点先落到
+   [rbp-8]/[rbp-16] 两个保留槽位 (中断/系统调用已保存全部通用寄存器,
+   因此 int 0x21 不需要处理). 每个函数帧预留 16 字节给这两个槽位. */
+enum { TMP_R11, TMP_R10, TMP_SLOT11, TMP_SLOT10, TMP_PENDING, TMP_STACK,
+       TMP_MAX = 32 };
+static u8   tmp_kind[TMP_MAX];
+static int  tmp_n;
+static bool tmp_use11, tmp_use10;
+
+static void temp_reset(void)
+{
+    tmp_n = 0;
+    tmp_pending = false;
+    tmp_use11 = tmp_use10 = false;
+}
+
+static void temp_push_stack(void)
+{
+    if (tmp_n >= TMP_MAX) { fail("expression too deep"); return; }
+    if (tmp_pending)
+        temp_flush();
+    push_rax();
+    tmp_kind[tmp_n++] = TMP_STACK;
+}
+
+/* 把延迟中的左值真正落到寄存器或栈 */
+static void temp_flush(void)
+{
+    if (!tmp_pending)
+        return;
+    tmp_pending = false;
+    if (tmp_n <= 0)
+        return;
+    if (!tmp_use11) {
+        e8(0x49); e8(0x89); e8(0xC3);           /* mov r11, rax */
+        tmp_kind[tmp_n - 1] = TMP_R11;
+        tmp_use11 = true;
+    } else if (!tmp_use10) {
+        e8(0x49); e8(0x89); e8(0xC2);           /* mov r10, rax */
+        tmp_kind[tmp_n - 1] = TMP_R10;
+        tmp_use10 = true;
+    } else {
+        push_rax();
+        tmp_kind[tmp_n - 1] = TMP_STACK;
+    }
+}
+
+/* rax -> 临时值 (延迟保存) */
+static void temp_push(void)
+{
+    if (tmp_n >= TMP_MAX) { fail("expression too deep"); return; }
+    if (tmp_pending)
+        temp_flush();
+    tmp_kind[tmp_n++] = TMP_PENDING;
+    tmp_pending = true;
+}
+
+/* 栈顶临时值 -> rcx (弹出) */
+static void temp_pop_rcx(void)
+{
+    if (tmp_n <= 0) { pop_rcx(); return; }
+    u8 k = tmp_kind[--tmp_n];
+    switch (k) {
+    case TMP_R11:
+        e8(0x4C); e8(0x89); e8(0xD9); tmp_use11 = false; break; /* mov rcx,r11 */
+    case TMP_R10:
+        e8(0x4C); e8(0x89); e8(0xD1); tmp_use10 = false; break; /* mov rcx,r10 */
+    case TMP_SLOT11:
+        e8(0x48); e8(0x8B); modrm_rbp(-8, 1); tmp_use11 = false; break;
+    case TMP_SLOT10:
+        e8(0x48); e8(0x8B); modrm_rbp(-16, 1); tmp_use10 = false; break;
+    case TMP_PENDING:
+        tmp_pending = false;
+        e8(0x48); e8(0x89); e8(0xC1); break;    /* mov rcx, rax */
+    default:
+        pop_rcx(); break;
+    }
+}
+
+/* 栈顶临时值 -> rax (弹出) */
+static void temp_pop_rax(void)
+{
+    if (tmp_n <= 0) { pop_rax(); return; }
+    u8 k = tmp_kind[--tmp_n];
+    switch (k) {
+    case TMP_R11:
+        e8(0x4C); e8(0x89); e8(0xD8); tmp_use11 = false; break; /* mov rax,r11 */
+    case TMP_R10:
+        e8(0x4C); e8(0x89); e8(0xD0); tmp_use10 = false; break; /* mov rax,r10 */
+    case TMP_SLOT11:
+        e8(0x48); e8(0x8B); modrm_rbp(-8, 0); tmp_use11 = false; break;
+    case TMP_SLOT10:
+        e8(0x48); e8(0x8B); modrm_rbp(-16, 0); tmp_use10 = false; break;
+    case TMP_PENDING:
+        tmp_pending = false; break;             /* 值已在 rax */
+    default:
+        pop_rax(); break;
+    }
+}
+
+/* 用户函数调用前: 活跃的寄存器临时值落到固定槽位 (不改变栈) */
+static void temp_call_save(void)
+{
+    if (tmp_pending)
+        temp_flush();
+    for (int i = 0; i < tmp_n; i++) {
+        if (tmp_kind[i] == TMP_R11) {
+            e8(0x4C); e8(0x89); modrm_rbp(-8, 3);   /* mov [rbp-8], r11 */
+            tmp_kind[i] = TMP_SLOT11;
+        } else if (tmp_kind[i] == TMP_R10) {
+            e8(0x4C); e8(0x89); modrm_rbp(-16, 2);  /* mov [rbp-16], r10 */
+            tmp_kind[i] = TMP_SLOT10;
+        }
+    }
+}
+
 static void imul_rax_imm(int v)
 {
     if (v >= -128 && v <= 127) {
@@ -1395,13 +1521,9 @@ static void imul_rcx_imm(int v)
     }
 }
 
-static void mov_rax_rcx(void) { e8(0x48); e8(0x89); e8(0xC8); }
 static void mov_rcx_rax(void) { e8(0x48); e8(0x89); e8(0xC1); }
 static void mov_rdx_rax(void) { e8(0x48); e8(0x89); e8(0xC2); }
 static void mov_rax_rdx(void) { e8(0x48); e8(0x89); e8(0xD0); }
-static void mov_r10_rax(void) { e8(0x49); e8(0x89); e8(0xC2); }
-static void mov_rax_r10(void) { e8(0x4C); e8(0x89); e8(0xD0); }
-static void mov_rcx_rsp(void) { e8(0x48); e8(0x8B); e8(0x0C); e8(0x24); }
 
 /* 以 rax 为地址读写对象 (char 用 1 字节, 其余 8 字节) */
 static int value_bytes(const struct ctype *t)
@@ -1461,21 +1583,22 @@ static void bit_load(int off, int width, bool sign)
     bit_extract(off, width, sign);
 }
 
-/* 位域读改写: rax=新值, rcx=地址; 完成后 rax 仍为新值 */
+/* 位域读改写: rax=新值, rcx=地址; 完成后 rax 仍为新值.
+   用 rsi 作中间量, 保留 rdx (后缀 ++ 用它保存旧值) 与 r10/r11 (表达式临时值). */
 static void bit_store(int off, int width)
 {
     u64 m = (width >= 64 ? ~0ULL : ((1ULL << width) - 1)) << off;
     e8(0x49); e8(0x89); e8(0xC1);              /* mov r9, rax (保存新值) */
-    e8(0x48); e8(0x89); e8(0xC2);              /* mov rdx, rax */
+    e8(0x48); e8(0x89); e8(0xC6);              /* mov rsi, rax */
     if (off > 0) {
-        e8(0x48); e8(0xC1); e8(0xE2); e8((u8)off); /* shl rdx, imm8 */
+        e8(0x48); e8(0xC1); e8(0xE6); e8((u8)off); /* shl rsi, imm8 */
     }
     e8(0x48); e8(0x8B); e8(0x01);              /* mov rax, [rcx] */
     mov_r8_imm(~m);
     e8(0x4C); e8(0x21); e8(0xC0);              /* and rax, r8 */
     mov_r8_imm(m);
-    e8(0x4C); e8(0x21); e8(0xC2);              /* and rdx, r8 */
-    e8(0x48); e8(0x09); e8(0xD0);              /* or rax, rdx */
+    e8(0x4C); e8(0x21); e8(0xC6);              /* and rsi, r8 */
+    e8(0x48); e8(0x09); e8(0xF0);              /* or rax, rsi */
     e8(0x48); e8(0x89); e8(0x01);              /* mov [rcx], rax */
     e8(0x4C); e8(0x89); e8(0xC8);              /* mov rax, r9 */
 }
@@ -2359,6 +2482,21 @@ static int assign_binop(int t)
 
 static void gen_call(const char *name);
 
+/* 记号 t 是否为一个用户函数/函数指针 (调用会破坏 r11/r10 临时值) */
+static bool expr_is_call_start(const struct token *t)
+{
+    if (t->t != T_ID)
+        return false;
+    struct sym *s = find_local(t->name);
+    if (!s)
+        s = find_sym(t->name);
+    if (!s)
+        return false;
+    if (s->type.func)
+        return true;
+    return s->kind == SK_FUNC;
+}
+
 /* 前缀/后缀 ++ -- */
 static void gen_incdec(bool inc, bool prefix)
 {
@@ -2380,7 +2518,7 @@ static void gen_incdec(bool inc, bool prefix)
     int bo = g_e.bit_off, bw = g_e.bit_width;
 
     if (!lazy)
-        push_rax();                 /* 地址 */
+        temp_push();                /* 地址 -> 临时值 */
     if (lazy) {
         if (t.ptr == 0 && t.kind == CK_CHAR)
             movzx_rax_local(ldisp);
@@ -2391,10 +2529,8 @@ static void gen_incdec(bool inc, bool prefix)
     } else {
         load_at(&t);                /* rax = 旧值 */
     }
-    if (!prefix) {
-        if (is_bit) mov_r10_rax();
-        else        mov_rdx_rax();  /* 保存旧值 */
-    }
+    if (!prefix)
+        mov_rdx_rax();              /* 保存旧值 */
     if (is_dbl(&t))
         dbl_add_one(!inc);
     else
@@ -2402,23 +2538,62 @@ static void gen_incdec(bool inc, bool prefix)
     if (lazy) {
         store_local(ldisp, &t);
     } else {
-        mov_rcx_rsp();              /* 地址 */
+        temp_pop_rcx();             /* 地址 */
         if (is_bit)
             bit_store(bo, bw);
         else
             store_at(&t);
-        add_rsp_imm(8);
     }
-    if (!prefix) {
-        if (is_bit) mov_rax_r10();
-        else        mov_rax_rdx();
-    }
+    if (!prefix)
+        mov_rax_rdx();
     g_e.lval = false;
     g_e.is_arr = false;
     g_e.is_bit = false;
     g_e.is_const = false;
     g_e.lazy = false;
     g_e.t = t;
+}
+
+/* for 的步进表达式恰为简单局部变量 i++/i--/++i/--i 时, 直接读改写内存
+   (步进值必然丢弃), 省去 load/add/store。返回 false 表示非该形式。 */
+static bool gen_step_incdec(void)
+{
+    bool prefix = (cur.t == T_INC || cur.t == T_DEC);
+    int k = prefix ? cur.t : nxt.t;
+    if (prefix) {
+        if (nxt.t != T_ID)
+            return false;
+    } else if (cur.t != T_ID || (nxt.t != T_INC && nxt.t != T_DEC)) {
+        return false;
+    }
+    struct sym *s = find_local(prefix ? nxt.name : cur.name);
+    if (!s || s->ndims != 0)
+        return false;
+    struct ctype t = s->type;
+    if (t.func)
+        return false;
+    if (t.ptr == 0 &&
+        (t.kind == CK_DOUBLE || t.kind == CK_STRUCT || t.kind == CK_VOID))
+        return false;
+    int st = inc_step(&t);
+    bool inc = (k == T_INC);
+    int d = s->offset;
+    if (t.ptr == 0 && t.kind == CK_CHAR) {
+        e8(0xFE); modrm_rbp(d, inc ? 0 : 1);            /* inc/dec byte */
+    } else if (st == 1) {
+        e8(0x48); e8(0xFF); modrm_rbp(d, inc ? 0 : 1);  /* inc/dec qword */
+    } else if (inc) {
+        if (st <= 127) { e8(0x48); e8(0x83); modrm_rbp(d, 0); e8((u8)st); }
+        else           { e8(0x48); e8(0x81); modrm_rbp(d, 0); e32((u32)st); }
+    } else {
+        if (st <= 127) { e8(0x48); e8(0x83); modrm_rbp(d, 5); e8((u8)st); }
+        else           { e8(0x48); e8(0x81); modrm_rbp(d, 5); e32((u32)st); }
+    }
+    memset(&g_e, 0, sizeof(g_e));
+    g_e.t = t;
+    advance();                      /* ID / ++ */
+    advance();                      /* ++ / ID */
+    return true;
 }
 
 /* 需要地址时: 惰性局部变量此时才生成 lea */
@@ -2466,6 +2641,7 @@ static void gen_indirect_call(void)
     reverse_args(nargs);
     int disp = nargs * 8;
     e8(0x48); e8(0x8B); e8(0x84); e8(0x24); e32((u32)disp); /* mov rax,[rsp+n] */
+    temp_call_save();                                       /* 活跃临时值落槽 */
     e8(0xFF); e8(0xD0);                                     /* call rax */
     add_rsp_imm((nargs + 1) * 8);
     g_e.t.kind = CK_INT;
@@ -2513,11 +2689,11 @@ static void gen_postfix(void)
                 if (elem.ptr == 0 && elem.kind == CK_STRUCT)
                     elem.obj = stypes[elem.sid].size;
             }
-            push_rax();                 /* 基址 */
+            temp_push();                /* 基址 -> 临时值 */
             gen_value(0, 0);            /* 下标 */
             if (step != 1)
                 imul_rax_imm(step);
-            pop_rcx();
+            temp_pop_rcx();
             e8(0x48); e8(0x01); e8(0xC8);   /* add rax, rcx */
             expect(']');
 
@@ -2641,11 +2817,8 @@ static void gen_postfix(void)
             int ldisp = g_e.ldisp;
             int bo = g_e.bit_off, bw = g_e.bit_width;
             int step = inc_step(&t);
-            if (!lazy) {
-                push_rax();             /* 地址 */
-                mov_rcx_rsp();
-                mov_rax_rcx();          /* rax = 地址 */
-            }
+            if (!lazy)
+                temp_push();            /* 地址 -> 临时值 (rax 仍为地址) */
             if (lazy) {
                 if (t.ptr == 0 && t.kind == CK_CHAR)
                     movzx_rax_local(ldisp);
@@ -2656,8 +2829,7 @@ static void gen_postfix(void)
             } else {
                 load_at(&t);            /* rax = 旧值 */
             }
-            if (is_bit) mov_r10_rax();
-            else        mov_rdx_rax();  /* 保存旧值 */
+            mov_rdx_rax();              /* 保存旧值 */
             if (is_dbl(&t))
                 dbl_add_one(!inc);
             else
@@ -2665,15 +2837,13 @@ static void gen_postfix(void)
             if (lazy) {
                 store_local(ldisp, &t);
             } else {
-                mov_rcx_rsp();
+                temp_pop_rcx();
                 if (is_bit)
                     bit_store(bo, bw);
                 else
                     store_at(&t);
-                add_rsp_imm(8);
             }
-            if (is_bit) mov_rax_r10();
-            else        mov_rax_rdx();
+            mov_rax_rdx();
             g_e.lval = false;
             g_e.is_arr = false;
             g_e.is_bit = false;
@@ -3044,18 +3214,18 @@ static void gen_expr(int minp)
             int ldisp = g_e.ldisp;
             int bo = g_e.bit_off, bw = g_e.bit_width;
             int op = cur.t;
+            bool rcall = expr_is_call_start(&nxt);
             advance();
 
-            if (!lazy)
-                push_rax();                /* 目标地址 */
+            if (!lazy) {
+                if (rcall) temp_push_stack(); else temp_push(); /* 目标地址 */
+            }
             if (op != '=' && !lazy) {
-                mov_rcx_rsp();
-                mov_rax_rcx();
                 if (is_bit)
                     bit_load(bo, bw, lt.kind == CK_INT && !lt.uns);
                 else
-                    load_at(&lt);           /* rax = 旧值 */
-                push_rax();                /* 旧值 (左操作数) */
+                    load_at(&lt);           /* rax 仍为地址 -> 旧值 */
+                if (rcall) temp_push_stack(); else temp_push();
             }
             struct ety rop;
             gen_value(0, &rop);
@@ -3068,7 +3238,7 @@ static void gen_expr(int minp)
                         fail("invalid float operator");
                         return;
                     }
-                    if (lazy) load_rcx_local(ldisp, &lt); else pop_rcx();
+                    if (lazy) load_rcx_local(ldisp, &lt); else temp_pop_rcx();
                     dbl_operands(lf, rf);
                     dbl_binop(bop);
                     if (!lf)
@@ -3076,7 +3246,7 @@ static void gen_expr(int minp)
                 } else {
                     if ((bop == '+' || bop == '-') && lt.ptr > 0)
                         imul_rax_imm(ptr_step(&lt));
-                    if (lazy) load_rcx_local(ldisp, &lt); else pop_rcx();
+                    if (lazy) load_rcx_local(ldisp, &lt); else temp_pop_rcx();
                     if (lt.uns) apply_binop_uns(bop);
                     else        apply_binop(bop);
                 }
@@ -3089,7 +3259,7 @@ static void gen_expr(int minp)
             if (lazy) {
                 store_local(ldisp, &lt);
             } else {
-                pop_rcx();                 /* 地址 */
+                temp_pop_rcx();            /* 地址 */
                 if (is_bit)
                     bit_store(bo, bw);
                 else
@@ -3116,11 +3286,13 @@ static void gen_expr(int minp)
         bool lc = opt_fold && g_e.is_const;
         i64 lcv = g_e.cval;
         struct ctype lt = g_e.t;
+        /* 右操作数以用户函数调用开头时直接压栈, 避免调用点再落槽 */
+        bool rcall = expr_is_call_start(&nxt);
         if (!lc) {
             mat_value();
             lt = g_e.t;
             if (logic) boolify();
-            push_rax();
+            if (rcall) temp_push_stack(); else temp_push();
         }
 
         advance();
@@ -3167,8 +3339,7 @@ static void gen_expr(int minp)
         /* O1/O2: 常量右操作数 -> 立即数或强度削弱 */
         bool regs_ready = false;
         if (opt_fold && !lc && rc && both_int) {
-            pop_rcx();                     /* lhs */
-            mov_rax_rcx();
+            temp_pop_rax();                /* lhs -> rax */
             /* 条件上下文的常量比较: cmp imm + jcc, 不再物化 0/1 */
             if (ctop && minp == 0 && !cond_fused && cmpop &&
                 bin_prec(cur.t) < 0 && cur.t != '?' && fits_i32(rcv)) {
@@ -3197,10 +3368,10 @@ static void gen_expr(int minp)
             } else if (lc) {
                 mov_rcx_imm((u64)lcv);
             } else if (rc) {
-                pop_rcx();
+                temp_pop_rcx();
                 mov_rax_imm((u64)rcv);
             } else {
-                pop_rcx();
+                temp_pop_rcx();
             }
         }
 
@@ -3443,6 +3614,7 @@ static void gen_call(const char *name)
     } else {
         if (nfc >= MAX_FCALL) { fail("too many calls"); return; }
         reverse_args(nargs);            /* 用户函数: arg0 到栈顶 */
+        temp_call_save();               /* r11/r10 落到保留槽位 */
         e8(0xE8);
         fcs[nfc].pos = clen;
         e32(0);
@@ -4239,7 +4411,7 @@ static void parse_stmt(void)
         expect(';');
         u32 jbody = emit_jmp();
         u32 step = clen;
-        if (cur.t != ')')
+        if (cur.t != ')' && !gen_step_incdec())
             gen_value(0, 0);
         expect(')');
         u32 back = emit_jmp();
@@ -4549,9 +4721,10 @@ static void parse_function(struct decl *d)
     fs->defined = true;
 
     nloc = 0;
-    lused = 0;
+    lused = 16;                     /* [rbp-8]/[rbp-16]: 表达式临时值槽位 */
     nlabels = 0;
     ngotos = 0;
+    temp_reset();
     for (int i = 0; i < np; i++) {
         if (!pnames[i][0]) {
             pnames[i][0] = '_';
@@ -4769,6 +4942,7 @@ const u8 *tc_compile_files(const struct tc_src *srcs, int n, u32 *out_len,
     failed = false;
     err_msg[0] = 0;
     err_unit = 0;
+    temp_reset();
     clen = 0;
     str_used = 0;
     gused = 0;

@@ -23,8 +23,10 @@ Optimization:
   -fno-X        disable a pass; -fdce implies -fconst, -floop implies -fdce,
                 -fno-const disables all; later flags win
   -g            debug (reset to -O0);  -v  print effective flags + sizes
-  All levels use direct local access, shortest immediates (xor/imm32/imm8) and
-  emit cmp+jcc directly for conditions.
+  All levels use direct local access, shortest immediates (xor/imm32/imm8),
+  emit cmp+jcc directly for conditions, keep expression temporaries in r11/r10
+  (deferred saves, stack only when deeper) and turn a for-step i++ into an
+  in-place memory increment.
 
 Files:
   TC.H       builtin function reference
