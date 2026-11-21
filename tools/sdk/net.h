@@ -59,4 +59,13 @@ int  udp_recvfrom(int fd, void *buf, int cap, int timeout_ms,
 int  icmp_err(struct icmp_err *out);      /* 35: 1=取到新差错 */
 int  udp_close(int fd);                   /* 36 */
 
+/* net.c 标准库辅助 (包含本头文件后按需编入) */
+int  net_aton(char *s);                       /* 点分十进制 -> IPv4 */
+int  net_resolve(char *host);                 /* aton/dns 解析 */
+int  net_connect(char *host, int port);       /* 解析 + tcp_connect */
+int  net_send_str(int fd, char *s);           /* tcp_send + strlen */
+int  net_send_all(int fd, char *buf, int len);/* 循环发送直到完成 */
+int  net_recv_line(int fd, char *buf, int cap); /* 读一行, 含换行并补 NUL */
+int  net_recv_all(int fd, char *buf, int cap);  /* 读到关闭/缓冲满 */
+
 #endif /* _GT_NET_H */

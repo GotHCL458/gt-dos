@@ -215,22 +215,37 @@ def main():
           vm.expect("UDP: no reply", 8000), vm.buf[-400:])
 
     vm.buf = ""
-    vm.cmd("put n.c int main(void){")
-    vm.cmd(f"append n.c int fd=tcp_connect(ip4(10,0,2,2),{TPORT});")
+    vm.cmd("put n.c #include <net.h>")
+    vm.cmd("append n.c int main(void){")
+    vm.cmd(f'append n.c int fd=net_connect("10.0.2.2",{TPORT});')
     vm.cmd('append n.c if(fd<0){print("CONNECT FAIL\\n");return 1;}')
-    vm.cmd('append n.c print("CONNECTED\\n");')
-    vm.cmd('append n.c tcp_send(fd,"hello\\n",6);')
+    vm.cmd('append n.c print("CONN");')
+    vm.cmd('append n.c print("ECTED\\n");')
+    vm.cmd('append n.c net_send_str(fd,"hello\\n");')
     vm.cmd("append n.c int b=0x700000;")
-    vm.cmd("append n.c int n=tcp_recv(fd,b,64);")
+    vm.cmd("append n.c int n=net_recv_line(fd,b,64);")
     vm.cmd("append n.c if(n>0)write(1,b,n);")
     vm.cmd("append n.c tcp_close(fd);")
     vm.cmd("append n.c return 0;")
     vm.cmd("append n.c }")
     vm.cmd("tc n.c", 3000)
-    check("tc compiles net program", vm.expect("Compiled ", 20000), vm.buf[-400:])
+    check("tc net library compiles", vm.expect("Compiled ", 20000),
+          vm.buf[-400:])
     vm.cmd("run n.gtp", 4000)
-    check("tc net program connected", vm.expect("CONNECTED", 12000), vm.buf[-400:])
-    check("tc net program received", vm.expect("NET OK", 12000), vm.buf[-400:])
+    check("tc net connect via lib", vm.expect("CONNECTED", 12000),
+          vm.buf[-400:])
+    check("tc net recv_line via lib", vm.expect("NET OK", 12000),
+          vm.buf[-400:])
+
+    # 未 include <net.h> 时不编入网络辅助库
+    vm.buf = ""
+    vm.cmd("put nn.c int main(void){")
+    vm.cmd('append nn.c net_send_str(1,"x");')
+    vm.cmd("append nn.c return 0;")
+    vm.cmd("append nn.c }")
+    vm.cmd("tc nn.c", 2000)
+    check("tc net library is on-demand",
+          vm.expect("undefined function", 8000), vm.buf[-300:])
 
     vm.buf = ""
     vm.cmd("put u.c int main(void){")

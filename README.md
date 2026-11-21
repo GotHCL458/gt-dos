@@ -141,10 +141,12 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
   `-floop/-fno-loop`, plus `-g` (debug, resets to O0) and `-v` (print the
   effective flags and code/data sizes). Flags link: `-fdce` implies folding,
   `-floop` implies `-fdce`, `-fno-const` disables every pass, and later flags
-  win over earlier ones. Passes: O1 constant folding + immediate operands
-  (removes push/pop around constants), O2 strength reduction (shifts, unsigned
-  div/mod by powers of two), O3 constant-`if` dead-branch elimination, O4
-  constant-loop elimination (`while(0)`, `while(1)`, `do..while(0/1)`)
+  win over earlier ones. Passes: O1 constant folding + immediate operands,
+  O2 strength reduction (shifts, unsigned div/mod by powers of two), O3
+  constant-`if` dead-branch elimination, O4 constant-loop elimination
+  (`while(0)`, `while(1)`, `do..while(0/1)`). All levels also use direct
+  local-variable access (`mov [rbp+d]` without a `lea`/stack round-trip),
+  which shrinks the benchmark code by ≈15% even at `-O0`
 - Supported: `int`/`char`/`double`/pointers, 1-4D arrays, `struct`/`union` (fields,
   nested structs, `.` and `->`, bitfields), function pointers and function-pointer
   arrays, functions (up to 6 parameters, recursion, prototypes, user variadic
@@ -160,8 +162,11 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
   (GT-DOS only targets one platform), and other directives are skipped.
   `#include <...>` / `#include "..."` is resolved at compile time (source
   directory, `\SDK`, then `\GT-DOS\INCLUDE`); each file is included once. Standard
-  modules (`string/stdlib/ctype/stdio`) are compiled into the program **only when their
+  modules (`string/stdlib/ctype/stdio/net`) are compiled into the program **only when their
   header is included**, so unused library code never bloats `out.gtp`
+- Network library: `NET.H`/`NET.C` (on demand) adds `net_aton`, `net_resolve`
+  (dotted decimal or DNS), `net_connect`, `net_send_str`, `net_send_all`,
+  `net_recv_line` and `net_recv_all` on top of the TCP/UDP builtins
 - Standard library: `strlen strcpy strncpy strcmp strncmp strcat strncat strchr strrchr
   strstr memcpy memmove memset memcmp`, `malloc calloc free strdup abs atoi strtol rand
   srand` (16 KB heap),
@@ -177,7 +182,8 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
   `\SDK\NET.H` adds `ip4`, `tcp_connect`, `tcp_send`, `tcp_recv`, `tcp_close`,
   `dns`, `tftp_get`, `http_get`
 - SDK at `\SDK\` (plain, read-only): `TC.H`, `STRING.H`, `STDLIB.H`, `CTYPE.H`,
-  `STDIO.H`, `STDARG.H`, `STRING.C`, `STDLIB.C`, `CTYPE.C`, `STDIO.C`, `HELLO.C`, `FIB.C`,
+  `STDIO.H`, `STDARG.H`, `NET.H`, `STRING.C`, `STDLIB.C`, `CTYPE.C`, `STDIO.C`,
+  `NET.C`, `HELLO.C`, `FIB.C`,
   `README.TXT`; `PUT` + `APPEND` let you author sources line by line inside GT-DOS
 - Program layout: 128 KB code at `0x600000`, 128 KB data at `0x620000`
   (64 KB globals + 64 KB string pool)
@@ -404,16 +410,16 @@ assert on real boot output rather than on mocks.
 
 `tools/test_perf.py` compiles and runs `\SDK\BENCH.C` inside GT-DOS at both
 `-O0` and `-O4`, runs the same workloads natively (`rustc -O`) and writes
-`build/perf_report.md`. On the QEMU test host the benchmark's code section
-shrinks from 3035 to 2916 bytes at `-O4`; the constant-expression loop is
-≈1.4× faster and the whole program is 20–170× slower than native depending on
-the workload. That gap is dominated by QEMU TCG emulation plus TC's simple,
-unoptimized code generation (values live in stack slots, no register
-allocation).
+`build/perf_report.md`. On the QEMU test host the benchmark's code section is
+2579 bytes at `-O0` and 2460 at `-O4`; the constant-expression loop is ≈1.6×
+faster at `-O4` (80→50 ms), the integer loop is 50 ms and array indexing 70 ms
+(5M iterations). Programs remain 14–150× slower than native depending on the
+workload — mostly QEMU TCG emulation plus TC's simple code generation (values
+live in stack slots, no register allocation).
 
 ## Notes and Limitations
 
-- The kernel currently fits in 529 sectors (270,656 bytes including the 48-byte `GTK1`
+- The kernel currently fits in 537 sectors (274,752 bytes including the 48-byte `GTK1`
   trailer); the build cap is 640 sectors (320 KB), loaded between `0x10000` and `0x60000`.
   The linker also asserts `.bss <= 0xA0000` and `.highbss <= LIB_BASE`.
 - The GDT is built in low memory (0x6800) rather than `.data`: loading a segment register

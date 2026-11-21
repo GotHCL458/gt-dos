@@ -133,9 +133,10 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
   `-floop/-fno-loop`，另有 `-g`（调试，重置为 O0）与 `-v`（打印生效选项及
   code/data 大小）。参数联动：`-fdce` 隐含折叠，`-floop` 隐含 `-fdce`，
   `-fno-const` 关闭全部 pass，后出现的参数覆盖先前参数。各层含义：O1 常量折叠 +
-  立即数（消除常量两侧的 push/pop），O2 强度削弱（移位、无符号 2 的幂除法/取模），
-  O3 常量 `if` 死分支消除，O4 常量循环消除（`while(0)`、`while(1)`、
-  `do..while(0/1)`）
+  立即数，O2 强度削弱（移位、无符号 2 的幂除法/取模），O3 常量 `if` 死分支消除，
+  O4 常量循环消除（`while(0)`、`while(1)`、`do..while(0/1)`）。所有级别都使用
+  局部变量直接访问（`mov [rbp+d]`，不再先 `lea` 再走栈），即使 `-O0` 也能让
+  基准代码缩小约 15%
 - 支持：`int`/`char`/`double`/指针、1–4 维数组、`struct`/`union`（字段、嵌套结构、
   `.` 与 `->`、位域）、函数指针及函数指针数组、函数（最多 6 参数、递归、原型、
   用户可变参数 `...` 与 `va_list`/`va_start`/`va_arg`/`va_end`）、`if/else`、
@@ -147,8 +148,11 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 - 扫描器支持对象式与函数式 `#define` 宏（含 `#` 字符串化与 `##` 记号拼接）；
   不实现 `#if`（GT-DOS 只有单一平台），其余指令整行跳过。`#include <...>` /
   `#include "..."` 在编译期展开（依次查找源文件目录、`\SDK`、`\GT-DOS\INCLUDE`），
-  每个文件只包含一次；标准库模块（string/stdlib/ctype/stdio）**只有对应头文件
+  每个文件只包含一次；标准库模块（string/stdlib/ctype/stdio/net）**只有对应头文件
   被 include 时才编入程序**，未使用的库不会增大 `out.gtp`
+- 网络库：`NET.H`/`NET.C`（按需编入）在 TCP/UDP 内置函数之上提供 `net_aton`、
+  `net_resolve`（点分十进制或 DNS）、`net_connect`、`net_send_str`、
+  `net_send_all`、`net_recv_line`、`net_recv_all`
 - 标准库：`strlen strcpy strncpy strcmp strncmp strcat strncat strchr strrchr strstr`
   `memcpy memmove memset memcmp`、`malloc calloc free strdup abs atoi strtol rand srand`
   （16KB 堆）、
@@ -163,8 +167,8 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
   `rmdir`；`\SDK\NET.H` 另含 `ip4`、`tcp_connect`、`tcp_send`、
   `tcp_recv`、`tcp_close`、`dns`、`tftp_get`、`http_get`
 - `\SDK\` 提供明文只读 SDK：`TC.H`、`STRING.H`、`STDLIB.H`、`CTYPE.H`、`STDIO.H`、
-  `STDARG.H`、
-  `STRING.C`、`STDLIB.C`、`CTYPE.C`、`STDIO.C`、`DEMO.MD`、`HELLO.C`、`FIB.C`、
+  `STDARG.H`、`NET.H`、
+  `STRING.C`、`STDLIB.C`、`CTYPE.C`、`STDIO.C`、`NET.C`、`DEMO.MD`、`HELLO.C`、`FIB.C`、
   `README.TXT`；
   配合 `PUT` 与 `APPEND` 可在系统内逐行编写源码
 - 程序布局：代码 128KB 位于 `0x600000`，数据 128KB 位于 `0x620000`
@@ -379,13 +383,14 @@ build.py             构建脚本与镜像组装
 
 `tools/test_perf.py` 分别在 `-O0` 与 `-O4` 下编译并运行 `\SDK\BENCH.C`，
 同时用 `rustc -O` 在宿主运行同一组负载，生成 `build/perf_report.md`。
-测试机上基准代码段由 3035 字节降至 2916 字节（-O4）；常量表达式循环约快 1.4×；
-整体仍比原生慢 20–170×（随负载变化），主要来自 QEMU TCG 模拟以及 TC 简单的
-无优化代码生成（所有值经栈槽、不做寄存器分配）。
+测试机上基准代码段为 2579 字节（-O0）与 2460 字节（-O4）；常量表达式循环在
+-O4 下约快 1.6×（80→50 ms），整数循环 50 ms、数组索引 70 ms（均为 5M 次）。
+整体仍比原生慢 14–150×（随负载变化），主要来自 QEMU TCG 模拟以及 TC 简单的
+代码生成（所有值经栈槽、不做寄存器分配）。
 
 ## 说明与限制
 
-- 内核目前为 529 扇区（270,656 字节，含 48 字节 `GTK1` 尾部），构建上限 640 扇区
+- 内核目前为 537 扇区（274,752 字节，含 48 字节 `GTK1` 尾部），构建上限 640 扇区
   （320KB），加载区间为 `0x10000` 到 `0x60000`；链接脚本同时断言
   `.bss <= 0xA0000` 与 `.highbss <= LIB_BASE`。
 - GDT 在低端内存（0x6800）由入口代码构造，而非放在 `.data`：CPU 装载段寄存器

@@ -206,6 +206,7 @@ static char inc_cur_dir[96];
 static char inc_seen[TC_INC_SEEN][128];
 static int nseen;
 static bool want_lib_string, want_lib_stdlib, want_lib_ctype, want_lib_stdio;
+static bool want_lib_net;
 
 /* goto / 标签 (函数作用域) */
 #define MAX_LABEL 64
@@ -233,6 +234,8 @@ struct ety {
     bool is_arr;                  /* 仍是数组视图 (rax=首地址) */
     bool is_bit;                  /* 位域 lvalue: rax=所在存储单元地址 */
     bool is_const;                /* 编译期常量: 值在 cval, 尚未写入 rax */
+    bool lazy;                    /* 简单局部变量: 地址尚未写入 rax */
+    int  ldisp;
     i64  cval;
     int bit_off;
     int bit_width;
@@ -346,6 +349,7 @@ static void mark_module(const char *name)
     else if (!strcasecmp(b, "stdlib.h")) want_lib_stdlib = true;
     else if (!strcasecmp(b, "ctype.h")) want_lib_ctype = true;
     else if (!strcasecmp(b, "stdio.h")) want_lib_stdio = true;
+    else if (!strcasecmp(b, "net.h")) want_lib_net = true;
 }
 
 /* 读入头文件并压栈; 找不到返回 false */
@@ -1209,6 +1213,42 @@ static void modrm_rbp(int disp, u8 reg)
 static void mov_rax_local(int disp)
 {
     e8(0x48); e8(0x8B); modrm_rbp(disp, 0);
+}
+
+static void mov_rcx_local(int disp)
+{
+    e8(0x48); e8(0x8B); modrm_rbp(disp, 1);
+}
+
+static void movzx_rax_local(int disp)
+{
+    e8(0x48); e8(0x0F); e8(0xB6); modrm_rbp(disp, 0);
+}
+
+static void movzx_rcx_local(int disp)
+{
+    e8(0x48); e8(0x0F); e8(0xB6); modrm_rbp(disp, 1);
+}
+
+static int value_bytes(const struct ctype *t);
+
+/* mov rcx, [rbp+disp] (char 时零扩展) */
+static void load_rcx_local(int disp, const struct ctype *t)
+{
+    if (value_bytes(t) == 1)
+        movzx_rcx_local(disp);
+    else
+        mov_rcx_local(disp);
+}
+
+/* mov [rbp+disp], rax / al */
+static void store_local(int disp, const struct ctype *t)
+{
+    if (value_bytes(t) == 1) {
+        e8(0x88); modrm_rbp(disp, 0);
+    } else {
+        e8(0x48); e8(0x89); modrm_rbp(disp, 0);
+    }
 }
 
 static void lea_rax_local(int disp)
@@ -2121,6 +2161,15 @@ static void mat_value(void)
         g_e.is_const = false;
         return;
     }
+    if (g_e.lazy) {
+        if (g_e.t.ptr == 0 && g_e.t.kind == CK_CHAR)
+            movzx_rax_local(g_e.ldisp);
+        else
+            mov_rax_local(g_e.ldisp);
+        g_e.lazy = false;
+        g_e.lval = false;
+        return;
+    }
     if (g_e.is_arr) {
         /* 数组退化为指针: 首地址已在 rax */
         struct ctype p = g_e.t;
@@ -2215,13 +2264,22 @@ static void gen_incdec(bool inc, bool prefix)
     }
     step = inc_step(&t);
     bool is_bit = g_e.is_bit;
+    bool lazy = g_e.lazy;
+    int ldisp = g_e.ldisp;
     int bo = g_e.bit_off, bw = g_e.bit_width;
 
-    push_rax();                     /* 地址 */
-    if (is_bit)
+    if (!lazy)
+        push_rax();                 /* 地址 */
+    if (lazy) {
+        if (t.ptr == 0 && t.kind == CK_CHAR)
+            movzx_rax_local(ldisp);
+        else
+            mov_rax_local(ldisp);
+    } else if (is_bit) {
         bit_load(bo, bw, t.kind == CK_INT && !t.uns);
-    else
+    } else {
         load_at(&t);                /* rax = 旧值 */
+    }
     if (!prefix) {
         if (is_bit) mov_r10_rax();
         else        mov_rdx_rax();  /* 保存旧值 */
@@ -2230,12 +2288,16 @@ static void gen_incdec(bool inc, bool prefix)
         dbl_add_one(!inc);
     else
         add_rax_imm(inc ? step : -step);
-    mov_rcx_rsp();                  /* 地址 */
-    if (is_bit)
-        bit_store(bo, bw);
-    else
-        store_at(&t);
-    add_rsp_imm(8);
+    if (lazy) {
+        store_local(ldisp, &t);
+    } else {
+        mov_rcx_rsp();              /* 地址 */
+        if (is_bit)
+            bit_store(bo, bw);
+        else
+            store_at(&t);
+        add_rsp_imm(8);
+    }
     if (!prefix) {
         if (is_bit) mov_rax_r10();
         else        mov_rax_rdx();
@@ -2244,7 +2306,17 @@ static void gen_incdec(bool inc, bool prefix)
     g_e.is_arr = false;
     g_e.is_bit = false;
     g_e.is_const = false;
+    g_e.lazy = false;
     g_e.t = t;
+}
+
+/* 需要地址时: 惰性局部变量此时才生成 lea */
+static void mat_addr(void)
+{
+    if (g_e.lazy) {
+        lea_rax_local(g_e.ldisp);
+        g_e.lazy = false;
+    }
 }
 
 /* 间接调用: g_e 中的函数指针值 (rax) 作为被调地址 */
@@ -2252,10 +2324,17 @@ static void gen_indirect_call(void)
 {
     expect('(');
     if (g_e.lval) {
-        if (g_e.is_bit)
+        if (g_e.lazy) {
+            if (g_e.t.ptr == 0 && g_e.t.kind == CK_CHAR)
+                movzx_rax_local(g_e.ldisp);
+            else
+                mov_rax_local(g_e.ldisp);
+            g_e.lazy = false;
+        } else if (g_e.is_bit) {
             bit_load(g_e.bit_off, g_e.bit_width, false);
-        else
+        } else {
             load_at(&g_e.t);
+        }
         g_e.lval = false;
         g_e.is_bit = false;
     }
@@ -2447,33 +2526,48 @@ static void gen_postfix(void)
                 return;
             }
             bool is_bit = g_e.is_bit;
+            bool lazy = g_e.lazy;
+            int ldisp = g_e.ldisp;
             int bo = g_e.bit_off, bw = g_e.bit_width;
             int step = inc_step(&t);
-            push_rax();                 /* 地址 */
-            mov_rcx_rsp();
-            mov_rax_rcx();              /* rax = 地址 */
-            if (is_bit)
+            if (!lazy) {
+                push_rax();             /* 地址 */
+                mov_rcx_rsp();
+                mov_rax_rcx();          /* rax = 地址 */
+            }
+            if (lazy) {
+                if (t.ptr == 0 && t.kind == CK_CHAR)
+                    movzx_rax_local(ldisp);
+                else
+                    mov_rax_local(ldisp);
+            } else if (is_bit) {
                 bit_load(bo, bw, t.kind == CK_INT && !t.uns);
-            else
+            } else {
                 load_at(&t);            /* rax = 旧值 */
+            }
             if (is_bit) mov_r10_rax();
             else        mov_rdx_rax();  /* 保存旧值 */
             if (is_dbl(&t))
                 dbl_add_one(!inc);
             else
                 add_rax_imm(inc ? step : -step);
-            mov_rcx_rsp();
-            if (is_bit)
-                bit_store(bo, bw);
-            else
-                store_at(&t);
-            add_rsp_imm(8);
+            if (lazy) {
+                store_local(ldisp, &t);
+            } else {
+                mov_rcx_rsp();
+                if (is_bit)
+                    bit_store(bo, bw);
+                else
+                    store_at(&t);
+                add_rsp_imm(8);
+            }
             if (is_bit) mov_rax_r10();
             else        mov_rax_rdx();
             g_e.lval = false;
             g_e.is_arr = false;
             g_e.is_bit = false;
             g_e.is_const = false;
+            g_e.lazy = false;
             g_e.t = t;
             advance();
             continue;
@@ -2556,7 +2650,15 @@ static void gen_primary(void)
 
         struct sym *s = lookup_var(name);
         if (!s) { fail("undefined variable"); return; }
-        gen_sym_addr(s);
+        bool simple_local = (s->kind == SK_LOCAL && s->ndims == 0 &&
+                             !(s->type.kind == CK_STRUCT && s->type.ptr == 0 &&
+                               !s->type.func));
+        if (simple_local) {
+            g_e.lazy = true;               /* 直接 mov [rbp+d], 省去 lea */
+            g_e.ldisp = s->offset;
+        } else {
+            gen_sym_addr(s);
+        }
         if (s->ndims > 0) {
             g_e.is_arr = true;
             g_e.ndims = s->ndims;
@@ -2743,6 +2845,7 @@ static void gen_unary(void)
     }
     if (accept('&')) {
         gen_unary();
+        mat_addr();
         if (g_e.t.func) {           /* &func == func */
             g_e.lval = false;
             g_e.is_arr = false;
@@ -2823,12 +2926,15 @@ static void gen_expr(int minp)
                 return;
             }
             bool is_bit = g_e.is_bit;
+            bool lazy = g_e.lazy;
+            int ldisp = g_e.ldisp;
             int bo = g_e.bit_off, bw = g_e.bit_width;
             int op = cur.t;
             advance();
 
-            push_rax();                    /* 目标地址 */
-            if (op != '=') {
+            if (!lazy)
+                push_rax();                /* 目标地址 */
+            if (op != '=' && !lazy) {
                 mov_rcx_rsp();
                 mov_rax_rcx();
                 if (is_bit)
@@ -2848,7 +2954,7 @@ static void gen_expr(int minp)
                         fail("invalid float operator");
                         return;
                     }
-                    pop_rcx();             /* 旧值 */
+                    if (lazy) load_rcx_local(ldisp, &lt); else pop_rcx();
                     dbl_operands(lf, rf);
                     dbl_binop(bop);
                     if (!lf)
@@ -2856,7 +2962,7 @@ static void gen_expr(int minp)
                 } else {
                     if ((bop == '+' || bop == '-') && lt.ptr > 0)
                         imul_rax_imm(ptr_step(&lt));
-                    pop_rcx();             /* 旧值 */
+                    if (lazy) load_rcx_local(ldisp, &lt); else pop_rcx();
                     if (lt.uns) apply_binop_uns(bop);
                     else        apply_binop(bop);
                 }
@@ -2866,16 +2972,21 @@ static void gen_expr(int minp)
                 else if (!is_dbl(&lt) && is_dbl(&rop.t))
                     dbl_to_int();
             }
-            pop_rcx();                     /* 地址 */
-            if (is_bit)
-                bit_store(bo, bw);
-            else
-                store_at(&lt);
+            if (lazy) {
+                store_local(ldisp, &lt);
+            } else {
+                pop_rcx();                 /* 地址 */
+                if (is_bit)
+                    bit_store(bo, bw);
+                else
+                    store_at(&lt);
+            }
             g_e.t = lt;
             g_e.lval = false;
             g_e.is_arr = false;
             g_e.is_bit = false;
             g_e.is_const = false;
+            g_e.lazy = false;
             continue;
         }
 
@@ -3055,9 +3166,11 @@ static void gen_call(const char *name)
     /* 变参内置: va_start(ap,last) / va_arg(ap,type) / va_end(ap) */
     if (!strcmp(name, "va_start")) {
         gen_unary();                    /* ap 左值 -> rax = &ap */
+        mat_addr();
         push_rax();
         expect(',');
         gen_unary();                    /* last 左值 -> rax = &last */
+        mat_addr();
         add_rax_imm(8);                 /* 第一个可变参数 */
         pop_rcx();
         e8(0x48); e8(0x89); e8(0x01);   /* mov [rcx], rax */
@@ -3068,6 +3181,7 @@ static void gen_call(const char *name)
     }
     if (!strcmp(name, "va_arg")) {
         gen_unary();                    /* ap 左值 -> &ap */
+        mat_addr();
         push_rax();
         expect(',');
         struct ctype vt;
@@ -4473,6 +4587,7 @@ const u8 *tc_compile_opts(const char *src, u32 len, u32 *out_len,
     mac_used = 0;
     exp_depth = 0;
     want_lib_string = want_lib_stdlib = want_lib_ctype = want_lib_stdio = false;
+    want_lib_net = false;
     if (path && path[0])
         dir_of(path, inc_cur_dir);
     else
@@ -4509,6 +4624,8 @@ const u8 *tc_compile_opts(const char *src, u32 len, u32 *out_len,
         compile_lib_module(tc_lib_ctype);
     if (want_lib_stdio)
         compile_lib_module(tc_lib_stdio);
+    if (want_lib_net)
+        compile_lib_module(tc_lib_net);
 
     /* 解析函数调用 */
     for (int i = 0; i < nfc && !failed; i++) {

@@ -1,21 +1,104 @@
-#include "net.h"
-#include "tc.h"
+/* GT-DOS TC 标准库: net.c (按需编入)
+   在 socket 内置函数之上提供常用的连接/收发辅助函数.
+   包含 <net.h> 后才会编入程序. */
 
-/* 连接 10.0.2.2:7777 (QEMU 用户网络中的宿主机), 发送一行并打印回显 */
-int main(void)
+/* 点分十进制 IPv4 解析, 非法返回 0 */
+int net_aton(char *s)
 {
-    int fd = tcp_connect(ip4(10, 0, 2, 2), 7777);
-    if (fd < 0) {
-        print("CONNECT FAIL\n");
-        return 1;
+    int part[4];
+    int n = 0, v = 0, digits = 0;
+    for (int i = 0; s[i]; i++) {
+        char c = s[i];
+        if (c >= '0' && c <= '9') {
+            v = v * 10 + (c - '0');
+            digits = 1;
+        } else if (c == '.') {
+            if (!digits || n >= 3)
+                return 0;
+            part[n] = v;
+            n++;
+            v = 0;
+            digits = 0;
+        } else {
+            return 0;
+        }
     }
-    print("CONNECTED\n");
-    tcp_send(fd, "hello\n", 6);
+    if (!digits || n != 3)
+        return 0;
+    part[3] = v;
+    for (int k = 0; k < 4; k++)
+        if (part[k] < 0 || part[k] > 255)
+            return 0;
+    return ip4(part[0], part[1], part[2], part[3]);
+}
 
-    int buf = 0x700000;              /* 程序镜像之上的空闲暂存区 */
-    int n = tcp_recv(fd, buf, 64);
-    if (n > 0)
-        write(1, buf, n);
-    tcp_close(fd);
-    return 0;
+/* 解析主机名 (支持点分十进制或 DNS), 返回 IPv4 或 0 */
+int net_resolve(char *host)
+{
+    int ip = net_aton(host);
+    if (ip != 0)
+        return ip;
+    return dns(host);
+}
+
+/* 解析主机名并建立 TCP 连接, 失败返回 -1 */
+int net_connect(char *host, int port)
+{
+    int ip = net_resolve(host);
+    if (ip == 0)
+        return -1;
+    return tcp_connect(ip, port);
+}
+
+/* 发送 C 字符串 (自动计算长度) */
+int net_send_str(int fd, char *s)
+{
+    int n = 0;
+    while (s[n])
+        n++;
+    return tcp_send(fd, s, n);
+}
+
+/* 发送全部字节, 返回实际发送数 */
+int net_send_all(int fd, char *buf, int len)
+{
+    int off = 0;
+    while (off < len) {
+        int n = tcp_send(fd, buf + off, len - off);
+        if (n <= 0)
+            return off;
+        off = off + n;
+    }
+    return off;
+}
+
+/* 读取一行 (含换行符, 末尾补 NUL), 返回读取字节数 */
+int net_recv_line(int fd, char *buf, int cap)
+{
+    int i = 0;
+    while (i + 1 < cap) {
+        char c;
+        int n = tcp_recv(fd, &c, 1);
+        if (n <= 0)
+            break;
+        buf[i] = c;
+        i++;
+        if (c == '\n')
+            break;
+    }
+    buf[i] = 0;
+    return i;
+}
+
+/* 读取到缓冲区满或对端关闭, 返回读取字节数 */
+int net_recv_all(int fd, char *buf, int cap)
+{
+    int off = 0;
+    while (off < cap) {
+        int n = tcp_recv(fd, buf + off, cap - off);
+        if (n <= 0)
+            break;
+        off = off + n;
+    }
+    return off;
 }

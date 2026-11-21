@@ -511,6 +511,7 @@ TC_LIB_MODULES = [
     ("stdlib", "stdlib.c"),
     ("ctype", "ctype.c"),
     ("stdio", "stdio.c"),
+    ("net", "net.c"),
 ]
 
 

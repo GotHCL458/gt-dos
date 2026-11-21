@@ -25,6 +25,7 @@
  *   ctype.h   isdigit isalpha isalnum isspace isupper islower toupper tolower
  *   stdio.h   printf putchar puts getchar (printf supports up to 5 varargs)
  *   stdarg.h  va_list (va_start/va_arg/va_end are compiler builtins)
+ *   net.h     TCP/UDP builtins + net.c helpers (net_connect/net_send_str/...)
  *
  * Layout: 128 KB code at 0x600000, 128 KB data at 0x620000
  *         (64 KB globals, 64 KB string pool).

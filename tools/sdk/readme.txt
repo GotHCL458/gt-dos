@@ -19,6 +19,8 @@ Optimization:
 
 Files:
   TC.H       builtin function reference
+  NET.H      network builtins and helper library API
+  NET.C      network helper library (compiled on demand)
   HELLO.C    minimal console output example
   FIB.C      recursion + loop example
 
@@ -42,6 +44,8 @@ Standard library modules (compiled only when the matching header is included):
   ctype.h   isdigit isalpha isalnum isspace isupper islower toupper tolower
   stdio.h   printf putchar puts getchar
   stdarg.h  va_list (va_start / va_arg / va_end are compiler builtins)
+  net.h     TCP/UDP builtins + NET.C helpers (net_aton/net_resolve/
+            net_connect/net_send_str/net_send_all/net_recv_line/net_recv_all)
   printf: %d %i %u %x %X %c %s %p %f %%, up to 5 varargs.
 
 Layout: 128 KB code at 0x600000, 128 KB data at 0x620000.
