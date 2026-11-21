@@ -129,24 +129,25 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 - `TC <源.c> [-o 输出.gtp]` 直接把 C 子集编译为 x86-64 机器码，生成可由 `RUN`
   执行的 `.gtp` 程序，全程不依赖外部工具链
 - 支持：`int`/`char`/`double`/指针、1–4 维数组、`struct`/`union`（字段、嵌套结构、
-  `.` 与 `->`、位域）、函数指针、函数（最多 6 参数、递归、原型、用户可变参数
-  `...` 与 `va_list`/`va_start`/`va_arg`/`va_end`）、`if/else`、`while`、`do/while`、
-  `for`、`switch/case/default`（可穿透）、`break`/`continue`/`return`/`goto` 与标签、
-  完整表达式（整数与 `double` 运算/比较）与 `?:`、前置/后置 `++`/`--`、复合赋值、
-  `typedef`、`enum`、`sizeof`、强制类型转换、字符串字面量、全局/局部花括号与字符串初始化
-- 扫描器支持对象式与函数式 `#define` 宏；不实现 `#if`（GT-DOS 只有单一平台），
-  其余指令整行跳过。`#include <...>` / `#include "..."` 在编译期展开（依次查找
-  源文件目录、`\SDK`、`\GT-DOS\INCLUDE`），每个文件只包含一次；标准库模块
-  （string/stdlib/ctype/stdio）**只有对应头文件被 include 时才编入程序**，
-  未使用的库不会增大 `out.gtp`
+  `.` 与 `->`、位域）、函数指针及函数指针数组、函数（最多 6 参数、递归、原型、
+  用户可变参数 `...` 与 `va_list`/`va_start`/`va_arg`/`va_end`）、`if/else`、
+  `while`、`do/while`、`for`、`switch/case/default`（可穿透）、
+  `break`/`continue`/`return`/`goto` 与标签、完整表达式（有/无符号整数与
+  `double` 运算/比较）与 `?:`、前置/后置 `++`/`--`、复合赋值、`typedef`、`enum`、
+  `sizeof(类型)`/`sizeof 表达式`、强制类型转换、含转义（`\n \t \xNN \NNN`）的
+  字符串/字符字面量、全局/局部花括号与字符串初始化
+- 扫描器支持对象式与函数式 `#define` 宏（含 `#` 字符串化与 `##` 记号拼接）；
+  不实现 `#if`（GT-DOS 只有单一平台），其余指令整行跳过。`#include <...>` /
+  `#include "..."` 在编译期展开（依次查找源文件目录、`\SDK`、`\GT-DOS\INCLUDE`），
+  每个文件只包含一次；标准库模块（string/stdlib/ctype/stdio）**只有对应头文件
+  被 include 时才编入程序**，未使用的库不会增大 `out.gtp`
 - 标准库：`strlen strcpy strncpy strcmp strncmp strcat strncat strchr strrchr strstr`
   `memcpy memmove memset memcmp`、`malloc calloc free strdup abs atoi strtol rand srand`
   （16KB 堆）、
   `isdigit isalpha isalnum isspace isupper islower toupper tolower`、
   `printf putchar puts getchar`；`printf` 由编译器生成 SYS_PRINTF，
   支持 `%d %i %u %x %X %c %s %p %f %%`，最多 5 个可变参数
-- 不支持：`long double`、函数指针数组/返回函数指针、`#define` 的 `##`/`#`
-  记号拼接与字符串化，以及 `#if` 条件编译
+- 不支持：`long double`、返回函数指针的函数，以及 `#if` 条件编译
 - 内置函数（`\SDK\TC.H`）：`putc`、`print`、`print_int`、`getc`、`exit`、
   `sleep`、`uptime`、`open`、`read`、`write`、`close`、`seek`、`stat`、`statx`、
   `reboot`、`shutdown`；控制台/系统 `cls`、`color`、`screen`、`getcwd`、`hostname`、
@@ -359,15 +360,25 @@ tools/
   test_tasks.py      系统任务表、SYS 服务与保护测试
   test_protect.py    内核容器与 .gtp 篡改检测测试
   test_kbd.py        PS/2 键盘测试 (NumLock、Ctrl 组合、Ctrl+Alt+Del)
+  sdk/bench.c        TC 微基准 (循环/调用/double/数组/递归)
+  bench_host.rs      同一组负载的宿主原生基线 (rustc -O)
+  test_perf.py       TC 与原生性能对比并生成报告
 build.py             构建脚本与镜像组装
 ```
 
 测试脚本通过串口 socket 与 QEMU monitor socket 驱动 QEMU 实例，
 因此它们校验的是真实启动输出，而非模拟数据。
 
+`tools/test_perf.py` 在 GT-DOS 内编译并运行 `\SDK\BENCH.C`，同时用 `rustc -O`
+在宿主运行同一组负载，生成 `build/perf_report.md`。测试机上的典型结果：
+整数循环约 18 ns/op、直接调用约 35 ns、函数指针调用约 50 ns（约 1.4×）、
+double 乘加约 30 ns、数组读取约 22 ns、fib(30) 约 60 ms；TC 编译该基准约 0.2 s。
+与原生相差 20–80×，主要来自 QEMU TCG 模拟以及 TC 刻意简单的无优化代码生成
+（所有值都放在栈槽中，不做寄存器分配）。
+
 ## 说明与限制
 
-- 内核目前为 609 扇区（311,616 字节，含 48 字节 `GTK1` 尾部），构建上限 640 扇区
+- 内核目前为 617 扇区（315,712 字节，含 48 字节 `GTK1` 尾部），构建上限 640 扇区
   （320KB），加载区间为 `0x10000` 到 `0x60000`；链接脚本同时断言
   `.bss <= 0xA0000` 与 `.highbss <= LIB_BASE`。
 - GDT 在低端内存（0x6800）由入口代码构造，而非放在 `.data`：CPU 装载段寄存器

@@ -5,16 +5,18 @@
  *
  * Supported subset:
  *   int / char / double / pointers, 1-4D arrays, struct / union (fields, bitfields,
- *   . and ->), function pointers, functions (up to 6 parameters, recursion,
- *   prototypes, user variadic with va_list/va_start/va_arg/va_end), if/else,
- *   while, do/while, for, switch/case/default, break/continue/return/goto,
- *   full expressions (integer and double) with ?:, prefix/postfix ++ --,
- *   compound assignments, typedef, enum, sizeof, casts, string literals,
- *   brace/string initialisers, object-like and function-like #define macros,
+ *   . and ->), function pointers and function-pointer arrays, functions
+ *   (up to 6 parameters, recursion, prototypes, user variadic with
+ *   va_list/va_start/va_arg/va_end), if/else, while, do/while, for,
+ *   switch/case/default, break/continue/return/goto, full expressions
+ *   (signed/unsigned integer and double) with ?:, prefix/postfix ++ --,
+ *   compound assignments, typedef, enum, sizeof(type)/sizeof expr, casts,
+ *   string/char literals with \xNN and octal escapes, brace/string
+ *   initialisers, object-like and function-like #define macros with # and ##,
  *   and the builtins below.
  *
- * Not supported: long double, function-pointer arrays/return types,
- * #define ## / # token pasting, and #if conditionals.
+ * Not supported: long double, functions returning function pointers, and
+ * #if conditionals.
  *
  * Standard library modules are compiled in only when #included:
  *   string.h  strlen strcpy strncpy strcmp strncmp strcat strncat strchr strrchr

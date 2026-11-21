@@ -257,6 +257,10 @@ def main():
         "int apply(binop f,int a,int b){ return f(a,b); }",
         "double gd = 1.5;",
         "double half(double x){ return x / 2.0; }",
+        "int (*gops[2])(int,int) = { add, sub };",
+        "#define STR(x) #x",
+        "#define CAT(a,b) a##b",
+        "int CAT(var,1) = 7;",
         "int sum(int n, ...) {",
         "va_list ap;",
         "int s = 0;",
@@ -285,6 +289,16 @@ def main():
         "double e = d * 3.0 + 1.25;",
         'printf("dbl=%f %f %d\\n", e, half(5.0), (int)(d + 0.6));',
         'printf("dcmp=%d %d gd=%f\\n", e > d, d == 2.5, gd + 1.0);',
+        "unsigned u = 0 - 1;",
+        "int arr[4];",
+        "int (*ops[2])(int,int);",
+        "ops[0] = add; ops[1] = sub;",
+        'printf("fpa=%d %d %d\\n", ops[0](8,2), ops[1](8,2), gops[1](9,4));',
+        'printf("uns=%d %d\\n", u / 3, u >> 60);',
+        'printf("sz=%d %d %d\\n", sizeof(arr), sizeof(arr[0]),'
+        " sizeof(arr)/sizeof(int));",
+        'printf("esc=%d %d\\n", \'\\x41\', \'\\101\');',
+        'printf("mac2=%s %d\\n", STR(hello world), var1);',
         "return 0;",
         "}",
     ]
@@ -305,6 +319,14 @@ def main():
     check("tc floating point", vm.expect("dbl=8.750000 2.500000 3", 4000),
           vm.buf[-500:])
     check("tc float compare/global", vm.expect("dcmp=1 1 gd=2.500000", 4000),
+          vm.buf[-500:])
+    check("tc fnptr arrays", vm.expect("fpa=10 6 5", 4000), vm.buf[-500:])
+    check("tc unsigned semantics",
+          vm.expect("uns=6148914691236517205 15", 4000), vm.buf[-500:])
+    check("tc sizeof expressions", vm.expect("sz=32 8 4", 4000),
+          vm.buf[-500:])
+    check("tc escapes", vm.expect("esc=65 65", 4000), vm.buf[-500:])
+    check("tc macro #/##", vm.expect("mac2=hello world 7", 4000),
           vm.buf[-500:])
 
     # cat / rich / vim

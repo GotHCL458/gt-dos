@@ -137,17 +137,19 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
 - `TC <src.c> [-o out.gtp]` compiles a C subset straight to x86-64 machine code and
   writes a `.gtp` program that `RUN` can execute — no external toolchain involved
 - Supported: `int`/`char`/`double`/pointers, 1-4D arrays, `struct`/`union` (fields,
-  nested structs, `.` and `->`, bitfields), function pointers, functions (up to 6
-  parameters, recursion, prototypes, user variadic `...` with `va_list`/`va_start`/
-  `va_arg`/`va_end`), `if/else`, `while`, `do/while`, `for`,
-  `switch/case/default` (fallthrough),
-  `break`/`continue`/`return`/`goto` with labels, full expressions (integer and
-  `double` arithmetic/comparison) with `?:`, prefix/postfix `++`/`--`, compound
-  assignments, `typedef`, `enum`, `sizeof`, casts, string literals, and brace/string
-  initializers for globals and locals
-- Object-like and function-like `#define` macros are expanded by the scanner; `#if`
-  is not implemented (GT-DOS only targets one platform), and other directives are
-  skipped. `#include <...>` / `#include "..."` is resolved at compile time (source
+  nested structs, `.` and `->`, bitfields), function pointers and function-pointer
+  arrays, functions (up to 6 parameters, recursion, prototypes, user variadic
+  `...` with `va_list`/`va_start`/`va_arg`/`va_end`), `if/else`, `while`,
+  `do/while`, `for`, `switch/case/default` (fallthrough),
+  `break`/`continue`/`return`/`goto` with labels, full expressions (signed and
+  `unsigned` integer plus `double` arithmetic/comparison) with `?:`,
+  prefix/postfix `++`/`--`, compound assignments, `typedef`, `enum`,
+  `sizeof(type)`/`sizeof expr`, casts, string/char literals with escapes
+  (`\n \t \xNN \NNN`), and brace/string initializers for globals and locals
+- Object-like and function-like `#define` macros (including `#` stringizing and
+  `##` token pasting) are expanded by the scanner; `#if` is not implemented
+  (GT-DOS only targets one platform), and other directives are skipped.
+  `#include <...>` / `#include "..."` is resolved at compile time (source
   directory, `\SDK`, then `\GT-DOS\INCLUDE`); each file is included once. Standard
   modules (`string/stdlib/ctype/stdio`) are compiled into the program **only when their
   header is included**, so unused library code never bloats `out.gtp`
@@ -157,8 +159,8 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
   `isdigit isalpha isalnum isspace isupper islower toupper tolower`,
   `printf putchar puts getchar`; `printf` is a compiler builtin (SYS_PRINTF) supporting
   `%d %i %u %x %X %c %s %p %f %%` with up to 5 varargs
-- Not supported: `long double`, function-pointer arrays/return types, `#define` token
-  pasting/stringizing (`##`/`#`), and `#if` conditionals
+- Not supported: `long double`, functions returning function pointers, and `#if`
+  conditionals
 - Builtins (`\SDK\TC.H`): `putc`, `print`, `print_int`, `getc`, `exit`, `sleep`,
   `uptime`, `open`, `read`, `write`, `close`, `seek`, `stat`, `statx`, `reboot`, `shutdown`;
   console/system calls `cls`, `color`, `screen`, `getcwd`, `hostname`, `username`,
@@ -382,15 +384,26 @@ tools/
   test_tasks.py      system task table, SYS service and protection test
   test_protect.py    kernel-container and .gtp tamper detection test
   test_kbd.py        PS/2 keyboard test (NumLock, Ctrl combos, Ctrl+Alt+Del)
+  sdk/bench.c        TC micro-benchmark (loops, calls, double, arrays, recursion)
+  bench_host.rs      native baseline for the same workloads (rustc -O)
+  test_perf.py       TC vs native performance comparison report
 build.py             build script and image assembler
 ```
 
 The test scripts drive a QEMU instance over a serial socket and a QEMU monitor socket, so they
 assert on real boot output rather than on mocks.
 
+`tools/test_perf.py` compiles and runs `\SDK\BENCH.C` inside GT-DOS, runs the same
+workloads natively (`rustc -O`) and writes `build/perf_report.md`. Typical results on
+the QEMU test host: integer loop ≈18 ns/op, direct call ≈35 ns, function-pointer
+call ≈50 ns (≈1.4× direct), double multiply-add ≈30 ns, array read ≈22 ns,
+fib(30) ≈60 ms; TC compiles the benchmark in ≈0.2 s. The 20–80× gap to native is
+dominated by QEMU TCG emulation plus TC's deliberately simple, unoptimized code
+generation (every value lives in a stack slot and no register allocation is done).
+
 ## Notes and Limitations
 
-- The kernel currently fits in 609 sectors (311,616 bytes including the 48-byte `GTK1`
+- The kernel currently fits in 617 sectors (315,712 bytes including the 48-byte `GTK1`
   trailer); the build cap is 640 sectors (320 KB), loaded between `0x10000` and `0x60000`.
   The linker also asserts `.bss <= 0xA0000` and `.highbss <= LIB_BASE`.
 - The GDT is built in low memory (0x6800) rather than `.data`: loading a segment register

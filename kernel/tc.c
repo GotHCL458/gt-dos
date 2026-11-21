@@ -629,11 +629,60 @@ static bool macro_build(struct macro *m, char *dst, int cap)
 
     sp = q;
     int d = 0;
+    bool paste = false;
     const char *p = m->body;
     while (*p && d < cap - 1) {
         char c = *p;
+        /* ## 记号拼接: 去掉两侧空白 */
+        if (c == '#' && p[1] == '#') {
+            while (d > 0 && (dst[d - 1] == ' ' || dst[d - 1] == '\t'))
+                d--;
+            p += 2;
+            paste = true;
+            continue;
+        }
+        /* # 参数 字符串化 */
+        if (c == '#' && m->func) {
+            const char *r = p + 1;
+            while (*r == ' ' || *r == '\t') r++;
+            if (ident_char_(*r)) {
+                char w[32];
+                int wn = 0;
+                while (ident_char_(*r) && wn < 31)
+                    w[wn++] = *r++;
+                w[wn] = 0;
+                int pi = -1;
+                for (int i = 0; i < m->nparams; i++)
+                    if (!strcmp(m->param[i], w)) { pi = i; break; }
+                if (pi >= 0) {
+                    if (paste) {
+                        while (d > 0 && dst[d - 1] == ' ')
+                            d--;
+                        paste = false;
+                    }
+                    if (d < cap - 1) dst[d++] = '"';
+                    for (int i = 0; args[pi][i] && d < cap - 2; i++) {
+                        char ch = args[pi][i];
+                        if (ch == '"' || ch == '\\') {
+                            if (d < cap - 2) dst[d++] = '\\';
+                        }
+                        dst[d++] = ch;
+                    }
+                    if (d < cap - 1) dst[d++] = '"';
+                    p = r;
+                    continue;
+                }
+            }
+            dst[d++] = '#';
+            p++;
+            continue;
+        }
         if (c == '"' || c == '\'') {
             char quote = c;
+            if (paste) {
+                while (d > 0 && dst[d - 1] == ' ') d--;
+                paste = false;
+            }
             dst[d++] = *p++;
             while (*p && *p != quote && d < cap - 1) {
                 if (*p == '\\' && p[1]) {
@@ -657,9 +706,17 @@ static bool macro_build(struct macro *m, char *dst, int cap)
                 if (!strcmp(m->param[i], w)) { pi = i; break; }
             }
             const char *src = (pi >= 0) ? args[pi] : w;
+            if (paste) {
+                while (d > 0 && dst[d - 1] == ' ') d--;
+                paste = false;
+            }
             for (int i = 0; src[i] && d < cap - 1; i++)
                 dst[d++] = src[i];
             continue;
+        }
+        if (paste) {
+            while (d > 0 && dst[d - 1] == ' ') d--;
+            paste = false;
         }
         dst[d++] = *p++;
     }
@@ -759,6 +816,48 @@ static u64 dec_to_double(const char *s)
         return sign;                              /* 下溢 -> 0 */
     u64 frac = (u64)m & ((1ULL << 52) - 1);
     return sign | ((u64)ef << 52) | frac;
+}
+
+/* 解析反斜杠转义 (sp 指向 '\\' 之后), 支持 \xNN 与八进制 */
+static int scan_escape(void)
+{
+    char e = *sp++;
+    if (e == 'x') {
+        int v = 0, n = 0;
+        for (;;) {
+            char h = *sp;
+            int d;
+            if (h >= '0' && h <= '9') d = h - '0';
+            else if (h >= 'a' && h <= 'f') d = h - 'a' + 10;
+            else if (h >= 'A' && h <= 'F') d = h - 'A' + 10;
+            else break;
+            v = v * 16 + d;
+            sp++;
+            if (++n >= 2) break;
+        }
+        return v;
+    }
+    if (e >= '0' && e <= '7') {
+        int v = e - '0', n = 1;
+        while (n < 3 && *sp >= '0' && *sp <= '7') {
+            v = v * 8 + (*sp++ - '0');
+            n++;
+        }
+        return v;
+    }
+    switch (e) {
+    case 'n': return '\n';
+    case 't': return '\t';
+    case 'r': return '\r';
+    case 'a': return 7;
+    case 'b': return 8;
+    case 'f': return 12;
+    case 'v': return 11;
+    case '\\': return '\\';
+    case '\'': return '\'';
+    case '"': return '"';
+    default: return (u8)e;
+    }
 }
 
 static struct token scan(void)
@@ -928,17 +1027,7 @@ static struct token scan(void)
         i64 v = 0;
         if (*sp == '\\') {
             sp++;
-            char e = *sp++;
-            switch (e) {
-            case 'n': v = '\n'; break;
-            case 't': v = '\t'; break;
-            case 'r': v = '\r'; break;
-            case '0': v = 0; break;
-            case '\\': v = '\\'; break;
-            case '\'': v = '\''; break;
-            case '"': v = '"'; break;
-            default: v = (u8)e; break;
-            }
+            v = scan_escape();
         } else {
             v = (u8)*sp++;
         }
@@ -954,16 +1043,8 @@ static struct token scan(void)
         while (*sp && *sp != '"') {
             char ch = *sp++;
             if (ch == '\\') {
-                char e = *sp++;
-                switch (e) {
-                case 'n': ch = '\n'; break;
-                case 't': ch = '\t'; break;
-                case 'r': ch = '\r'; break;
-                case '0': ch = 0; break;
-                case '\\': ch = '\\'; break;
-                case '"': ch = '"'; break;
-                default: ch = e; break;
-                }
+                sp--;
+                ch = (char)scan_escape();
             }
             add_str_byte((u8)ch);
             len++;
@@ -1348,6 +1429,45 @@ static void apply_cmp(int op)
     case T_LE: cc = 0x9E; break;
     case '>':  cc = 0x9F; break;
     case T_GE: cc = 0x9D; break;
+    default: break;
+    }
+    e8(0x0F); e8(cc); e8(0xC0);
+    e8(0x48); e8(0x0F); e8(0xB6); e8(0xC0);
+}
+
+/* 无符号除法/取模/右移 */
+static void apply_binop_uns(int op)
+{
+    switch (op) {
+    case '/':
+    case '%':
+        e8(0x48); e8(0x91);                 /* xchg rax, rcx */
+        e8(0x31); e8(0xD2);                 /* xor edx, edx */
+        e8(0x48); e8(0xF7); e8(0xF1);       /* div rcx */
+        if (op == '%') { e8(0x48); e8(0x89); e8(0xD0); }
+        break;
+    case T_SHR:
+        e8(0x48); e8(0x91);                 /* xchg */
+        e8(0x48); e8(0xD3); e8(0xE8);       /* shr rax, cl */
+        break;
+    default:
+        apply_binop(op);
+        break;
+    }
+}
+
+/* 无符号比较 (setb/setbe/seta/setae) */
+static void apply_cmp_uns(int op)
+{
+    e8(0x48); e8(0x39); e8(0xC1);       /* cmp rcx, rax */
+    u8 cc = 0x94;
+    switch (op) {
+    case T_EQ: cc = 0x94; break;
+    case T_NE: cc = 0x95; break;
+    case '<':  cc = 0x92; break;
+    case T_LE: cc = 0x96; break;
+    case '>':  cc = 0x97; break;
+    case T_GE: cc = 0x93; break;
     default: break;
     }
     e8(0x0F); e8(cc); e8(0xC0);
@@ -2286,7 +2406,11 @@ static void gen_unary(void)
                 return;
             expect(')');
             mov_rax_imm((u64)value_bytes(&t));
-        } else if (cur.t == T_ID) {
+        } else if (cur.t == T_ID &&
+                   ((paren && nxt.t == ')') ||
+                    (!paren && nxt.t != '[' && nxt.t != '.' &&
+                     nxt.t != T_ARROW && nxt.t != '(' &&
+                     bin_prec(nxt.t) < 0 && !is_assign_op(nxt.t)))) {
             int sz;
             int ti = find_typedef(cur.name);
             if (ti >= 0) {
@@ -2302,8 +2426,20 @@ static void gen_unary(void)
                 expect(')');
             mov_rax_imm((u64)sz);
         } else {
-            fail("sizeof requires a type or name");
-            return;
+            /* sizeof 表达式: 只取类型大小, 丢弃生成的代码 */
+            u32 save = clen;
+            if (paren) gen_expr(0);
+            else       gen_unary();
+            if (failed)
+                return;
+            int sz = g_e.is_arr ? g_e.nelem * g_e.esize
+                                : value_bytes(&g_e.t);
+            if (sz <= 0 && g_e.is_arr)
+                sz = g_e.esize;
+            clen = save;
+            if (paren)
+                expect(')');
+            mov_rax_imm((u64)sz);
         }
         memset(&g_e, 0, sizeof(g_e));
         g_e.t.kind = CK_INT;
@@ -2488,7 +2624,8 @@ static void gen_expr(int minp)
                     if ((bop == '+' || bop == '-') && lt.ptr > 0)
                         imul_rax_imm(ptr_step(&lt));
                     pop_rcx();             /* 旧值 */
-                    apply_binop(bop);
+                    if (lt.uns) apply_binop_uns(bop);
+                    else        apply_binop(bop);
                 }
             } else {
                 if (is_dbl(&lt) && !is_dbl(&rop.t))
@@ -2574,8 +2711,11 @@ static void gen_expr(int minp)
             }
         }
 
+        bool uns = (lt.uns || rt.t.uns) && lt.ptr == 0 && rt.t.ptr == 0;
+
         if (cmpop) {
-            apply_cmp(op);
+            if (uns) apply_cmp_uns(op);
+            else     apply_cmp(op);
             g_e.t.kind = CK_INT; g_e.t.ptr = 0; g_e.t.obj = 8;
         } else if (op == '-' && lt.ptr > 0 && rt.t.ptr > 0) {
             /* 指针相减: 结果除以元素大小 */
@@ -2588,13 +2728,15 @@ static void gen_expr(int minp)
             }
             g_e.t.kind = CK_INT; g_e.t.ptr = 0; g_e.t.obj = 8;
         } else {
-            apply_binop(op);
+            if (uns) apply_binop_uns(op);
+            else     apply_binop(op);
             if ((op == '+' || op == '-') && lt.ptr > 0 && rt.t.ptr == 0)
                 g_e.t = lt;
             else if (op == '+' && lt.ptr == 0 && rt.t.ptr > 0)
                 g_e.t = rt.t;
             else {
                 g_e.t.kind = CK_INT; g_e.t.ptr = 0; g_e.t.obj = 8;
+                g_e.t.uns = uns ? 1 : 0;
             }
         }
         g_e.lval = false;
@@ -2839,6 +2981,23 @@ static bool parse_declarator(struct ctype base, struct decl *d)
         strncpy(d->name, cur.name, 31);
         d->name[31] = 0;
         advance();
+        while (accept('[')) {          /* 函数指针数组: (*ops[N])(...) */
+            i64 n = 0;
+            bool unsized = false;
+            if (cur.t == ']') {
+                unsized = true;
+            } else {
+                n = c_cond();
+                if (n < 0) { fail("bad array size"); return false; }
+            }
+            expect(']');
+            if (d->ndims >= MAX_DIM) { fail("too many dimensions"); return false; }
+            d->dims[d->ndims++] = (int)n;
+            if (unsized)
+                d->incomplete = true;
+            else if (n > 0)
+                d->nelem *= (int)n;
+        }
         expect(')');
         if (!accept('(')) { fail("expected parameter list"); return false; }
         if (!accept(')')) {
