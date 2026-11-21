@@ -189,6 +189,7 @@ C_SOURCES = [
     "lib.c",
     "gtlib.c",
     "tc.c",
+    "asm.c",
     "net.c",
     "tcp.c",
     "netapp.c",
@@ -283,7 +284,7 @@ def build_kernel():
     for name in C_SOURCES:
         src = os.path.join(ROOT, "kernel", name)
         obj = os.path.join(BUILD, name.replace(".c", ".o"))
-        extra = ["-Os"] if name in ("tc.c", "richtext.c") else []
+        extra = ["-Os"] if name in ("tc.c", "asm.c", "richtext.c") else []
         jobs.append(([TOOLS["clang"]] + CFLAGS + extra + ["-c", src, "-o", obj],
                      obj))
 

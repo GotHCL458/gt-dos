@@ -351,6 +351,10 @@ const u8  *tc_compile_files(const struct tc_src *srcs, int n, u32 *out_len,
 void tc_stats(u32 *code_bytes, u32 *data_bytes);
 const char *tc_error(void);
 
+/* ------------------------------------------------------- 内置汇编器 (ASM) */
+const u8  *asm_assemble(const char *src, u32 len, u32 *out_len);
+const char *asm_error(void);
+
 /* ------------------------------------------------------- 富文本 / 编辑器 */
 void rich_render(const char *text, u32 len, const char *title);
 int  vim_run(const char *abs);          /* 0=正常, -1 无图形, -2 过大, -3 读失败 */

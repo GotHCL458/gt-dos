@@ -6,6 +6,7 @@ TC compiles a small C subset directly to x86-64 machine code and writes a
 
   TC <src.c> [more.c ...] [-o out.gtp]
                                compile (default output: current dir, .gtp)
+  ASM <src.s> [-o out.gtp]     assemble x86-64 source -> .gtp
   RUN <file.gtp>               run the program
 
 Multiple source files are flattened automatically in the given order into one
@@ -33,7 +34,19 @@ Files:
   NET.H      network builtins and helper library API
   NET.C      network helper library (compiled on demand)
   HELLO.C    minimal console output example
+  HELLO.S    minimal x86-64 assembly example (ASM)
   FIB.C      recursion + loop example
+
+ASM (built-in x86-64 assembler):
+  ASM <src.s> [-o out.gtp]
+  NASM-style single file: .text/.data (or "section .text/.data"), labels,
+  equ constants, db/dw/dd/dq, times; 64-bit registers rax..r15 and 32-bit
+  eax..r15d; memory operands [reg], [reg+disp], [reg+index*scale+disp],
+  [label], [disp]. Instructions: mov, lea, add/sub/and/or/xor/cmp, test,
+  inc/dec, neg/not, imul, div/idiv, shl/shr/sar, push/pop, call/ret,
+  jmp/jcc, int, nop, hlt, leave, cqo/cdq.
+  Entry is code offset 0; call the kernel with INT 0x21 (rax = call number)
+  and exit with rdi=code, rax=0, INT 0x21. Output layout matches TC.
 
 Supported C subset:
   int/char/double/pointers, 1-4D arrays, struct/union (fields, bitfields,

@@ -276,6 +276,60 @@ def main():
     check("tc deep expression result", vm.expect("deep=102", 4000),
           vm.buf[-300:])
 
+    # 内置汇编器: 数据/标签/equ/times/内存寻址/循环/系统调用
+    vm.buf = ""
+    asm_src = [
+        "section .data",
+        'msg: db "ASM=", 0',
+        "val: dq 0",
+        "buf: times 4 db 0",
+        "N equ 2",
+        "section .text",
+        "mov rax, 3",
+        "mov [val], rax",
+        "mov rcx, N",
+        "loop1:",
+        "mov rax, [val]",
+        "add rax, rax",
+        "mov [val], rax",
+        "dec rcx",
+        "jnz loop1",
+        "mov rdi, msg",
+        "mov rax, 11",
+        "int 0x21",
+        "mov rdi, [val]",
+        "mov rax, 20",
+        "int 0x21",
+        "mov rdi, 10",
+        "mov rax, 1",
+        "int 0x21",
+        "mov rdi, 0",
+        "mov rax, 0",
+        "int 0x21",
+    ]
+    vm.cmd(f"put a.s {asm_src[0]}", 600)
+    for line in asm_src[1:]:
+        vm.cmd(f"append a.s {line}", 450)
+    vm.cmd("asm a.s", 2000)
+    check("asm compiles x86-64 source", vm.expect("Assembled ", 8000),
+          vm.buf[-300:])
+    vm.cmd("run a.gtp", 2000)
+    check("asm program output", vm.expect("ASM=12", 4000), vm.buf[-300:])
+    check("asm program exit", vm.expect("exited with code 0", 3000),
+          vm.buf[-300:])
+    vm.buf = ""
+    vm.cmd("put bad.s mov rax, missing_label")
+    vm.cmd("asm bad.s", 1500)
+    check("asm undefined label error", vm.expect("undefined label", 4000),
+          vm.buf[-300:])
+    vm.buf = ""
+    vm.cmd("asm sdk\\hello.s", 2000)
+    check("asm SDK hello.s compiles", vm.expect("Assembled ", 8000),
+          vm.buf[-300:])
+    vm.cmd("run hello.gtp", 1500)
+    check("asm SDK hello.s runs", vm.expect("Hello from ASM!", 4000),
+          vm.buf[-300:])
+
     # 未 include 时不编入库: strlen 应为未定义
     vm.buf = ""
     vm.cmd("put n.c int main(void){")

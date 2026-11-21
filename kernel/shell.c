@@ -816,6 +816,82 @@ static void cmd_tc(int argc, char **argv)
     }
 }
 
+/* ASM: 汇编源码 -> .gtp (默认输出到当前目录, 可用 -o 指定) */
+static void asm_usage(void)
+{
+    err("Usage: ASM <src.s|src.asm> [-o out.gtp]\n");
+    kprintf("  NASM-style: .text/.data, labels, equ, db/dw/dd/dq, times\n");
+    kprintf("  64/32-bit registers; mov/lea/alu/jcc/call/push/pop/int...\n");
+}
+
+static void cmd_asm(int argc, char **argv)
+{
+    const char *sarg = 0, *oarg = 0;
+    for (int i = 1; i < argc; i++) {
+        const char *a = argv[i];
+        if (!strcmp(a, "-o") && i + 1 < argc) {
+            oarg = argv[++i];
+            continue;
+        }
+        if (a[0] == '-' && a[1]) {
+            if (!strcmp(a, "-h")) { asm_usage(); return; }
+            err("ASM: unknown option %s\n", a);
+            return;
+        }
+        if (!sarg)
+            sarg = a;
+    }
+    if (!sarg) {
+        asm_usage();
+        return;
+    }
+    if (!fat_ready()) { err("No volume mounted.\n"); return; }
+
+    char sa[PATHMAX];
+    resolve_path(sarg, sa);
+    if (read_denied(sa))
+        return;
+    static u8 asrc[TC_SRC_MAX] __attribute__((section(".highbss")));
+    u32 got = 0;
+    if (!fat_read_file(sa, asrc, sizeof(asrc) - 1, &got) || got == 0) {
+        err("Cannot read %s\n", sa);
+        return;
+    }
+    asrc[got] = 0;
+
+    u32 plen = 0;
+    const u8 *prog = asm_assemble((const char *)asrc, got, &plen);
+    if (!prog) {
+        err("ASM: %s\n", asm_error());
+        return;
+    }
+
+    char out[PATHMAX];
+    if (oarg) {
+        resolve_path(oarg, out);
+    } else {
+        const char *base = sa;
+        for (const char *p = sa; *p; p++)
+            if (*p == '\\' || *p == '/') base = p + 1;
+        int k = 0;
+        out[k++] = fat_drive();
+        out[k++] = ':';
+        out[k++] = '\\';
+        const char *q = base;
+        while (*q && *q != '.' && k < PATHMAX - 8)
+            out[k++] = *q++;
+        const char *ext = ".gtp";
+        while (*ext && k < PATHMAX - 1)
+            out[k++] = *ext++;
+        out[k] = 0;
+    }
+
+    if (fat_create(out, prog, plen))
+        ok("Assembled %u bytes -> %s\n", plen, out);
+    else
+        err("Cannot write %s (use -o in your home directory)\n", out);
+}
+
 /* ------------------------------------------------------------ 网络命令 */
 static void mac_str(const u8 *mac, char *out)
 {
@@ -1822,6 +1898,8 @@ static void execute(char *line)
         cmd_service(argc, argv);
     } else if (!strcasecmp(cmd, "tc")) {
         cmd_tc(argc, argv);
+    } else if (!strcasecmp(cmd, "asm")) {
+        cmd_asm(argc, argv);
     } else if (!strncasecmp(cmd, "run", 8)) {
         cmd_run(argc, argv);
     } else if (!strncasecmp(cmd, "apic", 8)) {

@@ -174,11 +174,23 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
   `tcp_recv`、`tcp_close`、`dns`、`tftp_get`、`http_get`
 - `\SDK\` 提供明文只读 SDK：`TC.H`、`STRING.H`、`STDLIB.H`、`CTYPE.H`、`STDIO.H`、
   `STDARG.H`、`NET.H`、
-  `STRING.C`、`STDLIB.C`、`CTYPE.C`、`STDIO.C`、`NET.C`、`DEMO.MD`、`HELLO.C`、`FIB.C`、
-  `README.TXT`；
+  `STRING.C`、`STDLIB.C`、`CTYPE.C`、`STDIO.C`、`NET.C`、`DEMO.MD`、`HELLO.C`、
+  `HELLO.S`、`FIB.C`、`README.TXT`；
   配合 `PUT` 与 `APPEND` 可在系统内逐行编写源码
 - 程序布局：代码 128KB 位于 `0x600000`，数据 128KB 位于 `0x620000`
   （全局 64KB + 字符串池 64KB）
+
+**内置汇编器 (ASM)**
+- `ASM <源.s> [-o 输出.gtp]` 把 NASM 风格的单文件 x86-64 汇编直接编码为 `.gtp`，
+  与 TC 使用相同的程序布局（代码 `0x600000`、数据 `0x620000`），可直接 `RUN`
+- 语法：`.text`/`.data`（或 `section .text`/`.data`）、标签、`equ` 常量、
+  `db/dw/dd/dq`、`times`；64 位寄存器 `rax..r15` 与 32 位 `eax..r15d`；
+  内存操作数 `[reg]`、`[reg+disp]`、`[reg+index*scale+disp]`、`[label]`、`[disp]`
+- 指令：`mov lea add sub and or xor cmp test inc dec neg not imul div idiv
+  shl shr sar push pop call ret jmp jcc int nop hlt leave cqo cdq`；
+  支持 `je/jne/jl/jle/jg/jge/jb/jbe/ja/jae/js/jns` 等条件跳转（rel32）
+- 入口为代码偏移 0；通过 `INT 0x21`（`rax` = 调用号）访问内核，
+  `rdi`=退出码、`rax=0` 调用 `SYS_EXIT`；`\SDK\HELLO.S` 为示例
 
 **富文本与编辑器**
 - `CAT [-n] <文件...>` 依次显示多个文件；`-n` 连续编号
@@ -302,7 +314,7 @@ qemu-system-x86_64 -hda gt-dos-hd.img -boot c
 `UDP <ip> <端口> [字节数]`、`DNS <域名>`、`TFTP GET <ip[:端口]> <远程> [本地]`、
 `HTTP GET <主机[:端口]> <路径> [本地]`
 
-**程序** — `RUN <文件.gtp>`（需要管理员权限）、`TC <源.c> [更多.c ...] [-o 输出.gtp]`（C 子集编译器，多模块扁平化）
+**程序** — `RUN <文件.gtp>`（需要管理员权限）、`TC <源.c> [更多.c ...] [-o 输出.gtp]`（C 子集编译器，多模块扁平化）、`ASM <源.s> [-o 输出.gtp]`（x86-64 汇编器）
 
 **任务与服务** — `TASKS`/`PS`、`SERVICE LIST`、`SERVICE RUN <名字>`、`SERVICE STOP <名字>`
 
@@ -398,7 +410,7 @@ build.py             构建脚本与镜像组装
 
 ## 说明与限制
 
-- 内核目前为 513 扇区（262,464 字节，含 48 字节 `GTK1` 尾部），构建上限 640 扇区
+- 内核目前为 545 扇区（278,848 字节，含 48 字节 `GTK1` 尾部），构建上限 640 扇区
   （320KB），加载区间为 `0x10000` 到 `0x60000`；链接脚本同时断言
   `.bss <= 0xA0000` 与 `.highbss <= LIB_BASE`。
 - GDT 在低端内存（0x6800）由入口代码构造，而非放在 `.data`：CPU 装载段寄存器

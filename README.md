@@ -193,10 +193,23 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
   `dns`, `tftp_get`, `http_get`
 - SDK at `\SDK\` (plain, read-only): `TC.H`, `STRING.H`, `STDLIB.H`, `CTYPE.H`,
   `STDIO.H`, `STDARG.H`, `NET.H`, `STRING.C`, `STDLIB.C`, `CTYPE.C`, `STDIO.C`,
-  `NET.C`, `HELLO.C`, `FIB.C`,
+  `NET.C`, `HELLO.C`, `HELLO.S`, `FIB.C`,
   `README.TXT`; `PUT` + `APPEND` let you author sources line by line inside GT-DOS
 - Program layout: 128 KB code at `0x600000`, 128 KB data at `0x620000`
   (64 KB globals + 64 KB string pool)
+
+**Built-in assembler (ASM)**
+- `ASM <src.s> [-o out.gtp]` encodes a NASM-style single-file x86-64 source into
+  a `.gtp` with the same layout as TC (code at `0x600000`, data at `0x620000`),
+  ready for `RUN`
+- Syntax: `.text`/`.data` (or `section ...`), labels, `equ` constants,
+  `db/dw/dd/dq`, `times`; 64-bit `rax..r15` and 32-bit `eax..r15d`; memory
+  operands `[reg]`, `[reg+disp]`, `[reg+index*scale+disp]`, `[label]`, `[disp]`
+- Instructions: `mov lea add sub and or xor cmp test inc dec neg not imul
+  div idiv shl shr sar push pop call ret jmp jcc int nop hlt leave cqo cdq`;
+  `je/jne/jl/jle/jg/jge/jb/jbe/ja/jae/js/jns` use rel32 branches
+- Entry is code offset 0; call the kernel via `INT 0x21` (`rax` = call number)
+  and exit with `rdi`=code, `rax=0`; see `\SDK\HELLO.S`
 
 **Rich text and editor**
 - `CAT [-n] <file...>` concatenates one or more files; `-n` adds continuous line numbers
@@ -331,7 +344,8 @@ Type `HELP` (or `?`) inside GT-DOS for the full list. Commands support both long
 `HTTP GET <host[:port]> <path> [local]`
 
 **Programs** — `RUN <file.gtp>` (administrator privileges required),
-`TC <src.c> [more.c ...] [-o out.gtp]` (C subset compiler, multi-module flattening)
+`TC <src.c> [more.c ...] [-o out.gtp]` (C subset compiler, multi-module flattening),
+`ASM <src.s> [-o out.gtp]` (x86-64 assembler)
 
 **Tasks and services** — `TASKS`/`PS`, `SERVICE LIST`, `SERVICE RUN <name>`,
 `SERVICE STOP <name>`
@@ -431,7 +445,7 @@ live in stack slots, no register allocation).
 
 ## Notes and Limitations
 
-- The kernel currently fits in 513 sectors (262,464 bytes including the 48-byte `GTK1`
+- The kernel currently fits in 545 sectors (278,848 bytes including the 48-byte `GTK1`
   trailer); the build cap is 640 sectors (320 KB), loaded between `0x10000` and `0x60000`.
   The linker also asserts `.bss <= 0xA0000` and `.highbss <= LIB_BASE`.
 - The GDT is built in low memory (0x6800) rather than `.data`: loading a segment register
