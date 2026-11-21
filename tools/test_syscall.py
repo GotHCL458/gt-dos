@@ -243,6 +243,70 @@ def main():
     check("tc library is on-demand", vm.expect("undefined function", 6000),
           vm.buf[-300:])
 
+    # 函数指针 / 位域 / #define 宏 / 用户可变参数
+    feat = [
+        "#include <stdio.h>",
+        "#include <stdarg.h>",
+        "#define N 5",
+        "#define MUL(a,b) ((a)*(b))",
+        "#define SQUARE(x) MUL((x),(x))",
+        "typedef int (*binop)(int,int);",
+        "struct F { int (*cb)(int,int); int a:4; int b:6; unsigned c:3; };",
+        "int add(int a,int b){ return a+b; }",
+        "int sub(int a,int b){ return a-b; }",
+        "int apply(binop f,int a,int b){ return f(a,b); }",
+        "double gd = 1.5;",
+        "double half(double x){ return x / 2.0; }",
+        "int sum(int n, ...) {",
+        "va_list ap;",
+        "int s = 0;",
+        "va_start(ap, n);",
+        "for (int i = 0; i < n; i++) s += va_arg(ap, int);",
+        "va_end(ap);",
+        "return s;",
+        "}",
+        "int main(void) {",
+        "int (*p)(int,int) = add;",
+        'printf("fp1=%d\\n", p(7,3));',
+        "p = sub;",
+        'printf("fp2=%d\\n", p(7,3));',
+        'printf("fp3=%d\\n", apply(add,4,5));',
+        "struct F f;",
+        "f.cb = add;",
+        'printf("fp4=%d\\n", f.cb(2,9));',
+        "struct F b;",
+        "b.a = 5; b.b = 20; b.c = 7;",
+        "b.a = b.a + 2;",
+        "b.b += 3;",
+        'printf("bit=%d,%d,%d sz=%d\\n", b.a, b.b, b.c, sizeof(struct F));',
+        'printf("mac=%d %d %d\\n", N, MUL(3,4), SQUARE(5));',
+        'printf("var=%d\\n", sum(4,1,2,3,4));',
+        "double d = 2.5;",
+        "double e = d * 3.0 + 1.25;",
+        'printf("dbl=%f %f %d\\n", e, half(5.0), (int)(d + 0.6));',
+        'printf("dcmp=%d %d gd=%f\\n", e > d, d == 2.5, gd + 1.0);',
+        "return 0;",
+        "}",
+    ]
+    vm.buf = ""
+    vm.cmd(f"put feat.c {feat[0]}", 600)
+    for line in feat[1:]:
+        vm.cmd(f"append feat.c {line}", 450)
+    vm.cmd("tc feat.c", 3000)
+    check("tc functions-pointers/macros compile", vm.expect("Compiled ", 8000),
+          vm.buf[-500:])
+    vm.cmd("run feat.gtp", 2500)
+    check("tc function pointers", vm.expect("fp1=10", 4000) and
+          vm.expect("fp2=4", 4000) and vm.expect("fp3=9", 4000) and
+          vm.expect("fp4=11", 4000), vm.buf[-500:])
+    check("tc bitfields", vm.expect("bit=7,23,7 sz=16", 4000), vm.buf[-500:])
+    check("tc #define macros", vm.expect("mac=5 12 25", 4000), vm.buf[-500:])
+    check("tc variadic function", vm.expect("var=10", 4000), vm.buf[-500:])
+    check("tc floating point", vm.expect("dbl=8.750000 2.500000 3", 4000),
+          vm.buf[-500:])
+    check("tc float compare/global", vm.expect("dcmp=1 1 gd=2.500000", 4000),
+          vm.buf[-500:])
+
     # cat / rich / vim
     vm.buf = ""
     vm.cmd("cat \\sdk\\demo.md", 1000)

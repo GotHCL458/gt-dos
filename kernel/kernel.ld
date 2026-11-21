@@ -43,7 +43,7 @@ SECTIONS
     /* 安全边界: .bss 不得越过 0xA0000 (VGA 孔径), 大缓冲不得撞上 LIB_BASE */
     ASSERT(__bss_end <= 0xA0000,
            "kernel .bss overlaps the VGA aperture; move buffers to .highbss")
-    ASSERT(__highbss_end <= 0x500000,
+    ASSERT(__highbss_end <= 0x580000,
            "kernel .highbss overlaps LIB_BASE")
 
     /DISCARD/ : {

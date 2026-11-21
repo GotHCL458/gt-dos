@@ -163,9 +163,9 @@ pm_start:
     cmp ecx, 512
     jb  .L2
 
-    ; ---- CR4.PAE (bit5) ----
+    ; ---- CR4.PAE (bit5) + OSFXSR (bit9) + OSXMMEXCPT (bit10) ----
     mov eax, cr4
-    or  eax, 0x20
+    or  eax, 0x620
     mov cr4, eax
 
     ; ---- CR3 = PML4 ----
@@ -185,9 +185,11 @@ pm_start:
     o32 lgdt [esp]
     add  sp, 6
 
-    ; ---- 开启分页 (CR0.PG), 保持 PE/ET/NE ----
+    ; ---- 开启分页 (CR0.PG), 清 EM 置 MP 以允许 SSE ----
     mov eax, cr0
-    or  eax, 80010000h          ; PG | PE
+    and eax, ~4                 ; clear CR0.EM
+    or  eax, 2                  ; set CR0.MP
+    or  eax, 80010000h          ; PG | PE | ET | NE
     mov cr0, eax
 
     jmp dword 0x18:long_start         ; 远跳进 64 位代码段

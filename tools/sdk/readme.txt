@@ -13,14 +13,17 @@ Files:
   FIB.C      recursion + loop example
 
 Supported C subset:
-  int/char/pointers, 1-4D arrays, struct/union (fields, . and ->),
-  functions with up to 6 parameters (recursion and prototypes supported),
-  if/else, while, do/while, for, switch/case/default, break, continue, return,
-  full integer expressions with ?:, prefix/postfix ++ --, compound
-  assignments, typedef, enum, sizeof, casts, string literals,
-  brace/string initialisers, comments.
-  Not supported: float/double, variadic functions (printf is built in),
-  function pointers, bitfields. #define/#if are skipped; #include is processed.
+  int/char/double/pointers, 1-4D arrays, struct/union (fields, bitfields,
+  . and ->), function pointers, functions with up to 6 parameters
+  (recursion and prototypes supported), user variadic functions
+  (va_list/va_start/va_arg/va_end), if/else, while, do/while, for,
+  switch/case/default, break, continue, return, goto/labels,
+  full integer and double expressions with ?:, prefix/postfix ++ --,
+  compound assignments, typedef, enum, sizeof, casts, string literals,
+  brace/string initialisers, object-like and function-like #define macros,
+  comments.
+  Not supported: long double, function-pointer arrays/return types,
+  #define ## / # token pasting, #if conditionals. Other directives are skipped.
 
 Standard library modules (compiled only when the matching header is included):
   string.h  strlen strcpy strncpy strcmp strncmp strcat strncat strchr strrchr
@@ -28,7 +31,8 @@ Standard library modules (compiled only when the matching header is included):
   stdlib.h  malloc calloc free strdup abs atoi strtol rand srand (16 KB heap)
   ctype.h   isdigit isalpha isalnum isspace isupper islower toupper tolower
   stdio.h   printf putchar puts getchar
-  printf: %d %i %u %x %X %c %s %p %%, up to 5 varargs.
+  stdarg.h  va_list (va_start / va_arg / va_end are compiler builtins)
+  printf: %d %i %u %x %X %c %s %p %f %%, up to 5 varargs.
 
 Layout: 128 KB code at 0x600000, 128 KB data at 0x620000.
 

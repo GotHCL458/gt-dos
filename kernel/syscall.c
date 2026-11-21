@@ -35,6 +35,62 @@ static void fmt_i64(i64 v)
     }
 }
 
+/* %f: 纯整数运算把 IEEE-754 位模式打印为 6 位小数 */
+static void fmt_double(u64 bits)
+{
+    int sign = (int)(bits >> 63);
+    int ef = (int)((bits >> 52) & 0x7FF);
+    u64 m = bits & ((1ULL << 52) - 1);
+
+    if (ef == 0x7FF) {
+        if (sign) console_putc('-');
+        console_puts("inf");
+        return;
+    }
+    if (ef == 0)
+        m = 0;                          /* 次正规/零按 0 处理 */
+    else
+        m |= 1ULL << 52;
+    int e2 = (ef == 0) ? -1074 : ef - 1023 - 52;
+
+    u64 ip = 0, frac6 = 0;
+    if (m != 0 && e2 >= 0) {
+        ip = (e2 > 11) ? 0xFFFFFFFFFFFFFFFFULL : (m << e2);
+    } else if (m != 0) {
+        int sh = -e2;
+        if (sh >= 64) {
+            unsigned __int128 v = (unsigned __int128)m * 1000000u;
+            if (sh < 127) {
+                if (sh < 64)
+                    v += (unsigned __int128)1 << (sh - 1);
+                frac6 = (u64)(v >> sh);
+            }
+        } else {
+            ip = m >> sh;
+            u64 rem = m & ((1ULL << sh) - 1);
+            unsigned __int128 v = (unsigned __int128)rem * 1000000u;
+            if (sh > 0)
+                v += (unsigned __int128)1 << (sh - 1);
+            frac6 = (u64)(v >> sh);
+            if (frac6 >= 1000000u) {
+                frac6 -= 1000000u;
+                ip++;
+            }
+        }
+    }
+
+    if (sign) console_putc('-');
+    fmt_u64(ip, 10, false);
+    console_putc('.');
+    char b[6];
+    for (int i = 5; i >= 0; i--) {
+        b[i] = (char)('0' + (frac6 % 10u));
+        frac6 /= 10u;
+    }
+    for (int i = 0; i < 6; i++)
+        console_putc(b[i]);
+}
+
 static void fmt_printf(const char *fmt, int nargs, const u64 *args)
 {
     int ai = nargs - 1;              /* args[nargs-1] 是第一个可变参数 */
@@ -50,12 +106,19 @@ static void fmt_printf(const char *fmt, int nargs, const u64 *args)
         }
         while (*p >= '0' && *p <= '9')
             p++;                     /* 跳过宽度 */
+        if (*p == '.') {             /* 跳过精度 */
+            p++;
+            while (*p >= '0' && *p <= '9')
+                p++;
+        }
         while (*p == 'l' || *p == 'h' || *p == 'z')
             p++;                     /* 长度修饰: 统一按 64 位处理 */
         u64 v = (ai >= 0) ? args[ai--] : 0;
         switch (*p) {
         case 'd':
         case 'i': fmt_i64((i64)v); break;
+        case 'f':
+        case 'F': fmt_double(v); break;
         case 'u': fmt_u64(v, 10, false); break;
         case 'x': fmt_u64(v, 16, false); break;
         case 'X': fmt_u64(v, 16, true); break;

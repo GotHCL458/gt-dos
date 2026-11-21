@@ -485,8 +485,8 @@ void exec_exit(int code);               /* SYS_EXIT 调用: 回跳到 shell */
 bool exec_is_active(void);
 
 /* ---------------------------------------------------- 共享库 (.gtl) */
-#define LIB_BASE     0x500000ULL
-#define LIB_MAX      0x100000ULL
+#define LIB_BASE     0x580000ULL
+#define LIB_MAX      0x80000ULL
 #define LIB_MAXLIBS  8
 int  lib_load(const char *path);        /* 返回句柄(>=1) 或 -1 */
 u64  lib_sym(int handle, const char *name);  /* 返回符号地址或 0 */

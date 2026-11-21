@@ -95,7 +95,7 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
   plus directory handles through `SYS_OPENDIR`/`SYS_READDIR`
 - `RUN <file.gtp>` loads a flat binary into a scratch region and transfers control; the
   program returns to the shell via `SYS_EXIT`
-- `.gtl` shared libraries: a loader maps the image into `LIB_BASE` (0x500000) and resolves
+- `.gtl` shared libraries: a loader maps the image into `LIB_BASE` (0x580000) and resolves
   exports by name through `SYS_LIBLOAD`/`SYS_LIBSYM`; the library namespace is reset for
   every program
 - `.gtd` data files are read through the same fd layer (`DATA.GTD` in the demo)
@@ -127,30 +127,35 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
 **Built-in C compiler (TC) & SDK**
 - `TC <src.c> [-o out.gtp]` compiles a C subset straight to x86-64 machine code and
   writes a `.gtp` program that `RUN` can execute — no external toolchain involved
-- Supported: `int`/`char`/pointers, 1-4D arrays, `struct`/`union` (fields, nested
-  structs, `.` and `->`), functions (up to 6 parameters, recursion, prototypes),
-  `if/else`, `while`, `do/while`, `for`, `switch/case/default` (fallthrough),
-  `break`/`continue`/`return`/`goto` with labels, full integer expressions with `?:`, prefix/postfix `++`/`--`, compound
+- Supported: `int`/`char`/`double`/pointers, 1-4D arrays, `struct`/`union` (fields,
+  nested structs, `.` and `->`, bitfields), function pointers, functions (up to 6
+  parameters, recursion, prototypes, user variadic `...` with `va_list`/`va_start`/
+  `va_arg`/`va_end`), `if/else`, `while`, `do/while`, `for`,
+  `switch/case/default` (fallthrough),
+  `break`/`continue`/`return`/`goto` with labels, full expressions (integer and
+  `double` arithmetic/comparison) with `?:`, prefix/postfix `++`/`--`, compound
   assignments, `typedef`, `enum`, `sizeof`, casts, string literals, and brace/string
   initializers for globals and locals
-- `#include <...>` / `#include "..."` is resolved at compile time (source directory,
-  `\SDK`, then `\GT-DOS\INCLUDE`); each file is included once. Standard modules
-  (`string/stdlib/ctype/stdio`) are compiled into the program **only when their header
-  is included**, so unused library code never bloats `out.gtp`
+- Object-like and function-like `#define` macros are expanded by the scanner; `#if`
+  is not implemented (GT-DOS only targets one platform), and other directives are
+  skipped. `#include <...>` / `#include "..."` is resolved at compile time (source
+  directory, `\SDK`, then `\GT-DOS\INCLUDE`); each file is included once. Standard
+  modules (`string/stdlib/ctype/stdio`) are compiled into the program **only when their
+  header is included**, so unused library code never bloats `out.gtp`
 - Standard library: `strlen strcpy strncpy strcmp strncmp strcat strncat strchr strrchr
   strstr memcpy memmove memset memcmp`, `malloc calloc free strdup abs atoi strtol rand
   srand` (16 KB heap),
   `isdigit isalpha isalnum isspace isupper islower toupper tolower`,
   `printf putchar puts getchar`; `printf` is a compiler builtin (SYS_PRINTF) supporting
-  `%d %i %u %x %X %c %s %p %%` with up to 5 varargs
-- Not supported: floating point, user-defined variadic functions, function pointers and
-  bitfields; `#define/#if` are still skipped (include-once replaces header guards)
+  `%d %i %u %x %X %c %s %p %f %%` with up to 5 varargs
+- Not supported: `long double`, function-pointer arrays/return types, `#define` token
+  pasting/stringizing (`##`/`#`), and `#if` conditionals
 - Builtins (`\SDK\TC.H`): `putc`, `print`, `print_int`, `getc`, `exit`, `sleep`,
   `uptime`, `open`, `read`, `write`, `close`, `seek`, `stat`, `statx`, `reboot`, `shutdown`;
   `\SDK\NET.H` adds `ip4`, `tcp_connect`, `tcp_send`, `tcp_recv`, `tcp_close`,
   `dns`, `tftp_get`, `http_get`
 - SDK at `\SDK\` (plain, read-only): `TC.H`, `STRING.H`, `STDLIB.H`, `CTYPE.H`,
-  `STDIO.H`, `STRING.C`, `STDLIB.C`, `CTYPE.C`, `STDIO.C`, `HELLO.C`, `FIB.C`,
+  `STDIO.H`, `STDARG.H`, `STRING.C`, `STDLIB.C`, `CTYPE.C`, `STDIO.C`, `HELLO.C`, `FIB.C`,
   `README.TXT`; `PUT` + `APPEND` let you author sources line by line inside GT-DOS
 - Program layout: 128 KB code at `0x600000`, 128 KB data at `0x620000`
   (64 KB globals + 64 KB string pool)
@@ -369,7 +374,7 @@ assert on real boot output rather than on mocks.
 
 ## Notes and Limitations
 
-- The kernel currently fits in 545 sectors (278,848 bytes including the 48-byte `GTK1`
+- The kernel currently fits in 593 sectors (303,424 bytes including the 48-byte `GTK1`
   trailer); the build cap is 640 sectors (320 KB), loaded between `0x10000` and `0x60000`.
   The linker also asserts `.bss <= 0xA0000` and `.highbss <= LIB_BASE`.
 - The GDT is built in low memory (0x6800) rather than `.data`: loading a segment register
@@ -379,11 +384,12 @@ assert on real boot output rather than on mocks.
 - Large zero-initialised buffers (`font_buf`, the code page table, the back buffer) are placed in
   a `NOLOAD` `.highbss` section above 1 MB. If they were in ordinary `.bss` they would overlap the
   `0xA0000` VGA aperture and corrupt the framebuffer.
-- TC implements a practical C subset: arrays, structs/unions, `switch`, `?:`/`++`/`--`,
-  `typedef`/`enum`/`sizeof` and casts are supported; `#include` expands headers and links
-  the matching standard-library module on demand. Floating point, user-defined variadic
-  functions, function pointers and bitfields remain unsupported. Programs are limited to
-  128 KB of code and 128 KB of data (64 KB globals + 64 KB strings).
+- TC implements a practical C subset: arrays, structs/unions (with bitfields),
+  `switch`, `?:`/`++`/`--`, `typedef`/`enum`/`sizeof`, casts, function pointers,
+  user-defined variadic functions and `double` arithmetic are supported; `#define`
+  macros and `#include` are expanded at compile time, and the matching standard-library
+  module is linked on demand. `long double` and `#if` are unsupported. Programs are
+  limited to 128 KB of code and 128 KB of data (64 KB globals + 64 KB strings).
 - Kernel `.bss` must stay below `0xA0000` (the VGA aperture) and `.highbss` below
   `LIB_BASE`; the linker script asserts both bounds, so oversized tables fail the build.
 - Shell file commands (`TYPE`/`CP`/`MV`/`HEAD`/`WC`/`APPEND`) operate on files up to 64 KB.

@@ -40,7 +40,7 @@
 #define MAX_ENUM 64
 
 enum {
-    T_EOF = 0, T_ID = 256, T_NUM, T_STR,
+    T_EOF = 0, T_ID = 256, T_NUM, T_STR, T_FNUM,
     T_EQ, T_NE, T_LE, T_GE, T_ANDAND, T_OROR, T_SHL, T_SHR,
     T_PLUSEQ, T_MINUSEQ, T_STAREQ, T_SLASHEQ, T_PERCENTEQ,
     T_ANDEQ, T_OREQ, T_XOREQ, T_SHLEQ, T_SHREQ,
@@ -48,13 +48,15 @@ enum {
 };
 
 /* ---------------------------------------------------------------- 类型 */
-enum { CK_VOID, CK_INT, CK_CHAR, CK_STRUCT };
+enum { CK_VOID, CK_INT, CK_CHAR, CK_STRUCT, CK_DOUBLE };
 
 struct ctype {
     int kind;        /* CK_* */
     int ptr;         /* 指针层数 */
     int sid;         /* 结构体编号 (kind == CK_STRUCT) */
     int obj;         /* 非指针对象的字节数 */
+    int func;        /* 1 = 函数指针 */
+    int uns;         /* 1 = unsigned 整数 */
 };
 
 struct field {
@@ -64,6 +66,8 @@ struct field {
     int ndims;
     int nelem;
     int offset;
+    int bit_off;            /* 位域: 在 8 字节存储单元中的起始位 */
+    int bit_width;          /* 位域宽度; 0 = 普通字段 */
 };
 
 struct stype {
@@ -72,6 +76,8 @@ struct stype {
     int nf;
     bool is_union;
     bool complete;
+    int bit_base;           /* 当前位域存储单元偏移, -1 = 无 */
+    int bit_used;           /* 当前单元已用位数 */
     struct field f[MAX_FIELDS];
 };
 
@@ -159,21 +165,21 @@ static struct sym locs[MAX_LOCAL] __attribute__((section(".highbss")));
 static int nloc;
 static int lused;                  /* 局部变量已占用字节 */
 
-static struct stype stypes[MAX_STRUCT];
+static struct stype stypes[MAX_STRUCT] __attribute__((section(".highbss")));
 static int nstypes;
 
 static struct fcall fcs[MAX_FCALL] __attribute__((section(".highbss")));
 static int nfc;
-static struct loopctx loops[MAX_NEST];
+static struct loopctx loops[MAX_NEST] __attribute__((section(".highbss")));
 static int nloop;
-static struct swctx swstk[MAX_NEST];
+static struct swctx swstk[MAX_NEST] __attribute__((section(".highbss")));
 static int nsw;
 
 struct typedef_ent {
     char name[32];
     struct ctype type;
 };
-static struct typedef_ent typedefs[MAX_TYPEDEF];
+static struct typedef_ent typedefs[MAX_TYPEDEF] __attribute__((section(".highbss")));
 static int ntypedefs;
 
 struct enum_ent {
@@ -221,6 +227,9 @@ struct ety {
     struct ctype t;               /* 值类型 / 数组元素类型 */
     bool lval;                    /* rax 中保存的是地址 */
     bool is_arr;                  /* 仍是数组视图 (rax=首地址) */
+    bool is_bit;                  /* 位域 lvalue: rax=所在存储单元地址 */
+    int bit_off;
+    int bit_width;
     int dims[MAX_DIM];
     int ndims;
     int esize;
@@ -415,6 +424,343 @@ static bool parse_inc_name(char *out, int cap, bool *quoted)
     return k > 0;
 }
 
+/* --------------------------------------------------------- #define 宏 */
+#define MAX_MACRO 32
+#define MAC_PARAMS 6
+#define MAC_BODY 200
+#define MAC_POOL 4096
+#define EXP_MAX 8
+#define EXP_CAP 1024
+
+struct macro {
+    char name[32];
+    bool func;
+    int nparams;
+    char param[MAC_PARAMS][16];
+    const char *body;
+};
+static struct macro macros[MAX_MACRO] __attribute__((section(".highbss")));
+static int nmacros;
+static char mac_pool[MAC_POOL] __attribute__((section(".highbss")));
+static int mac_used;
+static char exp_buf[EXP_MAX][EXP_CAP] __attribute__((section(".highbss")));
+static const char *exp_ret_sp[EXP_MAX];
+static int exp_ret_line[EXP_MAX];
+static int exp_depth;
+
+static bool ident_char_(char c)
+{
+    return isalpha_((unsigned char)c) || isdigit_((unsigned char)c) || c == '_';
+}
+
+static struct macro *find_macro(const char *name)
+{
+    for (int i = 0; i < nmacros; i++)
+        if (!strcmp(macros[i].name, name))
+            return &macros[i];
+    return 0;
+}
+
+static void trim_arg(char *s)
+{
+    int n = (int)strlen(s);
+    while (n > 0 && (s[n - 1] == ' ' || s[n - 1] == '\t'))
+        s[--n] = 0;
+    int b = 0;
+    while (s[b] == ' ' || s[b] == '\t')
+        b++;
+    if (b > 0) {
+        int i = 0;
+        while (s[b + i]) { s[i] = s[b + i]; i++; }
+        s[i] = 0;
+    }
+}
+
+/* 解析并登记 #define (sp 已指向 define 之后) */
+static void parse_define(void)
+{
+    while (*sp == ' ' || *sp == '\t') sp++;
+    char name[32];
+    int n = 0;
+    while (ident_char_(*sp) && n < 31)
+        name[n++] = *sp++;
+    name[n] = 0;
+    if (!n) {
+        while (*sp && *sp != '\n') sp++;
+        return;
+    }
+    bool func = (*sp == '(');
+    char params[MAC_PARAMS][16];
+    int np = 0;
+    if (func) {
+        sp++;
+        while (*sp && *sp != ')') {
+            while (*sp == ' ' || *sp == '\t' || *sp == ',') sp++;
+            if (*sp == ')') break;
+            char pn[16];
+            int k = 0;
+            while (ident_char_(*sp) && k < 15)
+                pn[k++] = *sp++;
+            pn[k] = 0;
+            if (k && np < MAC_PARAMS) {
+                strncpy(params[np], pn, 15);
+                params[np][15] = 0;
+                np++;
+            }
+            while (*sp && *sp != ')' && *sp != ',') sp++;
+        }
+        if (*sp == ')') sp++;
+    }
+    while (*sp == ' ' || *sp == '\t') sp++;
+
+    if (mac_used + MAC_BODY + 2 >= MAC_POOL) {
+        fail("macro pool full");
+        while (*sp && *sp != '\n') sp++;
+        return;
+    }
+    int start = mac_used;
+    int k = 0;
+    while (*sp && *sp != '\n') {
+        char c = *sp;
+        if (c == '\\' && sp[1] == '\n') {
+            sp += 2;
+            line_no++;
+            if (k < MAC_BODY) mac_pool[mac_used++] = ' ';
+            continue;
+        }
+        if (c == '/' && sp[1] == '/') {
+            while (*sp && *sp != '\n') sp++;
+            break;
+        }
+        if (k < MAC_BODY) mac_pool[mac_used++] = c;
+        sp++;
+        k++;
+    }
+    while (mac_used > start &&
+           (mac_pool[mac_used - 1] == ' ' || mac_pool[mac_used - 1] == '\t'))
+        mac_used--;
+    mac_pool[mac_used++] = 0;
+
+    struct macro *m = find_macro(name);
+    if (!m) {
+        if (nmacros >= MAX_MACRO) {
+            fail("too many macros");
+            return;
+        }
+        m = &macros[nmacros++];
+    }
+    memset(m, 0, sizeof(*m));
+    strncpy(m->name, name, 31);
+    m->name[31] = 0;
+    m->func = func;
+    m->nparams = np;
+    for (int i = 0; i < np; i++) {
+        strncpy(m->param[i], params[i], 15);
+        m->param[i][15] = 0;
+    }
+    m->body = &mac_pool[start];
+}
+
+/* 把宏展开文本写入 dst; 函数式宏会从 sp 解析实参. 返回 false 表示不展开. */
+static bool macro_build(struct macro *m, char *dst, int cap)
+{
+    if (!m->func) {
+        int k = 0;
+        for (const char *p = m->body; *p && k < cap - 1; p++)
+            dst[k++] = *p;
+        dst[k] = 0;
+        return true;
+    }
+
+    char *q = (char *)sp;
+    while (*q == ' ' || *q == '\t') q++;
+    if (*q != '(')
+        return false;
+    q++;
+
+    char args[MAC_PARAMS][64];
+    memset(args, 0, sizeof(args));
+    int nargs = 0, k = 0, depth = 1;
+    while (*q) {
+        char c = *q;
+        if (c == '"' || c == '\'') {
+            char quote = c;
+            if (k < 63) args[nargs][k++] = *q;
+            q++;
+            while (*q && *q != quote) {
+                if (*q == '\\' && q[1]) {
+                    if (k < 63) args[nargs][k++] = *q++;
+                }
+                if (k < 63) args[nargs][k++] = *q;
+                q++;
+            }
+            if (*q == quote) {
+                if (k < 63) args[nargs][k++] = *q;
+                q++;
+            }
+            continue;
+        }
+        if (c == '(') depth++;
+        if (c == ')') {
+            depth--;
+            if (depth == 0) { q++; break; }
+        }
+        if (c == ',' && depth == 1) {
+            args[nargs][k] = 0;
+            trim_arg(args[nargs]);
+            nargs++;
+            k = 0;
+            if (nargs >= MAC_PARAMS)
+                return false;
+            q++;
+            while (*q == ' ' || *q == '\t') q++;
+            continue;
+        }
+        if (k < 63) args[nargs][k++] = c;
+        q++;
+    }
+    args[nargs][k] = 0;
+    trim_arg(args[nargs]);
+    int na = nargs + 1;
+    if (na == 1 && args[0][0] == 0)
+        na = 0;
+    if (na != m->nparams)
+        return false;
+
+    sp = q;
+    int d = 0;
+    const char *p = m->body;
+    while (*p && d < cap - 1) {
+        char c = *p;
+        if (c == '"' || c == '\'') {
+            char quote = c;
+            dst[d++] = *p++;
+            while (*p && *p != quote && d < cap - 1) {
+                if (*p == '\\' && p[1]) {
+                    dst[d++] = *p++;
+                    if (d < cap - 1) dst[d++] = *p++;
+                    continue;
+                }
+                dst[d++] = *p++;
+            }
+            if (*p == quote && d < cap - 1) dst[d++] = *p++;
+            continue;
+        }
+        if (ident_char_(c)) {
+            char w[32];
+            int wn = 0;
+            while (ident_char_(*p) && wn < 31)
+                w[wn++] = *p++;
+            w[wn] = 0;
+            int pi = -1;
+            for (int i = 0; i < m->nparams; i++) {
+                if (!strcmp(m->param[i], w)) { pi = i; break; }
+            }
+            const char *src = (pi >= 0) ? args[pi] : w;
+            for (int i = 0; src[i] && d < cap - 1; i++)
+                dst[d++] = src[i];
+            continue;
+        }
+        dst[d++] = *p++;
+    }
+    dst[d] = 0;
+    return true;
+}
+
+/* --------------------------------------------- 十进制字面量 -> IEEE double */
+static unsigned __int128 div128_u64(unsigned __int128 a, u64 d)
+{
+    unsigned __int128 q = 0;
+    u64 rem = 0;
+    for (int i = 127; i >= 0; i--) {
+        rem = (u64)((rem << 1) | (u64)((a >> i) & 1));
+        if (rem >= d) {
+            rem = (u64)(rem - d);
+            q |= (unsigned __int128)1 << i;
+        }
+    }
+    return q;
+}
+
+static int hi_bit128(unsigned __int128 v)
+{
+    for (int i = 127; i >= 0; i--)
+        if ((v >> i) != 0)
+            return i;
+    return -1;
+}
+
+/* 把 "1.5e3" 之类的十进制文本转为 IEEE-754 double 位模式 (纯整数运算) */
+static u64 dec_to_double(const char *s)
+{
+    int i = 0, neg = 0;
+    if (s[i] == '-') { neg = 1; i++; }
+    else if (s[i] == '+') i++;
+
+    unsigned __int128 m = 0;
+    int fdig = 0, exp10 = 0;
+    while (s[i] >= '0' && s[i] <= '9')
+        m = m * 10 + (unsigned)(s[i++] - '0');
+    if (s[i] == '.') {
+        i++;
+        while (s[i] >= '0' && s[i] <= '9') {
+            m = m * 10 + (unsigned)(s[i++] - '0');
+            fdig++;
+        }
+    }
+    if (s[i] == 'e' || s[i] == 'E') {
+        i++;
+        int es = 0, en = 0;
+        if (s[i] == '-') { es = 1; i++; }
+        else if (s[i] == '+') i++;
+        while (s[i] >= '0' && s[i] <= '9')
+            en = en * 10 + (s[i++] - '0');
+        exp10 = es ? -en : en;
+    }
+    exp10 -= fdig;
+    u64 sign = neg ? (1ULL << 63) : 0;
+    if (m == 0)
+        return sign;
+
+    const unsigned __int128 maxv = ~(unsigned __int128)0;
+    int e2 = 0;
+    if (exp10 >= 0) {
+        for (int k = 0; k < exp10; k++) {
+            if (m > maxv / 10)
+                return sign | (0x7FFULL << 52);   /* 溢出 -> inf */
+            m *= 10;
+        }
+    } else {
+        m <<= 64;
+        e2 = -64;
+        for (int k = 0; k < -exp10; k++)
+            m = div128_u64(m, 10);
+    }
+
+    if (m == 0)
+        return sign;
+    int p = hi_bit128(m);
+    if (p > 52) {
+        int sh = p - 52;
+        m += (unsigned __int128)1 << (sh - 1);   /* 四舍五入 */
+        p = hi_bit128(m);
+        sh = p - 52;
+        m >>= sh;
+        e2 += sh;
+    } else if (p < 52) {
+        int sh = 52 - p;
+        m <<= sh;
+        e2 -= sh;
+    }
+    int ef = e2 + 1023 + 52;
+    if (ef >= 0x7FF)
+        return sign | (0x7FFULL << 52);
+    if (ef <= 0)
+        return sign;                              /* 下溢 -> 0 */
+    u64 frac = (u64)m & ((1ULL << 52) - 1);
+    return sign | ((u64)ef << 52) | frac;
+}
+
 static struct token scan(void)
 {
     struct token t;
@@ -422,6 +768,13 @@ static struct token scan(void)
     t.line = line_no;
 
     for (;;) {
+        /* 宏展开文本结束: 回到上一层输入 */
+        if (!*sp && exp_depth > 0) {
+            exp_depth--;
+            sp = exp_ret_sp[exp_depth];
+            line_no = exp_ret_line[exp_depth];
+            continue;
+        }
         /* 头文件结束: 回到上一层源文件 */
         if (!*sp && inc_depth > 0) {
             inc_depth--;
@@ -468,6 +821,15 @@ static struct token scan(void)
                 if (failed) { t.t = T_EOF; return t; }
                 continue;
             }
+            if (sp[0] == 'd' && sp[1] == 'e' && sp[2] == 'f' &&
+                sp[3] == 'i' && sp[4] == 'n' && sp[5] == 'e' &&
+                !ident_char_(sp[6])) {
+                sp += 6;
+                parse_define();
+                if (failed) { t.t = T_EOF; return t; }
+                continue;
+            }
+            /* 其它指令 (含 #if 系列) 整行跳过 */
             while (*sp && *sp != '\n') sp++;
             continue;
         }
@@ -481,10 +843,21 @@ static struct token scan(void)
                 *sp == '_') && n < 31)
             t.name[n++] = *sp++;
         t.name[n] = 0;
+        struct macro *m = find_macro(t.name);
+        if (m && exp_depth < EXP_MAX) {
+            if (macro_build(m, exp_buf[exp_depth], EXP_CAP)) {
+                exp_ret_sp[exp_depth] = sp;
+                exp_ret_line[exp_depth] = line_no;
+                sp = exp_buf[exp_depth];
+                exp_depth++;
+                return scan();
+            }
+        }
         t.t = T_ID;
         return t;
     }
-    if (isdigit_((unsigned char)c)) {
+    if (isdigit_((unsigned char)c) ||
+        (c == '.' && sp[1] >= '0' && sp[1] <= '9')) {
         i64 v = 0;
         if (c == '0' && (sp[1] == 'x' || sp[1] == 'X')) {
             sp += 2;
@@ -498,18 +871,54 @@ static struct token scan(void)
                 v = v * 16 + d;
                 sp++;
             }
-        } else {
-            if (c == '0' && (sp[1] == 'b' || sp[1] == 'B')) {
-                sp += 2;
-                while (*sp == '0' || *sp == '1')
-                    v = v * 2 + (*sp++ - '0');
-            } else {
-                while (isdigit_((unsigned char)*sp)) {
-                    v = v * 10 + (*sp - '0');
-                    sp++;
-                }
+            t.t = T_NUM;
+            t.v = v;
+            return t;
+        }
+        if (c == '0' && (sp[1] == 'b' || sp[1] == 'B')) {
+            sp += 2;
+            while (*sp == '0' || *sp == '1')
+                v = v * 2 + (*sp++ - '0');
+            t.t = T_NUM;
+            t.v = v;
+            return t;
+        }
+
+        /* 十进制: 收集文本, 判断是否为浮点字面量 */
+        char txt[48];
+        int tn = 0;
+        bool isf = false;
+        while (isdigit_(*sp) && tn < 40)
+            txt[tn++] = *sp++;
+        if (*sp == '.' && sp[1] >= '0' && sp[1] <= '9') {
+            isf = true;
+            txt[tn++] = '.';
+            sp++;
+            while (isdigit_(*sp) && tn < 40)
+                txt[tn++] = *sp++;
+        }
+        if (*sp == 'e' || *sp == 'E') {
+            const char *q = sp + 1;
+            if (*q == '+' || *q == '-') q++;
+            if (isdigit_((unsigned char)*q)) {
+                isf = true;
+                txt[tn++] = *sp++;
+                if (*sp == '+' || *sp == '-')
+                    txt[tn++] = *sp++;
+                while (isdigit_(*sp) && tn < 46)
+                    txt[tn++] = *sp++;
             }
         }
+        txt[tn] = 0;
+        if (isf) {
+            if (*sp == 'f' || *sp == 'F')
+                sp++;
+            t.t = T_FNUM;
+            t.v = (i64)dec_to_double(txt);
+            return t;
+        }
+        for (int k = 0; k < tn; k++)
+            v = v * 10 + (txt[k] - '0');
         t.t = T_NUM;
         t.v = v;
         return t;
@@ -690,6 +1099,11 @@ static void mov_rcx_imm(u64 v)
     e8(0x48); e8(0xB9); e64(v);
 }
 
+static void mov_r8_imm(u64 v)
+{
+    e8(0x49); e8(0xB8); e64(v);
+}
+
 static void push_rax(void) { e8(0x50); }
 static void pop_rcx(void)  { e8(0x59); }
 
@@ -760,6 +1174,19 @@ static void patch_rel(u32 pos, u32 target)
     code[pos + 3] = (u8)(u >> 24);
 }
 
+/* 用户函数实参: 左到右求值压栈后原地反转, 使 arg0 位于栈顶.
+   这样形参固定为 [rbp+16+8*i], 变参从 [rbp+16+8*np] 开始连续. */
+static void reverse_args(int n)
+{
+    for (int i = 0; i < n / 2; i++) {
+        int a = i * 8, b = (n - 1 - i) * 8;
+        e8(0x48); e8(0x8B); e8(0x44); e8(0x24); e8((u8)a);
+        e8(0x48); e8(0x8B); e8(0x4C); e8(0x24); e8((u8)b);
+        e8(0x48); e8(0x89); e8(0x4C); e8(0x24); e8((u8)a);
+        e8(0x48); e8(0x89); e8(0x44); e8(0x24); e8((u8)b);
+    }
+}
+
 static void add_rax_imm(i64 v)
 {
     if (v >= 0) {
@@ -791,11 +1218,15 @@ static void imul_rcx_imm(int v)
 static void mov_rax_rcx(void) { e8(0x48); e8(0x89); e8(0xC8); }
 static void mov_rdx_rax(void) { e8(0x48); e8(0x89); e8(0xC2); }
 static void mov_rax_rdx(void) { e8(0x48); e8(0x89); e8(0xD0); }
+static void mov_r10_rax(void) { e8(0x49); e8(0x89); e8(0xC2); }
+static void mov_rax_r10(void) { e8(0x4C); e8(0x89); e8(0xD0); }
 static void mov_rcx_rsp(void) { e8(0x48); e8(0x8B); e8(0x0C); e8(0x24); }
 
 /* 以 rax 为地址读写对象 (char 用 1 字节, 其余 8 字节) */
 static int value_bytes(const struct ctype *t)
 {
+    if (t->func)
+        return 8;
     if (t->ptr > 0)
         return 8;
     if (t->kind == CK_CHAR)
@@ -823,6 +1254,49 @@ static void store_at(const struct ctype *t)
     } else {
         e8(0x48); e8(0x89); e8(0x01);              /* mov [rcx], rax */
     }
+}
+
+/* 位域: rax 中的值向右移 off 位并按 width 掩码 (signed 时符号扩展) */
+static void bit_extract(int off, int width, bool sign)
+{
+    if (off > 0) {
+        e8(0x48); e8(0xC1); e8(0xE8); e8((u8)off);     /* shr rax, imm8 */
+    }
+    if (width < 64 && width > 0) {
+        mov_rcx_imm((1ULL << width) - 1);
+        e8(0x48); e8(0x21); e8(0xC8);                  /* and rax, rcx */
+        if (sign) {
+            int sh = 64 - width;
+            e8(0x48); e8(0xC1); e8(0xE0); e8((u8)sh);  /* shl rax, imm8 */
+            e8(0x48); e8(0xC1); e8(0xF8); e8((u8)sh);  /* sar rax, imm8 */
+        }
+    }
+}
+
+/* 位域读: 地址在 rax */
+static void bit_load(int off, int width, bool sign)
+{
+    e8(0x48); e8(0x8B); e8(0x00);              /* mov rax, [rax] */
+    bit_extract(off, width, sign);
+}
+
+/* 位域读改写: rax=新值, rcx=地址; 完成后 rax 仍为新值 */
+static void bit_store(int off, int width)
+{
+    u64 m = (width >= 64 ? ~0ULL : ((1ULL << width) - 1)) << off;
+    e8(0x49); e8(0x89); e8(0xC1);              /* mov r9, rax (保存新值) */
+    e8(0x48); e8(0x89); e8(0xC2);              /* mov rdx, rax */
+    if (off > 0) {
+        e8(0x48); e8(0xC1); e8(0xE2); e8((u8)off); /* shl rdx, imm8 */
+    }
+    e8(0x48); e8(0x8B); e8(0x01);              /* mov rax, [rcx] */
+    mov_r8_imm(~m);
+    e8(0x4C); e8(0x21); e8(0xC0);              /* and rax, r8 */
+    mov_r8_imm(m);
+    e8(0x4C); e8(0x21); e8(0xC2);              /* and rdx, r8 */
+    e8(0x48); e8(0x09); e8(0xD0);              /* or rax, rdx */
+    e8(0x48); e8(0x89); e8(0x01);              /* mov [rcx], rax */
+    e8(0x4C); e8(0x89); e8(0xC8);              /* mov rax, r9 */
 }
 
 static void zero_local(int disp, int size)
@@ -878,6 +1352,80 @@ static void apply_cmp(int op)
     }
     e8(0x0F); e8(cc); e8(0xC0);
     e8(0x48); e8(0x0F); e8(0xB6); e8(0xC0);
+}
+
+/* ------------------------------------------------------------ 浮点 (SSE2) */
+static bool is_dbl(const struct ctype *t)
+{
+    return t->kind == CK_DOUBLE && t->ptr == 0 && !t->func;
+}
+
+static void dbl_movq_rcx(void) { e8(0x66); e8(0x48); e8(0x0F); e8(0x6E); e8(0xC1); }
+static void dbl_movq_rax(void) { e8(0x66); e8(0x48); e8(0x0F); e8(0x6E); e8(0xC8); }
+static void dbl_movq_out(void) { e8(0x66); e8(0x48); e8(0x0F); e8(0x7E); e8(0xC0); }
+static void dbl_cvtsi_rcx(void) { e8(0xF2); e8(0x48); e8(0x0F); e8(0x2A); e8(0xC1); }
+static void dbl_cvtsi_rax(void) { e8(0xF2); e8(0x48); e8(0x0F); e8(0x2A); e8(0xC8); }
+static void dbl_cvtsi_rax_in(void) { e8(0xF2); e8(0x48); e8(0x0F); e8(0x2A); e8(0xC0); }
+
+/* 栈上操作数: rcx = 左, rax = 右 -> xmm0/xmm1 */
+static void dbl_operands(bool lf, bool rf)
+{
+    if (lf) dbl_movq_rcx(); else dbl_cvtsi_rcx();
+    if (rf) dbl_movq_rax(); else dbl_cvtsi_rax();
+}
+
+static void dbl_binop(int op)
+{
+    e8(0xF2); e8(0x0F);
+    switch (op) {
+    case '+': e8(0x58); break;              /* addsd */
+    case '-': e8(0x5C); break;              /* subsd */
+    case '*': e8(0x59); break;              /* mulsd */
+    default:  e8(0x5E); break;              /* divsd */
+    }
+    e8(0xC1);                               /* xmm1 */
+    dbl_movq_out();
+}
+
+static void dbl_cmp(int op)
+{
+    e8(0x66); e8(0x0F); e8(0x2E); e8(0xC1); /* ucomisd xmm0, xmm1 */
+    u8 cc = 0x94;
+    switch (op) {
+    case T_EQ: cc = 0x94; break;            /* sete  */
+    case T_NE: cc = 0x95; break;            /* setne */
+    case '<':  cc = 0x92; break;            /* setb  */
+    case T_LE: cc = 0x96; break;            /* setbe */
+    case '>':  cc = 0x97; break;            /* seta  */
+    case T_GE: cc = 0x93; break;            /* setae */
+    default: break;
+    }
+    e8(0x0F); e8(cc); e8(0xC0);
+    e8(0x48); e8(0x0F); e8(0xB6); e8(0xC0);
+}
+
+/* rax 中的整数 -> rax 中的 double 位模式 */
+static void dbl_from_int(void)
+{
+    dbl_cvtsi_rax_in();                     /* cvtsi2sd xmm0, rax */
+    dbl_movq_out();                         /* movq rax, xmm0 */
+}
+
+/* rax 中的 double 位模式 -> rax 中的整数 (截断) */
+static void dbl_to_int(void)
+{
+    e8(0x66); e8(0x48); e8(0x0F); e8(0x6E); e8(0xC0); /* movq xmm0, rax */
+    e8(0xF2); e8(0x48); e8(0x0F); e8(0x2C); e8(0xC0); /* cvttsd2si rax, xmm0 */
+}
+
+/* rax += 1.0 / -= 1.0 (double) */
+static void dbl_add_one(bool sub)
+{
+    e8(0x66); e8(0x48); e8(0x0F); e8(0x6E); e8(0xC0); /* movq xmm0, rax */
+    mov_rax_imm(0x3FF0000000000000ULL);
+    dbl_movq_rax();                                   /* movq xmm1, rax */
+    e8(0xF2); e8(0x0F); e8(sub ? 0x5C : 0x58); e8(0xC1);
+    dbl_movq_out();
 }
 
 /* ------------------------------------------------------------ 类型辅助 */
@@ -986,6 +1534,7 @@ static bool tok_is_type(const struct token *t)
         return false;
     const char *n = t->name;
     return !strcmp(n, "int") || !strcmp(n, "char") || !strcmp(n, "void") ||
+           !strcmp(n, "float") || !strcmp(n, "double") ||
            !strcmp(n, "struct") || !strcmp(n, "union") ||
            !strcmp(n, "const") || !strcmp(n, "unsigned") ||
            !strcmp(n, "signed") || !strcmp(n, "long") || !strcmp(n, "short") ||
@@ -1124,7 +1673,7 @@ static i64 c_unary(void)
         expect(')');
         return v;
     }
-    if (cur.t == T_NUM || cur.t == T_STR) {
+    if (cur.t == T_NUM || cur.t == T_STR || cur.t == T_FNUM) {
         i64 v = cur.v;
         advance();
         return v;
@@ -1134,6 +1683,11 @@ static i64 c_unary(void)
         if (find_enum(cur.name, &v)) {
             advance();
             return v;
+        }
+        struct sym *fs = find_sym(cur.name);
+        if (fs && fs->kind == SK_FUNC) {
+            advance();
+            return (i64)(TC_PROG_BASE + (u64)fs->addr);
         }
     }
     fail("constant expected");
@@ -1282,12 +1836,18 @@ static void mat_value(void)
         return;
     }
     if (g_e.lval) {
-        if (g_e.t.ptr == 0 && g_e.t.kind == CK_STRUCT) {
+        if (g_e.t.ptr == 0 && g_e.t.kind == CK_STRUCT && !g_e.t.func) {
             fail("struct value not supported (use a field)");
             return;
         }
-        load_at(&g_e.t);
+        if (g_e.is_bit) {
+            bit_load(g_e.bit_off, g_e.bit_width,
+                     g_e.t.kind == CK_INT && !g_e.t.uns);
+        } else {
+            load_at(&g_e.t);
+        }
         g_e.lval = false;
+        g_e.is_bit = false;
     }
 }
 
@@ -1352,30 +1912,90 @@ static void gen_incdec(bool inc, bool prefix)
     if (g_e.is_arr) { fail("cannot modify array"); return; }
     if (!g_e.lval) { fail("++/-- requires lvalue"); return; }
     t = g_e.t;
-    if (t.ptr == 0 && t.kind == CK_STRUCT) {
+    if (t.ptr == 0 && t.kind == CK_STRUCT && !t.func) {
         fail("++/-- on struct");
         return;
     }
     step = inc_step(&t);
+    bool is_bit = g_e.is_bit;
+    int bo = g_e.bit_off, bw = g_e.bit_width;
 
     push_rax();                     /* 地址 */
-    load_at(&t);                    /* rax = 旧值 */
-    if (!prefix)
-        mov_rdx_rax();              /* 保存旧值 */
-    add_rax_imm(inc ? step : -step);
+    if (is_bit)
+        bit_load(bo, bw, t.kind == CK_INT && !t.uns);
+    else
+        load_at(&t);                /* rax = 旧值 */
+    if (!prefix) {
+        if (is_bit) mov_r10_rax();
+        else        mov_rdx_rax();  /* 保存旧值 */
+    }
+    if (is_dbl(&t))
+        dbl_add_one(!inc);
+    else
+        add_rax_imm(inc ? step : -step);
     mov_rcx_rsp();                  /* 地址 */
-    store_at(&t);
+    if (is_bit)
+        bit_store(bo, bw);
+    else
+        store_at(&t);
     add_rsp_imm(8);
-    if (!prefix)
-        mov_rax_rdx();
+    if (!prefix) {
+        if (is_bit) mov_rax_r10();
+        else        mov_rax_rdx();
+    }
     g_e.lval = false;
     g_e.is_arr = false;
+    g_e.is_bit = false;
     g_e.t = t;
+}
+
+/* 间接调用: g_e 中的函数指针值 (rax) 作为被调地址 */
+static void gen_indirect_call(void)
+{
+    expect('(');
+    if (g_e.lval) {
+        if (g_e.is_bit)
+            bit_load(g_e.bit_off, g_e.bit_width, false);
+        else
+            load_at(&g_e.t);
+        g_e.lval = false;
+        g_e.is_bit = false;
+    }
+    push_rax();                         /* 保存函数地址 */
+    int nargs = 0;
+    if (cur.t != ')') {
+        for (;;) {
+            gen_value(0, 0);
+            push_rax();
+            nargs++;
+            if (nargs > MAX_ARGS) { fail("too many arguments"); return; }
+            if (accept(','))
+                continue;
+            break;
+        }
+    }
+    expect(')');
+    reverse_args(nargs);
+    int disp = nargs * 8;
+    e8(0x48); e8(0x8B); e8(0x84); e8(0x24); e32((u32)disp); /* mov rax,[rsp+n] */
+    e8(0xFF); e8(0xD0);                                     /* call rax */
+    add_rsp_imm((nargs + 1) * 8);
+    g_e.t.kind = CK_INT;
+    g_e.t.ptr = 0;
+    g_e.t.func = 0;
+    g_e.t.obj = 8;
+    g_e.lval = false;
+    g_e.is_arr = false;
+    g_e.is_bit = false;
 }
 
 static void gen_postfix(void)
 {
     for (;;) {
+        if (cur.t == '(') {
+            gen_indirect_call();
+            continue;
+        }
         if (cur.t == '[') {
             advance();
             int step = 1;
@@ -1455,7 +2075,15 @@ static void gen_postfix(void)
             if (!fd) { fail("no such field"); return; }
             advance();
             add_rax_imm(fd->offset);
-            if (fd->ndims > 0) {
+            g_e.is_bit = false;
+            if (fd->bit_width > 0) {
+                g_e.t = fd->type;
+                g_e.lval = true;
+                g_e.is_arr = false;
+                g_e.is_bit = true;
+                g_e.bit_off = fd->bit_off;
+                g_e.bit_width = fd->bit_width;
+            } else if (fd->ndims > 0) {
                 g_e.is_arr = true;
                 g_e.ndims = fd->ndims;
                 for (int i = 0; i < fd->ndims; i++)
@@ -1464,7 +2092,8 @@ static void gen_postfix(void)
                 g_e.esize = value_bytes(&fd->type);
                 g_e.t = fd->type;
                 g_e.lval = false;
-            } else if (fd->type.kind == CK_STRUCT && fd->type.ptr == 0) {
+            } else if (fd->type.kind == CK_STRUCT && fd->type.ptr == 0 &&
+                       !fd->type.func) {
                 g_e.t = fd->type;
                 g_e.lval = true;
                 g_e.is_arr = false;
@@ -1487,7 +2116,15 @@ static void gen_postfix(void)
             if (!fd) { fail("no such field"); return; }
             advance();
             add_rax_imm(fd->offset);
-            if (fd->ndims > 0) {
+            g_e.is_bit = false;
+            if (fd->bit_width > 0) {
+                g_e.t = fd->type;
+                g_e.lval = true;
+                g_e.is_arr = false;
+                g_e.is_bit = true;
+                g_e.bit_off = fd->bit_off;
+                g_e.bit_width = fd->bit_width;
+            } else if (fd->ndims > 0) {
                 g_e.is_arr = true;
                 g_e.ndims = fd->ndims;
                 for (int i = 0; i < fd->ndims; i++)
@@ -1507,20 +2144,37 @@ static void gen_postfix(void)
             bool inc = (cur.t == T_INC);
             if (g_e.is_arr || !g_e.lval) { fail("++/-- requires lvalue"); return; }
             struct ctype t = g_e.t;
-            if (t.ptr == 0 && t.kind == CK_STRUCT) { fail("++/-- on struct"); return; }
+            if (t.ptr == 0 && t.kind == CK_STRUCT && !t.func) {
+                fail("++/-- on struct");
+                return;
+            }
+            bool is_bit = g_e.is_bit;
+            int bo = g_e.bit_off, bw = g_e.bit_width;
             int step = inc_step(&t);
             push_rax();                 /* 地址 */
             mov_rcx_rsp();
             mov_rax_rcx();              /* rax = 地址 */
-            load_at(&t);                /* rax = 旧值 */
-            mov_rdx_rax();              /* 保存旧值 */
-            add_rax_imm(inc ? step : -step);
+            if (is_bit)
+                bit_load(bo, bw, t.kind == CK_INT && !t.uns);
+            else
+                load_at(&t);            /* rax = 旧值 */
+            if (is_bit) mov_r10_rax();
+            else        mov_rdx_rax();  /* 保存旧值 */
+            if (is_dbl(&t))
+                dbl_add_one(!inc);
+            else
+                add_rax_imm(inc ? step : -step);
             mov_rcx_rsp();
-            store_at(&t);
+            if (is_bit)
+                bit_store(bo, bw);
+            else
+                store_at(&t);
             add_rsp_imm(8);
-            mov_rax_rdx();
+            if (is_bit) mov_rax_r10();
+            else        mov_rax_rdx();
             g_e.lval = false;
             g_e.is_arr = false;
+            g_e.is_bit = false;
             g_e.t = t;
             advance();
             continue;
@@ -1540,6 +2194,13 @@ static void gen_primary(void)
         advance();
         return;
     }
+    if (cur.t == T_FNUM) {
+        mov_rax_imm((u64)cur.v);
+        g_e.t.kind = CK_DOUBLE;
+        g_e.t.obj = 8;
+        advance();
+        return;
+    }
     if (cur.t == T_STR) {
         mov_rax_imm((u64)cur.v);
         g_e.t.kind = CK_CHAR;
@@ -1554,8 +2215,12 @@ static void gen_primary(void)
         name[31] = 0;
 
         if (nxt.t == '(') {
-            gen_call(name);
-            return;
+            struct sym *vs = lookup_var(name);
+            if (!(vs && vs->type.func)) {
+                gen_call(name);         /* 直接调用 (可延迟解析) */
+                return;
+            }
+            /* 函数指针变量: 按变量求值, 调用由后缀 '(' 处理 */
         }
 
         i64 ev;
@@ -1563,6 +2228,20 @@ static void gen_primary(void)
             mov_rax_imm((u64)ev);
             g_e.t.kind = CK_INT;
             g_e.t.obj = 8;
+            advance();
+            return;
+        }
+
+        struct sym *fs = find_sym(name);
+        if (fs && fs->kind == SK_FUNC) {
+            /* 函数名作值: 取代码地址 */
+            mov_rax_imm((u64)(TC_PROG_BASE + (u64)fs->addr));
+            g_e.t.kind = CK_VOID;
+            g_e.t.ptr = 0;
+            g_e.t.func = 1;
+            g_e.t.obj = 8;
+            g_e.lval = false;
+            g_e.is_arr = false;
             advance();
             return;
         }
@@ -1641,6 +2320,11 @@ static void gen_unary(void)
         expect(')');
         gen_unary();
         mat_value();
+        bool src_dbl = is_dbl(&g_e.t);
+        if (is_dbl(&t) && !src_dbl)
+            dbl_from_int();
+        else if (!is_dbl(&t) && src_dbl)
+            dbl_to_int();
         if (t.ptr == 0 && t.kind == CK_CHAR) {
             e8(0x48); e8(0x0F); e8(0xB6); e8(0xC0);   /* movzx rax, al */
         }
@@ -1655,6 +2339,12 @@ static void gen_unary(void)
     if (accept('-')) {
         gen_unary();
         mat_value();
+        if (is_dbl(&g_e.t)) {
+            mov_rcx_imm(0x8000000000000000ULL);
+            e8(0x48); e8(0x31); e8(0xC8);       /* xor rax, rcx (翻转符号位) */
+            g_e.lval = false;
+            return;
+        }
         e8(0x48); e8(0xF7); e8(0xD8);       /* neg rax */
         g_e.t.kind = CK_INT; g_e.t.ptr = 0; g_e.t.obj = 8;
         g_e.lval = false;
@@ -1685,6 +2375,11 @@ static void gen_unary(void)
     }
     if (accept('&')) {
         gen_unary();
+        if (g_e.t.func) {           /* &func == func */
+            g_e.lval = false;
+            g_e.is_arr = false;
+            return;
+        }
         if (g_e.is_arr) {
             struct ctype p = g_e.t;
             p.ptr = 1;
@@ -1702,6 +2397,11 @@ static void gen_unary(void)
     if (accept('*')) {
         gen_unary();
         mat_value();
+        if (g_e.t.func) {           /* *fp 即函数指示符 */
+            g_e.lval = false;
+            g_e.is_arr = false;
+            return;
+        }
         if (g_e.t.ptr == 0) { fail("* requires pointer"); return; }
         g_e.t.ptr--;
         if (g_e.t.ptr == 0 && g_e.t.kind == CK_STRUCT)
@@ -1749,10 +2449,12 @@ static void gen_expr(int minp)
                 return;
             }
             struct ctype lt = g_e.t;
-            if (lt.ptr == 0 && lt.kind == CK_STRUCT) {
+            if (lt.ptr == 0 && lt.kind == CK_STRUCT && !lt.func) {
                 fail("struct assignment not supported");
                 return;
             }
+            bool is_bit = g_e.is_bit;
+            int bo = g_e.bit_off, bw = g_e.bit_width;
             int op = cur.t;
             advance();
 
@@ -1760,22 +2462,49 @@ static void gen_expr(int minp)
             if (op != '=') {
                 mov_rcx_rsp();
                 mov_rax_rcx();
-                load_at(&lt);               /* rax = 旧值 */
+                if (is_bit)
+                    bit_load(bo, bw, lt.kind == CK_INT && !lt.uns);
+                else
+                    load_at(&lt);           /* rax = 旧值 */
                 push_rax();                /* 旧值 (左操作数) */
             }
-            gen_value(0, 0);
+            struct ety rop;
+            gen_value(0, &rop);
             if (op != '=') {
                 int bop = assign_binop(op);
-                if ((bop == '+' || bop == '-') && lt.ptr > 0)
-                    imul_rax_imm(ptr_step(&lt));
-                pop_rcx();                 /* 旧值 */
-                apply_binop(bop);
+                bool lf = is_dbl(&lt), rf = is_dbl(&rop.t);
+                if (lf || rf) {
+                    if (lt.ptr > 0 ||
+                        (bop != '+' && bop != '-' && bop != '*' && bop != '/')) {
+                        fail("invalid float operator");
+                        return;
+                    }
+                    pop_rcx();             /* 旧值 */
+                    dbl_operands(lf, rf);
+                    dbl_binop(bop);
+                    if (!lf)
+                        dbl_to_int();
+                } else {
+                    if ((bop == '+' || bop == '-') && lt.ptr > 0)
+                        imul_rax_imm(ptr_step(&lt));
+                    pop_rcx();             /* 旧值 */
+                    apply_binop(bop);
+                }
+            } else {
+                if (is_dbl(&lt) && !is_dbl(&rop.t))
+                    dbl_from_int();
+                else if (!is_dbl(&lt) && is_dbl(&rop.t))
+                    dbl_to_int();
             }
             pop_rcx();                     /* 地址 */
-            store_at(&lt);
+            if (is_bit)
+                bit_store(bo, bw);
+            else
+                store_at(&lt);
             g_e.t = lt;
             g_e.lval = false;
             g_e.is_arr = false;
+            g_e.is_bit = false;
             continue;
         }
 
@@ -1807,6 +2536,31 @@ static void gen_expr(int minp)
             continue;
         }
 
+        bool cmpop = (op == T_EQ || op == T_NE || op == '<' || op == '>' ||
+                      op == T_LE || op == T_GE);
+        if (is_dbl(&lt) || is_dbl(&rt.t)) {
+            if (op != '+' && op != '-' && op != '*' && op != '/' && !cmpop) {
+                fail("invalid float operator");
+                return;
+            }
+            dbl_operands(is_dbl(&lt), is_dbl(&rt.t));
+            if (cmpop) {
+                dbl_cmp(op);
+                g_e.t.kind = CK_INT;
+            } else {
+                dbl_binop(op);
+                g_e.t.kind = CK_DOUBLE;
+            }
+            g_e.t.ptr = 0;
+            g_e.t.func = 0;
+            g_e.t.uns = 0;
+            g_e.t.obj = 8;
+            g_e.lval = false;
+            g_e.is_arr = false;
+            g_e.is_bit = false;
+            continue;
+        }
+
         /* 指针算术: 按元素大小缩放整数侧 */
         if (op == '+' || op == '-') {
             if (lt.ptr > 0 && rt.t.ptr == 0) {
@@ -1820,8 +2574,6 @@ static void gen_expr(int minp)
             }
         }
 
-        bool cmpop = (op == T_EQ || op == T_NE || op == '<' || op == '>' ||
-                      op == T_LE || op == T_GE);
         if (cmpop) {
             apply_cmp(op);
             g_e.t.kind = CK_INT; g_e.t.ptr = 0; g_e.t.obj = 8;
@@ -1847,6 +2599,7 @@ static void gen_expr(int minp)
         }
         g_e.lval = false;
         g_e.is_arr = false;
+        g_e.is_bit = false;
     }
 }
 
@@ -1854,6 +2607,46 @@ static void gen_call(const char *name)
 {
     advance();                          /* ID */
     advance();                          /* '(' */
+
+    /* 变参内置: va_start(ap,last) / va_arg(ap,type) / va_end(ap) */
+    if (!strcmp(name, "va_start")) {
+        gen_unary();                    /* ap 左值 -> rax = &ap */
+        push_rax();
+        expect(',');
+        gen_unary();                    /* last 左值 -> rax = &last */
+        add_rax_imm(8);                 /* 第一个可变参数 */
+        pop_rcx();
+        e8(0x48); e8(0x89); e8(0x01);   /* mov [rcx], rax */
+        expect(')');
+        g_e.t.kind = CK_INT; g_e.t.ptr = 0; g_e.t.func = 0; g_e.t.obj = 8;
+        g_e.lval = false; g_e.is_arr = false; g_e.is_bit = false;
+        return;
+    }
+    if (!strcmp(name, "va_arg")) {
+        gen_unary();                    /* ap 左值 -> &ap */
+        push_rax();
+        expect(',');
+        struct ctype vt;
+        if (!parse_ctype(&vt))
+            return;
+        expect(')');
+        pop_rcx();                      /* &ap */
+        e8(0x48); e8(0x8B); e8(0x01);              /* mov rax,[rcx] */
+        e8(0x48); e8(0x8D); e8(0x50); e8(0x08);    /* lea rdx,[rax+8] */
+        e8(0x48); e8(0x89); e8(0x11);              /* mov [rcx],rdx */
+        load_at(&vt);
+        g_e.t = vt;
+        g_e.lval = false; g_e.is_arr = false; g_e.is_bit = false;
+        return;
+    }
+    if (!strcmp(name, "va_end")) {
+        gen_value(0, 0);
+        expect(')');
+        g_e.t.kind = CK_INT; g_e.t.ptr = 0; g_e.t.func = 0; g_e.t.obj = 8;
+        g_e.lval = false; g_e.is_arr = false; g_e.is_bit = false;
+        return;
+    }
+
     int nargs = 0;
     if (cur.t != ')') {
         for (;;) {
@@ -1943,6 +2736,7 @@ static void gen_call(const char *name)
         e8(0xCD); e8(0x21);
     } else {
         if (nfc >= MAX_FCALL) { fail("too many calls"); return; }
+        reverse_args(nargs);            /* 用户函数: arg0 到栈顶 */
         e8(0xE8);
         fcs[nfc].pos = clen;
         e32(0);
@@ -1955,9 +2749,11 @@ static void gen_call(const char *name)
 
     g_e.t.kind = CK_INT;
     g_e.t.ptr = 0;
+    g_e.t.func = 0;
     g_e.t.obj = 8;
     g_e.lval = false;
     g_e.is_arr = false;
+    g_e.is_bit = false;
 }
 
 /* ------------------------------------------------------------ 声明解析 */
@@ -1965,10 +2761,16 @@ static bool parse_ctype(struct ctype *t)
 {
     memset(t, 0, sizeof(*t));
 
+    bool plain_int = false;
+    bool saw_uns = false;
     for (;;) {
+        if (accept_kw("unsigned")) { plain_int = true; saw_uns = true; continue; }
+        if (accept_kw("signed") || accept_kw("long") || accept_kw("short")) {
+            plain_int = true;
+            continue;
+        }
         if (accept_kw("static") || accept_kw("const") || accept_kw("volatile") ||
-            accept_kw("unsigned") || accept_kw("signed") || accept_kw("register") ||
-            accept_kw("long") || accept_kw("short") || accept_kw("extern") ||
+            accept_kw("register") || accept_kw("extern") ||
             accept_kw("inline"))
             continue;
         break;
@@ -1999,15 +2801,21 @@ static bool parse_ctype(struct ctype *t)
         *t = typedefs[find_typedef(cur.name)].type;
         advance();
     } else if (is_kw("float") || is_kw("double")) {
-        fail("floating point not supported");
-        return false;
+        advance();
+        t->kind = CK_DOUBLE;
+        t->obj = 8;
+    } else if (plain_int) {
+        t->kind = CK_INT;           /* unsigned / long / short 单独出现 */
+        t->obj = 8;
     } else {
-        fail("type expected");
+        fail(cur.t == T_ID ? cur.name : "type expected");
         return false;
     }
 
     while (accept('*'))
         t->ptr++;
+    if (saw_uns)
+        t->uns = 1;
     return true;
 }
 
@@ -2016,6 +2824,35 @@ static bool parse_declarator(struct ctype base, struct decl *d)
     memset(d, 0, sizeof(*d));
     d->type = base;
     d->nelem = 1;
+
+    /* 函数指针: (*name)(参数列表) */
+    if (cur.t == '(' && nxt.t == '*') {
+        advance();                      /* ( */
+        while (accept('*'))
+            ;
+        if (cur.t != T_ID) { fail("expected name"); return false; }
+        strncpy(d->name, cur.name, 31);
+        d->name[31] = 0;
+        advance();
+        expect(')');
+        if (!accept('(')) { fail("expected parameter list"); return false; }
+        if (!accept(')')) {
+            int depth = 1;
+            while (!failed && cur.t != T_EOF) {
+                if (cur.t == '(') depth++;
+                else if (cur.t == ')') {
+                    depth--;
+                    if (depth == 0) { advance(); break; }
+                }
+                advance();
+            }
+        }
+        d->type.func = 1;
+        d->type.ptr = 0;
+        d->type.kind = CK_VOID;
+        d->type.obj = 8;
+        return true;
+    }
 
     while (accept('*'))
         d->type.ptr++;
@@ -2050,7 +2887,7 @@ static bool parse_declarator(struct ctype base, struct decl *d)
 
 static bool decl_validate(const struct decl *d)
 {
-    if (d->type.kind == CK_VOID && d->type.ptr == 0) {
+    if (d->type.kind == CK_VOID && d->type.ptr == 0 && !d->type.func) {
         fail("void variable");
         return false;
     }
@@ -2231,6 +3068,38 @@ static void parse_typedef(void)
         return;
     for (;;) {
         struct ctype t = base;
+        if (cur.t == '(' && nxt.t == '*') {
+            /* 函数指针 typedef: typedef Ret (*name)(Args); */
+            advance();
+            while (accept('*'))
+                ;
+            if (cur.t != T_ID) { fail("typedef name expected"); return; }
+            char n[32];
+            strncpy(n, cur.name, 31);
+            n[31] = 0;
+            advance();
+            expect(')');
+            if (!accept('(')) { fail("expected parameter list"); return; }
+            if (!accept(')')) {
+                int depth = 1;
+                while (!failed && cur.t != T_EOF) {
+                    if (cur.t == '(') depth++;
+                    else if (cur.t == ')') {
+                        depth--;
+                        if (depth == 0) { advance(); break; }
+                    }
+                    advance();
+                }
+            }
+            t.func = 1;
+            t.ptr = 0;
+            t.kind = CK_VOID;
+            t.obj = 8;
+            add_typedef(n, t);
+            if (accept(','))
+                continue;
+            break;
+        }
         while (accept('*'))
             t.ptr++;
         if (cur.t != T_ID) { fail("typedef name expected"); return; }
@@ -2330,6 +3199,7 @@ static bool is_type_start(void)
     if (cur.t == T_ID && is_typedef_name(cur.name))
         return true;
     return is_kw("int") || is_kw("char") || is_kw("void") ||
+           is_kw("float") || is_kw("double") ||
            is_kw("struct") || is_kw("union") || is_kw("static") ||
            is_kw("const") || is_kw("unsigned") || is_kw("signed") ||
            is_kw("long") || is_kw("short") || is_kw("extern") ||
@@ -2343,7 +3213,7 @@ static void parse_switch(void)
     expect(')');
 
     int tmp = alloc_local(8);
-    struct ctype it = { CK_INT, 0, 0, 8 };
+    struct ctype it = { CK_INT, 0, 0, 8, 0, 0 };
     lea_rcx_local(tmp);
     store_at(&it);
 
@@ -2622,6 +3492,8 @@ static void parse_struct_body(int sid, bool is_union)
     st->nf = 0;
     st->size = 0;
     st->complete = false;
+    st->bit_base = -1;
+    st->bit_used = 0;
 
     if (!accept('{')) { fail("expected struct body"); return; }
 
@@ -2636,6 +3508,13 @@ static void parse_struct_body(int sid, bool is_union)
             if (d.incomplete) { fail("array size unknown"); return; }
             if (!decl_validate(&d))
                 return;
+            int bw = 0;
+            if (accept(':')) {
+                i64 w = c_cond();
+                if (w <= 0 || w > 63) { fail("bad bit width"); return; }
+                if (d.ndims) { fail("bitfield array"); return; }
+                bw = (int)w;
+            }
             if (st->nf >= MAX_FIELDS) { fail("too many fields"); return; }
             struct field *fd = &st->f[st->nf++];
             memset(fd, 0, sizeof(*fd));
@@ -2645,16 +3524,38 @@ static void parse_struct_body(int sid, bool is_union)
             for (int i = 0; i < d.ndims; i++)
                 fd->dims[i] = d.dims[i];
             fd->nelem = d.ndims ? d.nelem : 1;
+            fd->bit_width = bw;
             int fsize = d.ndims ? d.nelem * value_bytes(&d.type)
                                 : value_bytes(&d.type);
-            if (is_union) {
-                fd->offset = 0;
-                if (fsize > st->size)
-                    st->size = fsize;
+            if (bw > 0) {
+                if (is_union) {
+                    fd->offset = 0;
+                    fd->bit_off = 0;
+                    if (st->size < 8)
+                        st->size = 8;
+                } else {
+                    if (st->bit_base < 0 || st->bit_used + bw > 64) {
+                        st->size = align_up(st->size, 8);
+                        st->bit_base = st->size;
+                        st->size += 8;
+                        st->bit_used = 0;
+                    }
+                    fd->offset = st->bit_base;
+                    fd->bit_off = st->bit_used;
+                    st->bit_used += bw;
+                }
             } else {
-                st->size = align_up(st->size, 8);
-                fd->offset = st->size;
-                st->size += fsize;
+                if (is_union) {
+                    fd->offset = 0;
+                    if (fsize > st->size)
+                        st->size = fsize;
+                } else {
+                    st->bit_base = -1;
+                    st->bit_used = 0;
+                    st->size = align_up(st->size, 8);
+                    fd->offset = st->size;
+                    st->size += fsize;
+                }
             }
             if (accept(','))
                 continue;
@@ -2697,18 +3598,47 @@ static void parse_function(struct decl *d)
                     return;
                 char pn[32];
                 pn[0] = 0;
-                if (cur.t == T_ID) {
-                    strncpy(pn, cur.name, 31);
-                    pn[31] = 0;
+                if (cur.t == '(' && nxt.t == '*') {
+                    /* 参数是函数指针: (*name)(...) */
                     advance();
-                }
-                while (accept('[')) {
-                    int es = value_bytes(&pt);
-                    if (cur.t != ']')
-                        (void)c_cond();
-                    expect(']');
-                    pt.ptr = 1;
-                    pt.obj = es > 0 ? es : 1;
+                    while (accept('*'))
+                        ;
+                    if (cur.t == T_ID) {
+                        strncpy(pn, cur.name, 31);
+                        pn[31] = 0;
+                        advance();
+                    }
+                    expect(')');
+                    if (!accept('(')) { fail("expected parameter list"); return; }
+                    if (!accept(')')) {
+                        int depth = 1;
+                        while (!failed && cur.t != T_EOF) {
+                            if (cur.t == '(') depth++;
+                            else if (cur.t == ')') {
+                                depth--;
+                                if (depth == 0) { advance(); break; }
+                            }
+                            advance();
+                        }
+                    }
+                    pt.func = 1;
+                    pt.ptr = 0;
+                    pt.kind = CK_VOID;
+                    pt.obj = 8;
+                } else {
+                    if (cur.t == T_ID) {
+                        strncpy(pn, cur.name, 31);
+                        pn[31] = 0;
+                        advance();
+                    }
+                    while (accept('[')) {
+                        int es = value_bytes(&pt);
+                        if (cur.t != ']')
+                            (void)c_cond();
+                        expect(']');
+                        pt.ptr = 1;
+                        pt.obj = es > 0 ? es : 1;
+                    }
                 }
                 if (np >= MAX_ARGS) { fail("too many parameters"); return; }
                 strncpy(pnames[np], pn, 31);
@@ -2745,7 +3675,7 @@ static void parse_function(struct decl *d)
         memset(&pd, 0, sizeof(pd));
         strncpy(pd.name, pnames[i], 31);
         pd.type = ptypes[i];
-        int disp = 16 + 8 * (np - 1 - i);
+        int disp = 16 + 8 * i;      /* 实参从右到左压栈, arg0 在 [rbp+16] */
         if (!new_local(&pd, disp))
             return;
     }
@@ -2905,6 +3835,9 @@ const u8 *tc_compile(const char *src, u32 len, u32 *out_len, const char *path)
     lused = 0;
     inc_depth = 0;
     nseen = 0;
+    nmacros = 0;
+    mac_used = 0;
+    exp_depth = 0;
     want_lib_string = want_lib_stdlib = want_lib_ctype = want_lib_stdio = false;
     if (path && path[0])
         dir_of(path, inc_cur_dir);

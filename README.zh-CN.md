@@ -90,7 +90,7 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 - 基于 exFAT 的 `open/read/write/close/seek` fd 层（fd 0/1/2 为控制台），
   目录句柄经 `SYS_OPENDIR`/`SYS_READDIR` 遍历
 - `RUN <文件.gtp>` 将平面二进制载入暂存区并跳转执行；程序经 `SYS_EXIT` 返回 shell
-- `.gtl` 共享库：加载器把镜像映射到 `LIB_BASE`（0x500000），
+- `.gtl` 共享库：加载器把镜像映射到 `LIB_BASE`（0x580000），
   由 `SYS_LIBLOAD`/`SYS_LIBSYM` 按名解析导出符号；每个程序运行前重置库命名空间
 - `.gtd` 数据文件通过同一 fd 层读取（示例程序读取 `DATA.GTD`）
 - `kernel/include/` 下的公开头文件（`gtos.h`、`unistd.h`、`stat.h`、`dirent.h`、`gtlib.h`、
@@ -119,28 +119,31 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 **内置 C 编译器 (TC) 与 SDK**
 - `TC <源.c> [-o 输出.gtp]` 直接把 C 子集编译为 x86-64 机器码，生成可由 `RUN`
   执行的 `.gtp` 程序，全程不依赖外部工具链
-- 支持：`int`/`char`/指针、1–4 维数组、`struct`/`union`（字段、嵌套结构、`.` 与 `->`）、
-  函数（最多 6 参数、递归、原型）、`if/else`、`while`、`do/while`、`for`、
-  `switch/case/default`（可穿透）、`break`/`continue`/`return`/`goto` 与标签、
-  完整整数表达式与
-  `?:`、前置/后置 `++`/`--`、复合赋值、`typedef`、`enum`、`sizeof`、强制类型转换、
-  字符串字面量、全局/局部花括号与字符串初始化
-- `#include <...>` / `#include "..."` 在编译期展开（依次查找源文件目录、`\SDK`、
-  `\GT-DOS\INCLUDE`），每个文件只包含一次；标准库模块（string/stdlib/ctype/stdio）
-  **只有对应头文件被 include 时才编入程序**，未使用的库不会增大 `out.gtp`
+- 支持：`int`/`char`/`double`/指针、1–4 维数组、`struct`/`union`（字段、嵌套结构、
+  `.` 与 `->`、位域）、函数指针、函数（最多 6 参数、递归、原型、用户可变参数
+  `...` 与 `va_list`/`va_start`/`va_arg`/`va_end`）、`if/else`、`while`、`do/while`、
+  `for`、`switch/case/default`（可穿透）、`break`/`continue`/`return`/`goto` 与标签、
+  完整表达式（整数与 `double` 运算/比较）与 `?:`、前置/后置 `++`/`--`、复合赋值、
+  `typedef`、`enum`、`sizeof`、强制类型转换、字符串字面量、全局/局部花括号与字符串初始化
+- 扫描器支持对象式与函数式 `#define` 宏；不实现 `#if`（GT-DOS 只有单一平台），
+  其余指令整行跳过。`#include <...>` / `#include "..."` 在编译期展开（依次查找
+  源文件目录、`\SDK`、`\GT-DOS\INCLUDE`），每个文件只包含一次；标准库模块
+  （string/stdlib/ctype/stdio）**只有对应头文件被 include 时才编入程序**，
+  未使用的库不会增大 `out.gtp`
 - 标准库：`strlen strcpy strncpy strcmp strncmp strcat strncat strchr strrchr strstr`
   `memcpy memmove memset memcmp`、`malloc calloc free strdup abs atoi strtol rand srand`
   （16KB 堆）、
   `isdigit isalpha isalnum isspace isupper islower toupper tolower`、
   `printf putchar puts getchar`；`printf` 由编译器生成 SYS_PRINTF，
-  支持 `%d %i %u %x %X %c %s %p %%`，最多 5 个可变参数
-- 不支持：浮点、用户自定义可变参数函数、函数指针与位域；`#define/#if` 仍跳过
-  （头文件保护由 include-once 实现）
+  支持 `%d %i %u %x %X %c %s %p %f %%`，最多 5 个可变参数
+- 不支持：`long double`、函数指针数组/返回函数指针、`#define` 的 `##`/`#`
+  记号拼接与字符串化，以及 `#if` 条件编译
 - 内置函数（`\SDK\TC.H`）：`putc`、`print`、`print_int`、`getc`、`exit`、
   `sleep`、`uptime`、`open`、`read`、`write`、`close`、`seek`、`stat`、`statx`、
   `reboot`、`shutdown`；`\SDK\NET.H` 另含 `ip4`、`tcp_connect`、`tcp_send`、
   `tcp_recv`、`tcp_close`、`dns`、`tftp_get`、`http_get`
 - `\SDK\` 提供明文只读 SDK：`TC.H`、`STRING.H`、`STDLIB.H`、`CTYPE.H`、`STDIO.H`、
+  `STDARG.H`、
   `STRING.C`、`STDLIB.C`、`CTYPE.C`、`STDIO.C`、`DEMO.MD`、`HELLO.C`、`FIB.C`、
   `README.TXT`；
   配合 `PUT` 与 `APPEND` 可在系统内逐行编写源码
@@ -349,7 +352,7 @@ build.py             构建脚本与镜像组装
 
 ## 说明与限制
 
-- 内核目前为 545 扇区（278,848 字节，含 48 字节 `GTK1` 尾部），构建上限 640 扇区
+- 内核目前为 593 扇区（303,424 字节，含 48 字节 `GTK1` 尾部），构建上限 640 扇区
   （320KB），加载区间为 `0x10000` 到 `0x60000`；链接脚本同时断言
   `.bss <= 0xA0000` 与 `.highbss <= LIB_BASE`。
 - GDT 在低端内存（0x6800）由入口代码构造，而非放在 `.data`：CPU 装载段寄存器
@@ -359,10 +362,10 @@ build.py             构建脚本与镜像组装
 - 大块零初始化缓冲（`font_buf`、码点表、后台缓冲）被放置在 1 MB 以上、
   标记为 `NOLOAD` 的 `.highbss` 段。若放在普通 `.bss` 中，会与 `0xA0000`
   处的 VGA 显存孔径重叠并破坏帧缓冲。
-- TC 已支持数组、结构体/联合、`switch`、`?:`、`++/--`、`typedef`/`enum`/`sizeof`
-  与强制转换；`#include` 会展开头文件并在需要时链接对应标准库模块。仍不支持浮点、
-  用户自定义可变参数、函数指针与位域。程序代码上限 128KB，数据上限 128KB
-  （全局 64KB + 字符串 64KB）。
+- TC 已支持数组、结构体/联合（含位域）、`switch`、`?:`、`++/--`、`typedef`/`enum`/
+  `sizeof`、强制转换、函数指针、用户可变参数函数与 `double` 运算；`#define` 宏与
+  `#include` 在编译期展开，并按需链接对应标准库模块。`long double` 与 `#if` 不支持。
+  程序代码上限 128KB，数据上限 128KB（全局 64KB + 字符串 64KB）。
 - 内核 `.bss` 必须保持在 `0xA0000`（VGA 孔径）以下，`.highbss` 必须低于 `LIB_BASE`；
   链接脚本对两者都有断言，表过大时会直接构建失败。
 - Shell 文件命令（`TYPE`/`CP`/`MV`/`HEAD`/`WC`/`APPEND`）处理不超过 64KB 的文件。
