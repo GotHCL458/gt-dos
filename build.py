@@ -27,6 +27,7 @@ import subprocess
 import sys
 import time
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 BUILD = os.path.join(ROOT, "build")
@@ -272,20 +273,28 @@ def build_mbr():
 
 
 def build_kernel():
-    objs = []
+    jobs = []
 
     for name in ASM_SOURCES:
         src = os.path.join(ROOT, "kernel", name)
         obj = os.path.join(BUILD, name.replace(".asm", ".o"))
-        run([TOOLS["nasm"], "-f", "elf64", src, "-o", obj])
-        objs.append(obj)
+        jobs.append(([TOOLS["nasm"], "-f", "elf64", src, "-o", obj], obj))
 
     for name in C_SOURCES:
         src = os.path.join(ROOT, "kernel", name)
         obj = os.path.join(BUILD, name.replace(".c", ".o"))
         extra = ["-Os"] if name in ("tc.c", "richtext.c") else []
-        run([TOOLS["clang"]] + CFLAGS + extra + ["-c", src, "-o", obj], cwd=ROOT)
-        objs.append(obj)
+        jobs.append(([TOOLS["clang"]] + CFLAGS + extra + ["-c", src, "-o", obj],
+                     obj))
+
+    # 各编译单元相互独立, 并行编译 (结果顺序仍按源列表, 链接稳定)
+    def compile_one(job):
+        run(job[0], cwd=ROOT)
+        return job[1]
+
+    workers = min(len(jobs), os.cpu_count() or 4)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        objs = list(pool.map(compile_one, jobs))
 
     objs.append(build_rust_kernel_lib())
 

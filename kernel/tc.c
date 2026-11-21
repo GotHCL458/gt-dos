@@ -247,6 +247,14 @@ struct ety {
 
 static struct ety g_e;
 
+/* 条件表达式: 顶层整数比较直接生成“为假则跳转”, 省去 setcc/movzx/test */
+static bool cond_ready;
+static bool cond_fused;
+static bool cond_want_true;         /* do..while: 条件为真时跳回循环体 */
+static u32  cond_jmp;
+
+static const char *err_unit;        /* 当前源文件名 (多模块诊断用) */
+
 static bool parse_ctype(struct ctype *t);
 
 /* ------------------------------------------------------------------ 错误 */
@@ -258,6 +266,15 @@ static void fail(const char *msg)
     char num[16];
     itoa_base((u32)(cur.line > 0 ? cur.line : line_no), num, 10, false);
     int k = 0;
+    if (err_unit && err_unit[0]) {
+        const char *u = err_unit;
+        for (const char *p = err_unit; *p; p++)
+            if (*p == '\\' || *p == '/')
+                u = p + 1;
+        while (*u && k < 46) err_msg[k++] = *u++;
+        if (k < 60) err_msg[k++] = ':';
+        if (k < 60) err_msg[k++] = ' ';
+    }
     const char *a = "line ";
     while (*a && k < 60) err_msg[k++] = *a++;
     const char *b = num;
@@ -1180,14 +1197,32 @@ static void e64(u64 v)
     e32((u32)v); e32((u32)(v >> 32));
 }
 
+/* 立即数可否用 32/8 位符号扩展的短编码 */
+static bool imm_se32(u64 v) { return (i64)v == (i64)(i32)(u32)v; }
+static bool imm_se8(u64 v)  { return (i64)v == (i64)(i8)(u8)v; }
+
+/* 立即数装载: 0 用 xor, 可符号扩展的 32 位用 mov r64,imm32,
+   其余才用 10 字节的 movabs */
 static void mov_rax_imm(u64 v)
 {
-    e8(0x48); e8(0xB8); e64(v);
+    if (v == 0) {
+        e8(0x31); e8(0xC0);                         /* xor eax, eax */
+    } else if (imm_se32(v)) {
+        e8(0x48); e8(0xC7); e8(0xC0); e32((u32)v);  /* mov rax, imm32 */
+    } else {
+        e8(0x48); e8(0xB8); e64(v);                 /* movabs rax, imm64 */
+    }
 }
 
 static void mov_rcx_imm(u64 v)
 {
-    e8(0x48); e8(0xB9); e64(v);
+    if (v == 0) {
+        e8(0x31); e8(0xC9);                         /* xor ecx, ecx */
+    } else if (imm_se32(v)) {
+        e8(0x48); e8(0xC7); e8(0xC1); e32((u32)v);  /* mov rcx, imm32 */
+    } else {
+        e8(0x48); e8(0xB9); e64(v);                 /* movabs rcx, imm64 */
+    }
 }
 
 static void mov_r8_imm(u64 v)
@@ -1316,10 +1351,20 @@ static void reverse_args(int n)
 
 static void add_rax_imm(i64 v)
 {
-    if (v >= 0) {
-        e8(0x48); e8(0x05); e32((u32)v);           /* add rax, imm32 */
+    if (v == 0)
+        return;
+    if (v > 0) {
+        if (v <= 127) {
+            e8(0x48); e8(0x83); e8(0xC0); e8((u8)v);   /* add rax, imm8 */
+        } else {
+            e8(0x48); e8(0x05); e32((u32)v);           /* add rax, imm32 */
+        }
     } else {
-        e8(0x48); e8(0x2D); e32((u32)(-v));        /* sub rax, imm32 */
+        if (v >= -128) {
+            e8(0x48); e8(0x83); e8(0xE8); e8((u8)(-v)); /* sub rax, imm8 */
+        } else {
+            e8(0x48); e8(0x2D); e32((u32)(-v));        /* sub rax, imm32 */
+        }
     }
 }
 
@@ -1334,12 +1379,20 @@ static void add_rsp_imm(int n)
 
 static void imul_rax_imm(int v)
 {
-    e8(0x48); e8(0x69); e8(0xC0); e32((u32)v);
+    if (v >= -128 && v <= 127) {
+        e8(0x48); e8(0x6B); e8(0xC0); e8((u8)v);    /* imul rax, rax, imm8 */
+    } else {
+        e8(0x48); e8(0x69); e8(0xC0); e32((u32)v);  /* imul rax, rax, imm32 */
+    }
 }
 
 static void imul_rcx_imm(int v)
 {
-    e8(0x48); e8(0x69); e8(0xC9); e32((u32)v);
+    if (v >= -128 && v <= 127) {
+        e8(0x48); e8(0x6B); e8(0xC9); e8((u8)v);    /* imul rcx, rcx, imm8 */
+    } else {
+        e8(0x48); e8(0x69); e8(0xC9); e32((u32)v);  /* imul rcx, rcx, imm32 */
+    }
 }
 
 static void mov_rax_rcx(void) { e8(0x48); e8(0x89); e8(0xC8); }
@@ -1540,9 +1593,32 @@ static bool is_pow2(i64 v, int *sh)
     return true;
 }
 
-static void and_rax_imm(i64 v) { e8(0x48); e8(0x25); e32((u32)v); }
-static void or_rax_imm(i64 v)  { e8(0x48); e8(0x0D); e32((u32)v); }
-static void xor_rax_imm(i64 v) { e8(0x48); e8(0x35); e32((u32)v); }
+static void and_rax_imm(i64 v)
+{
+    if (imm_se8((u64)v)) {
+        e8(0x48); e8(0x83); e8(0xE0); e8((u8)v);    /* and rax, imm8 */
+    } else {
+        e8(0x48); e8(0x25); e32((u32)v);            /* and rax, imm32 */
+    }
+}
+
+static void or_rax_imm(i64 v)
+{
+    if (imm_se8((u64)v)) {
+        e8(0x48); e8(0x83); e8(0xC8); e8((u8)v);    /* or rax, imm8 */
+    } else {
+        e8(0x48); e8(0x0D); e32((u32)v);            /* or rax, imm32 */
+    }
+}
+
+static void xor_rax_imm(i64 v)
+{
+    if (imm_se8((u64)v)) {
+        e8(0x48); e8(0x83); e8(0xF0); e8((u8)v);    /* xor rax, imm8 */
+    } else {
+        e8(0x48); e8(0x35); e32((u32)v);            /* xor rax, imm32 */
+    }
+}
 
 static void shift_rax_imm(bool left, bool uns, int k)
 {
@@ -1551,7 +1627,14 @@ static void shift_rax_imm(bool left, bool uns, int k)
     e8((u8)k);
 }
 
-static void cmp_rax_imm(i64 v) { e8(0x48); e8(0x3D); e32((u32)v); }
+static void cmp_rax_imm(i64 v)
+{
+    if (imm_se8((u64)v)) {
+        e8(0x48); e8(0x83); e8(0xF8); e8((u8)v);    /* cmp rax, imm8 */
+    } else {
+        e8(0x48); e8(0x3D); e32((u32)v);            /* cmp rax, imm32 */
+    }
+}
 
 static void setcc_al(u8 cc)
 {
@@ -1569,6 +1652,34 @@ static u8 cmp_cc(int op, bool uns)
     case '>':  return uns ? 0x97 : 0x9F;
     case T_GE: return uns ? 0x93 : 0x9D;
     default:   return 0x94;
+    }
+}
+
+/* jcc 条件码 (0x8x 形式, 与 setcc 的 0x9x 低半字节相同) */
+static u8 cmp_cc_true(int op, bool uns)
+{
+    switch (op) {
+    case T_EQ: return 0x84;                    /* je  */
+    case T_NE: return 0x85;                    /* jne */
+    case '<':  return uns ? 0x82 : 0x8C;       /* jb  / jl  */
+    case T_LE: return uns ? 0x86 : 0x8E;       /* jbe / jle */
+    case '>':  return uns ? 0x87 : 0x8F;       /* ja  / jg  */
+    case T_GE: return uns ? 0x83 : 0x8D;       /* jae / jge */
+    default:   return 0x84;
+    }
+}
+
+/* 条件为假时的 jcc 条件码 (cmp_cc_true 的相反条件, 低半字节 xor 1 不适用于序关系) */
+static u8 cmp_cc_false(int op, bool uns)
+{
+    switch (op) {
+    case T_EQ: return 0x85;                    /* jne */
+    case T_NE: return 0x84;                    /* je  */
+    case '<':  return uns ? 0x83 : 0x8D;       /* jae / jge */
+    case T_LE: return uns ? 0x87 : 0x8F;       /* ja  / jg  */
+    case '>':  return uns ? 0x86 : 0x8E;       /* jbe / jle */
+    case T_GE: return uns ? 0x82 : 0x8C;       /* jb  / jl  */
+    default:   return 0x85;
     }
 }
 
@@ -2887,6 +2998,9 @@ static void gen_unary(void)
 
 static void gen_expr(int minp)
 {
+    bool ctop = cond_ready;         /* 仅最外层调用可融合比较分支 */
+    cond_ready = false;
+
     gen_unary();
 
     for (;;) {
@@ -3055,6 +3169,19 @@ static void gen_expr(int minp)
         if (opt_fold && !lc && rc && both_int) {
             pop_rcx();                     /* lhs */
             mov_rax_rcx();
+            /* 条件上下文的常量比较: cmp imm + jcc, 不再物化 0/1 */
+            if (ctop && minp == 0 && !cond_fused && cmpop &&
+                bin_prec(cur.t) < 0 && cur.t != '?' && fits_i32(rcv)) {
+                cmp_rax_imm(rcv);
+                cond_jmp = emit_jcc(cond_want_true
+                                    ? cmp_cc_true(op, uns)
+                                    : cmp_cc_false(op, uns));
+                cond_fused = true;
+                memset(&g_e, 0, sizeof(g_e));
+                g_e.t.kind = CK_INT;
+                g_e.t.obj = 8;
+                continue;
+            }
             if (gen_imm_op(op, rcv, &lt, cmpop, uns))
                 continue;
             mov_rcx_rax();
@@ -3125,6 +3252,22 @@ static void gen_expr(int minp)
         }
 
         if (cmpop) {
+            /* 条件上下文且比较是表达式最后一步: 直接分支出码 */
+            if (ctop && minp == 0 && !cond_fused && both_int && !lc && !rc &&
+                bin_prec(cur.t) < 0 && cur.t != '?') {
+                e8(0x48); e8(0x39); e8(0xC1);          /* cmp rcx, rax */
+                cond_jmp = emit_jcc(cond_want_true
+                                    ? cmp_cc_true(op, uns)
+                                    : cmp_cc_false(op, uns));
+                cond_fused = true;
+                g_e.t.kind = CK_INT; g_e.t.ptr = 0; g_e.t.obj = 8;
+                g_e.t.uns = 0;
+                g_e.lval = false;
+                g_e.is_arr = false;
+                g_e.is_bit = false;
+                g_e.is_const = false;
+                continue;
+            }
             if (uns) apply_cmp_uns(op);
             else     apply_cmp(op);
             g_e.t.kind = CK_INT; g_e.t.ptr = 0; g_e.t.obj = 8;
@@ -3957,10 +4100,14 @@ static void parse_stmt(void)
     if (accept_kw("if")) {
         expect('(');
         u32 csave = clen;
+        cond_ready = true;
+        cond_fused = false;
+        cond_want_true = false;
+        cond_jmp = 0;
         gen_expr(0);
         bool cst = g_e.is_const;
         i64 cv = g_e.cval;
-        if (!cst)
+        if (!cst && !cond_fused)
             mat_value();
         expect(')');
         if (opt_dce && cst) {
@@ -3974,8 +4121,14 @@ static void parse_stmt(void)
         }
         if (cst)
             mov_rax_imm((u64)cv);
-        test_rax();
-        u32 jz = emit_jcc(0x84);
+        u32 jz;
+        if (cond_fused) {
+            jz = cond_jmp;
+            cond_fused = false;
+        } else {
+            test_rax();
+            jz = emit_jcc(0x84);
+        }
         parse_stmt();
         if (accept_kw("else")) {
             u32 jmp = emit_jmp();
@@ -3990,10 +4143,14 @@ static void parse_stmt(void)
     if (accept_kw("while")) {
         expect('(');
         u32 csave = clen;
+        cond_ready = true;
+        cond_fused = false;
+        cond_want_true = false;
+        cond_jmp = 0;
         gen_expr(0);
         bool cst = g_e.is_const;
         i64 cv = g_e.cval;
-        if (!cst)
+        if (!cst && !cond_fused)
             mat_value();
         expect(')');
         if (opt_loops && cst) {
@@ -4022,8 +4179,14 @@ static void parse_stmt(void)
         u32 start = csave;
         if (cst)
             mov_rax_imm((u64)cv);
-        test_rax();
-        u32 jz = emit_jcc(0x84);
+        u32 jz;
+        if (cond_fused) {
+            jz = cond_jmp;
+            cond_fused = false;
+        } else {
+            test_rax();
+            jz = emit_jcc(0x84);
+        }
         if (nloop >= MAX_NEST) { fail("loop nesting too deep"); return; }
         struct loopctx *lp = &loops[nloop++];
         lp->nbreak = 0;
@@ -4058,9 +4221,19 @@ static void parse_stmt(void)
         u32 jz = 0;
         bool has_cond = false;
         if (cur.t != ';') {
-            gen_value(0, 0);
-            test_rax();
-            jz = emit_jcc(0x84);
+            cond_ready = true;
+            cond_fused = false;
+            cond_want_true = false;
+            cond_jmp = 0;
+            gen_expr(0);
+            if (cond_fused) {
+                jz = cond_jmp;
+                cond_fused = false;
+            } else {
+                mat_value();
+                test_rax();
+                jz = emit_jcc(0x84);
+            }
             has_cond = true;
         }
         expect(';');
@@ -4104,12 +4277,16 @@ static void parse_stmt(void)
         lp->cont = cond;
         if (!accept_kw("while")) { fail("expected while"); nloop--; return; }
         expect('(');
+        cond_ready = true;
+        cond_fused = false;
+        cond_want_true = true;          /* do..while: 真 -> 回到循环体 */
+        cond_jmp = 0;
         gen_expr(0);
         bool cconst = opt_loops && g_e.is_const;
         i64 cval = g_e.cval;
         if (g_e.is_const && !cconst)
             mov_rax_imm((u64)cval);
-        if (!g_e.is_const)
+        if (!g_e.is_const && !cond_fused)
             mat_value();
         expect(')');
         if (cconst) {
@@ -4118,6 +4295,9 @@ static void parse_stmt(void)
                 u32 back = emit_jmp();
                 patch_rel(back, body);
             }
+        } else if (cond_fused) {
+            patch_rel(cond_jmp, body);     /* 条件为真 -> 循环体 */
+            cond_fused = false;
         } else {
             test_rax();
             u32 jnz = emit_jcc(0x85);      /* jne -> 循环体 */
@@ -4510,10 +4690,11 @@ static void parse_program(void)
 }
 
 /* 编译一个按需引入的标准库模块 (调用点稍后统一解析) */
-static void compile_lib_module(const char *mod_src)
+static void compile_lib_module(const char *mod_src, const char *unit)
 {
     if (failed || !mod_src || !mod_src[0])
         return;
+    err_unit = unit;
     sp = mod_src;
     line_no = 1;
     inc_depth = 0;
@@ -4554,8 +4735,26 @@ const u8 *tc_compile(const char *src, u32 len, u32 *out_len, const char *path)
     return tc_compile_opts(src, len, out_len, path, &o);
 }
 
-const u8 *tc_compile_opts(const char *src, u32 len, u32 *out_len,
-                          const char *path, const struct tc_opts *opt)
+/* 解析一个源单元: 多个模块依次调用, 代码/数据/符号表全部延续,
+   相当于把各模块自动扁平化为一个程序. */
+static void tc_parse_unit(const char *src, const char *path)
+{
+    if (!src)
+        return;
+    if (path && path[0])
+        dir_of(path, inc_cur_dir);
+    else
+        inc_cur_dir[0] = 0;
+    err_unit = path;
+    sp = src;
+    line_no = 1;
+    cur = scan();
+    nxt = scan();
+    parse_program();
+}
+
+const u8 *tc_compile_files(const struct tc_src *srcs, int n, u32 *out_len,
+                           const struct tc_opts *opt)
 {
     struct tc_opts dflt;
     if (!opt) {
@@ -4569,6 +4768,7 @@ const u8 *tc_compile_opts(const char *src, u32 len, u32 *out_len,
 
     failed = false;
     err_msg[0] = 0;
+    err_unit = 0;
     clen = 0;
     str_used = 0;
     gused = 0;
@@ -4588,15 +4788,8 @@ const u8 *tc_compile_opts(const char *src, u32 len, u32 *out_len,
     exp_depth = 0;
     want_lib_string = want_lib_stdlib = want_lib_ctype = want_lib_stdio = false;
     want_lib_net = false;
-    if (path && path[0])
-        dir_of(path, inc_cur_dir);
-    else
-        inc_cur_dir[0] = 0;
-    line_no = 1;
-    sp = src;
-    (void)len;
+    inc_cur_dir[0] = 0;
 
-    memset(code, 0, sizeof(code));
     memset(gmem, 0, sizeof(gmem));
     memset(stypes, 0, sizeof(stypes));
 
@@ -4608,24 +4801,21 @@ const u8 *tc_compile_opts(const char *src, u32 len, u32 *out_len,
     mov_rax_imm(0);
     e8(0xCD); e8(0x21);
 
-    /* 编译用户源码; #include 在扫描时按需展开 */
-    sp = src;
-    line_no = 1;
-    cur = scan();
-    nxt = scan();
-    parse_program();
+    /* 依序编译各用户模块; #include 在扫描时按需展开并跨模块去重 */
+    for (int i = 0; i < n && !failed; i++)
+        tc_parse_unit(srcs[i].src, srcs[i].path);
 
     /* 只有被 include 的头文件才把对应标准库模块编入程序 */
     if (want_lib_string)
-        compile_lib_module(tc_lib_string);
+        compile_lib_module(tc_lib_string, "string.c");
     if (want_lib_stdlib)
-        compile_lib_module(tc_lib_stdlib);
+        compile_lib_module(tc_lib_stdlib, "stdlib.c");
     if (want_lib_ctype)
-        compile_lib_module(tc_lib_ctype);
+        compile_lib_module(tc_lib_ctype, "ctype.c");
     if (want_lib_stdio)
-        compile_lib_module(tc_lib_stdio);
+        compile_lib_module(tc_lib_stdio, "stdio.c");
     if (want_lib_net)
-        compile_lib_module(tc_lib_net);
+        compile_lib_module(tc_lib_net, "net.c");
 
     /* 解析函数调用 */
     for (int i = 0; i < nfc && !failed; i++) {
@@ -4647,15 +4837,6 @@ const u8 *tc_compile_opts(const char *src, u32 len, u32 *out_len,
     if (failed)
         return 0;
 
-    if (out_len)
-        *out_len = 0;
-
-    /* 代码 + 数据区 */
-    memset(out_buf, 0, sizeof(out_buf));
-    memcpy(out_buf, code, clen);
-    memcpy(out_buf + TC_CODE_MAX, gmem, (u32)gused);
-    memcpy(out_buf + TC_CODE_MAX + TC_DATA_GLOB, str_pool, str_used);
-
     u32 dlen = (u32)gused;
     if (dlen < TC_DATA_GLOB + str_used)
         dlen = TC_DATA_GLOB + str_used;
@@ -4663,9 +4844,27 @@ const u8 *tc_compile_opts(const char *src, u32 len, u32 *out_len,
         fail("data too large");
         return 0;
     }
+
+    /* 代码 + 数据区: 只清零实际输出的区间, 再由有效内容覆盖 */
+    memset(out_buf + clen, 0, TC_CODE_MAX - clen);
+    memset(out_buf + TC_CODE_MAX, 0, dlen);
+    memcpy(out_buf, code, clen);
+    memcpy(out_buf + TC_CODE_MAX, gmem, (u32)gused);
+    memcpy(out_buf + TC_CODE_MAX + TC_DATA_GLOB, str_pool, str_used);
+
     if (out_len)
         *out_len = TC_CODE_MAX + dlen;
     last_code_len = clen;
     last_data_len = dlen;
     return out_buf;
+}
+
+const u8 *tc_compile_opts(const char *src, u32 len, u32 *out_len,
+                          const char *path, const struct tc_opts *opt)
+{
+    struct tc_src one;
+    one.src = src;
+    one.path = path;
+    (void)len;
+    return tc_compile_files(&one, 1, out_len, opt);
 }

@@ -18,6 +18,9 @@
  * Not supported: long double, functions returning function pointers, and
  * #if conditionals.
  *
+ * Multiple .c files may be passed to TC; they are flattened automatically in
+ * the given order into one program (shared symbols/macros, include-once).
+ *
  * Standard library modules are compiled in only when #included:
  *   string.h  strlen strcpy strncpy strcmp strncmp strcat strncat strchr strrchr
  *             strstr memcpy memmove memset memcmp

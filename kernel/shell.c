@@ -645,8 +645,9 @@ static void cmd_run(int argc, char **argv)
 /* TC: 编译 C 子集 -> .gtp (默认输出到当前目录, 可用 -o 指定) */
 static void tc_usage(void)
 {
-    err("Usage: TC <src.c> [-o out] [-O0..-O4] [-Os|-Ofast] [-g] [-v]\n");
+    err("Usage: TC <src.c> [more.c ...] [-o out] [-O0..-O4] [-Os|-Ofast] [-g] [-v]\n");
     kprintf("  -fconst -fstrength -fdce -floop   (-fno-X disables; linked)\n");
+    kprintf("  Multiple sources are flattened into one program\n");
 }
 
 static bool tc_flag(struct tc_opts *o, const char *name, bool on)
@@ -682,7 +683,9 @@ static void cmd_tc(int argc, char **argv)
     struct tc_opts opt;
     tc_opts_default(&opt);
 
-    const char *srcarg = 0, *oarg = 0;
+    const char *srcargs[TC_MOD_MAX];
+    int nsrc = 0;
+    const char *oarg = 0;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         if (!strcmp(a, "-o") && i + 1 < argc) {
@@ -690,7 +693,11 @@ static void cmd_tc(int argc, char **argv)
             continue;
         }
         if (a[0] != '-' || !a[1]) {
-            if (!srcarg) srcarg = a;
+            if (nsrc >= TC_MOD_MAX) {
+                err("TC: too many source files (max %d)\n", TC_MOD_MAX);
+                return;
+            }
+            srcargs[nsrc++] = a;
             continue;
         }
         if (!strcmp(a, "-h")) {
@@ -736,27 +743,40 @@ static void cmd_tc(int argc, char **argv)
         err("TC: unknown option %s\n", a);
         return;
     }
-    if (!srcarg) {
+    if (nsrc == 0) {
         tc_usage();
         return;
     }
     if (!fat_ready()) { err("No volume mounted.\n"); return; }
 
-    char sa[PATHMAX];
-    resolve_path(srcarg, sa);
-    if (read_denied(sa))
-        return;
-
+    /* 多模块: 所有源文件读入同一缓冲区, 编译器按顺序自动扁平化 */
     static u8 srcbuf[TC_SRC_MAX] __attribute__((section(".highbss")));
-    u32 got = 0;
-    if (!fat_read_file(sa, srcbuf, sizeof(srcbuf) - 1, &got) || got == 0) {
-        err("Cannot read %s\n", sa);
-        return;
+    static char spath[TC_MOD_MAX][PATHMAX] __attribute__((section(".highbss")));
+    struct tc_src mods[TC_MOD_MAX];
+    u32 used = 0;
+    for (int i = 0; i < nsrc; i++) {
+        resolve_path(srcargs[i], spath[i]);
+        if (read_denied(spath[i]))
+            return;
+        if (used + 2 >= sizeof(srcbuf)) {
+            err("TC: sources too large (max %u bytes)\n",
+                (unsigned)sizeof(srcbuf) - 1);
+            return;
+        }
+        u32 got = 0;
+        if (!fat_read_file(spath[i], srcbuf + used,
+                           sizeof(srcbuf) - used - 1, &got) || got == 0) {
+            err("Cannot read %s\n", spath[i]);
+            return;
+        }
+        srcbuf[used + got] = 0;
+        mods[i].src = (const char *)srcbuf + used;
+        mods[i].path = spath[i];
+        used += got + 1;
     }
-    srcbuf[got] = 0;
 
     u32 plen = 0;
-    const u8 *prog = tc_compile_opts((const char *)srcbuf, got, &plen, sa, &opt);
+    const u8 *prog = tc_compile_files(mods, nsrc, &plen, &opt);
     if (!prog) {
         err("TC: %s\n", tc_error());
         return;
@@ -766,8 +786,8 @@ static void cmd_tc(int argc, char **argv)
     if (oarg) {
         resolve_path(oarg, out);
     } else {
-        const char *base = sa;
-        for (const char *p = sa; *p; p++)
+        const char *base = spath[0];
+        for (const char *p = spath[0]; *p; p++)
             if (*p == '\\' || *p == '/') base = p + 1;
         int k = 0;
         out[k++] = fat_drive();
@@ -790,9 +810,9 @@ static void cmd_tc(int argc, char **argv)
     if (opt.verbose) {
         u32 cb = 0, db = 0;
         tc_stats(&cb, &db);
-        kprintf("TC:-O%d %c%c%c%c code=%u data=%u\n", opt.level,
+        kprintf("TC:-O%d %c%c%c%c code=%u data=%u mods=%d\n", opt.level,
                 opt.fold ? 'F' : '-', opt.strength ? 'S' : '-',
-                opt.dce ? 'D' : '-', opt.loops ? 'L' : '-', cb, db);
+                opt.dce ? 'D' : '-', opt.loops ? 'L' : '-', cb, db, nsrc);
     }
 }
 

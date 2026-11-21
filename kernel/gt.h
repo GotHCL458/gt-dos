@@ -324,6 +324,7 @@ bool kernel_protected_info(u32 *image_len, u32 *crc, u8 digest[32]);
 
 /* ------------------------------------------------- 内置 C 编译器 (TC) */
 #define TC_SRC_MAX 32768
+#define TC_MOD_MAX 4            /* 一次最多扁平化的源文件数 */
 /* 优化选项: 级别 0..4; 各 pass 可由 -f/-fno 单独覆盖 */
 struct tc_opts {
     int  level;          /* -O0..-O4 */
@@ -333,12 +334,20 @@ struct tc_opts {
     bool loops;          /* 常量循环消除 */
     bool verbose;        /* -v: 打印有效选项与统计 */
 };
+/* 多模块扁平化: 各源单元依次编入同一程序, 共享符号表与标准库 */
+struct tc_src {
+    const char *src;        /* 源文本 (NUL 结尾) */
+    const char *path;       /* 源路径 (相对 #include 与诊断用) */
+};
+
 void tc_opts_default(struct tc_opts *o);
 void tc_opts_level(struct tc_opts *o, int level);
 const u8  *tc_compile(const char *src, u32 len, u32 *out_len,
                       const char *path);
 const u8  *tc_compile_opts(const char *src, u32 len, u32 *out_len,
                            const char *path, const struct tc_opts *opt);
+const u8  *tc_compile_files(const struct tc_src *srcs, int n, u32 *out_len,
+                            const struct tc_opts *opt);
 void tc_stats(u32 *code_bytes, u32 *data_bytes);
 const char *tc_error(void);
 

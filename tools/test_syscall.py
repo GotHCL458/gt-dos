@@ -233,6 +233,29 @@ def main():
           vm.expect("do=3", 4000), vm.buf[-500:])
     check("tc goto/label", vm.expect("goto=3", 4000), vm.buf[-500:])
 
+    # 多模块自动扁平化: 两个 .c + 共享头文件一次编入同一程序
+    vm.buf = ""
+    vm.cmd("put mlib.h #define MULTI_BASE 40")
+    vm.cmd("append mlib.h int add(int a, int b);")
+    vm.cmd("put m1.c #include \"mlib.h\"")
+    vm.cmd("append m1.c int add(int a, int b) { return a + b; }")
+    vm.cmd("put m2.c #include <stdio.h>")
+    vm.cmd("append m2.c #include \"mlib.h\"")
+    vm.cmd("append m2.c int main(void) {")
+    vm.cmd('append m2.c printf("multi=%d\\n", add(MULTI_BASE, 2));')
+    vm.cmd("append m2.c return 0;")
+    vm.cmd("append m2.c }")
+    vm.cmd("tc m1.c m2.c -v -o multi.gtp", 3000)
+    check("tc multi-module compiles", vm.expect("Compiled ", 10000),
+          vm.buf[-400:])
+    check("tc multi-module count", vm.expect("mods=2", 4000), vm.buf[-300:])
+    vm.cmd("run multi.gtp", 2000)
+    check("tc multi-module runs", vm.expect("multi=42", 4000), vm.buf[-300:])
+    vm.buf = ""
+    vm.cmd("tc m1.c nope.c", 1500)
+    check("tc multi-module missing file", vm.expect("Cannot read", 4000),
+          vm.buf[-300:])
+
     # 未 include 时不编入库: strlen 应为未定义
     vm.buf = ""
     vm.cmd("put n.c int main(void){")

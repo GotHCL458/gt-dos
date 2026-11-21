@@ -134,8 +134,13 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
 - Default QEMU user-network address is `10.0.2.15/24`, gateway `10.0.2.2`
 
 **Built-in C compiler (TC) & SDK**
-- `TC <src.c> [-o out.gtp]` compiles a C subset straight to x86-64 machine code and
-  writes a `.gtp` program that `RUN` can execute — no external toolchain involved
+- `TC <src.c> [more.c ...] [-o out.gtp]` compiles a C subset straight to x86-64
+  machine code and writes a `.gtp` program that `RUN` can execute — no external
+  toolchain involved
+- Multiple sources are **flattened automatically** in the given order into one
+  program: modules share the symbol table, macros and the include-once table,
+  calls are resolved after every module is parsed, and each module still uses
+  its own directory for `#include "..."`
 - Optimization: `-O0`..`-O4` (`-Os`, `-Ofast`), with per-pass switches
   `-fconst/-fno-const`, `-fstrength/-fno-strength`, `-fdce/-fno-dce`,
   `-floop/-fno-loop`, plus `-g` (debug, resets to O0) and `-v` (print the
@@ -144,9 +149,11 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
   win over earlier ones. Passes: O1 constant folding + immediate operands,
   O2 strength reduction (shifts, unsigned div/mod by powers of two), O3
   constant-`if` dead-branch elimination, O4 constant-loop elimination
-  (`while(0)`, `while(1)`, `do..while(0/1)`). All levels also use direct
+  (`while(0)`, `while(1)`, `do..while(0/1)`). All levels use direct
   local-variable access (`mov [rbp+d]` without a `lea`/stack round-trip),
-  which shrinks the benchmark code by ≈15% even at `-O0`
+  shortest immediate encodings (`xor`, `imm32`, `imm8` forms), and emit
+  `cmp` + `jcc` directly for conditions instead of materialising 0/1;
+  the benchmark code is 2049 bytes at `-O0` and 1988 at `-O4`
 - Supported: `int`/`char`/`double`/pointers, 1-4D arrays, `struct`/`union` (fields,
   nested structs, `.` and `->`, bitfields), function pointers and function-pointer
   arrays, functions (up to 6 parameters, recursion, prototypes, user variadic
@@ -269,7 +276,9 @@ python build.py clean      # remove the build directory
 ```
 
 The first build also generates the font: the Rust tool `rust/mkfont` is built and invoked
-automatically when `build/font.gtd` or `build/cpm.gtd` is missing.
+automatically when `build/font.gtd` or `build/cpm.gtd` is missing. Kernel C/assembly
+translation units are independent, so `build.py` compiles them in parallel (one worker
+per CPU) and links them afterwards.
 
 To boot the released image directly:
 
@@ -319,7 +328,7 @@ Type `HELP` (or `?`) inside GT-DOS for the full list. Commands support both long
 `HTTP GET <host[:port]> <path> [local]`
 
 **Programs** — `RUN <file.gtp>` (administrator privileges required),
-`TC <src.c> [-o out.gtp]` (C subset compiler)
+`TC <src.c> [more.c ...] [-o out.gtp]` (C subset compiler, multi-module flattening)
 
 **Tasks and services** — `TASKS`/`PS`, `SERVICE LIST`, `SERVICE RUN <name>`,
 `SERVICE STOP <name>`
@@ -411,15 +420,15 @@ assert on real boot output rather than on mocks.
 `tools/test_perf.py` compiles and runs `\SDK\BENCH.C` inside GT-DOS at both
 `-O0` and `-O4`, runs the same workloads natively (`rustc -O`) and writes
 `build/perf_report.md`. On the QEMU test host the benchmark's code section is
-2579 bytes at `-O0` and 2460 at `-O4`; the constant-expression loop is ≈1.6×
-faster at `-O4` (80→50 ms), the integer loop is 50 ms and array indexing 70 ms
+2049 bytes at `-O0` and 1988 at `-O4`; the constant-expression loop is ≈1.6×
+faster at `-O4` (80→50 ms), the integer loop is 60 ms and array indexing 70 ms
 (5M iterations). Programs remain 14–150× slower than native depending on the
 workload — mostly QEMU TCG emulation plus TC's simple code generation (values
 live in stack slots, no register allocation).
 
 ## Notes and Limitations
 
-- The kernel currently fits in 537 sectors (274,752 bytes including the 48-byte `GTK1`
+- The kernel currently fits in 545 sectors (278,848 bytes including the 48-byte `GTK1`
   trailer); the build cap is 640 sectors (320 KB), loaded between `0x10000` and `0x60000`.
   The linker also asserts `.bss <= 0xA0000` and `.highbss <= LIB_BASE`.
 - The GDT is built in low memory (0x6800) rather than `.data`: loading a segment register

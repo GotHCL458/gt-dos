@@ -4,8 +4,15 @@ GT-DOS SDK / TC
 TC compiles a small C subset directly to x86-64 machine code and writes a
 .gtp program that RUN can execute.
 
-  TC <src.c> [-o out.gtp]      compile (default output: current dir, .gtp)
+  TC <src.c> [more.c ...] [-o out.gtp]
+                               compile (default output: current dir, .gtp)
   RUN <file.gtp>               run the program
+
+Multiple source files are flattened automatically in the given order into one
+program: they share globals, functions, typedefs, enums and macros, calls are
+resolved after all modules are parsed, and a header included by several modules
+is expanded only once. Each module still resolves "..." includes relative to
+its own directory. Up to 4 sources (32 KB total).
 
 Optimization:
   -O0 .. -O4    levels (default -O0); -Os size, -Ofast = -O4
@@ -16,6 +23,8 @@ Optimization:
   -fno-X        disable a pass; -fdce implies -fconst, -floop implies -fdce,
                 -fno-const disables all; later flags win
   -g            debug (reset to -O0);  -v  print effective flags + sizes
+  All levels use direct local access, shortest immediates (xor/imm32/imm8) and
+  emit cmp+jcc directly for conditions.
 
 Files:
   TC.H       builtin function reference
