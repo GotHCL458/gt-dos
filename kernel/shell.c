@@ -643,17 +643,107 @@ static void cmd_run(int argc, char **argv)
 }
 
 /* TC: 编译 C 子集 -> .gtp (默认输出到当前目录, 可用 -o 指定) */
+static void tc_usage(void)
+{
+    err("Usage: TC <src.c> [-o out] [-O0..-O4] [-Os|-Ofast] [-g] [-v]\n");
+    kprintf("  -fconst -fstrength -fdce -floop   (-fno-X disables; linked)\n");
+}
+
+static bool tc_flag(struct tc_opts *o, const char *name, bool on)
+{
+    if (!strcmp(name, "const")) {
+        o->fold = on;
+        if (!on) {
+            o->strength = false;
+            o->dce = false;
+            o->loops = false;
+        }
+    } else if (!strcmp(name, "strength")) {
+        o->strength = on;
+        if (on) o->fold = true;
+    } else if (!strcmp(name, "dce")) {
+        o->dce = on;
+        if (on) o->fold = true;
+        else o->loops = false;
+    } else if (!strcmp(name, "loop")) {
+        o->loops = on;
+        if (on) {
+            o->fold = true;
+            o->dce = true;
+        }
+    } else {
+        return false;
+    }
+    return true;
+}
+
 static void cmd_tc(int argc, char **argv)
 {
-    if (argc < 2) {
-        err("Usage: TC <src.c> [-o out.gtp]\n");
-        kprintf("SDK: \\SDK\\TC.H  \\SDK\\HELLO.C  \\SDK\\FIB.C\n");
+    struct tc_opts opt;
+    tc_opts_default(&opt);
+
+    const char *srcarg = 0, *oarg = 0;
+    for (int i = 1; i < argc; i++) {
+        const char *a = argv[i];
+        if (!strcmp(a, "-o") && i + 1 < argc) {
+            oarg = argv[++i];
+            continue;
+        }
+        if (a[0] != '-' || !a[1]) {
+            if (!srcarg) srcarg = a;
+            continue;
+        }
+        if (!strcmp(a, "-h")) {
+            tc_usage();
+            return;
+        }
+        if (!strcmp(a, "-v")) {
+            opt.verbose = true;
+            continue;
+        }
+        if (!strcmp(a, "-g")) {
+            tc_opts_level(&opt, 0);       /* 调试: 关闭全部优化 */
+            continue;
+        }
+        if (!strcmp(a, "-Os")) {
+            tc_opts_level(&opt, 2);       /* 体积优先: 折叠+削弱+分支消除 */
+            opt.dce = true;
+            opt.loops = false;
+            continue;
+        }
+        if (!strcmp(a, "-Ofast")) {
+            tc_opts_level(&opt, 4);
+            continue;
+        }
+        if (a[1] == 'O' && a[2] >= '0' && a[2] <= '4' && !a[3]) {
+            tc_opts_level(&opt, a[2] - '0');
+            continue;
+        }
+        if (!strncmp(a, "-fno-", 5)) {
+            if (!tc_flag(&opt, a + 5, false)) {
+                err("TC: unknown option %s\n", a);
+                return;
+            }
+            continue;
+        }
+        if (a[1] == 'f') {
+            if (!tc_flag(&opt, a + 2, true)) {
+                err("TC: unknown option %s\n", a);
+                return;
+            }
+            continue;
+        }
+        err("TC: unknown option %s\n", a);
+        return;
+    }
+    if (!srcarg) {
+        tc_usage();
         return;
     }
     if (!fat_ready()) { err("No volume mounted.\n"); return; }
 
     char sa[PATHMAX];
-    resolve_path(argv[1], sa);
+    resolve_path(srcarg, sa);
     if (read_denied(sa))
         return;
 
@@ -666,17 +756,13 @@ static void cmd_tc(int argc, char **argv)
     srcbuf[got] = 0;
 
     u32 plen = 0;
-    const u8 *prog = tc_compile((const char *)srcbuf, got, &plen, sa);
+    const u8 *prog = tc_compile_opts((const char *)srcbuf, got, &plen, sa, &opt);
     if (!prog) {
         err("TC: %s\n", tc_error());
         return;
     }
 
     char out[PATHMAX];
-    const char *oarg = 0;
-    for (int i = 2; i < argc; i++)
-        if (!strcmp(argv[i], "-o") && i + 1 < argc) { oarg = argv[i + 1]; break; }
-
     if (oarg) {
         resolve_path(oarg, out);
     } else {
@@ -700,6 +786,14 @@ static void cmd_tc(int argc, char **argv)
         ok("Compiled %u bytes -> %s\n", plen, out);
     else
         err("Cannot write %s (use -o in your home directory)\n", out);
+
+    if (opt.verbose) {
+        u32 cb = 0, db = 0;
+        tc_stats(&cb, &db);
+        kprintf("TC:-O%d %c%c%c%c code=%u data=%u\n", opt.level,
+                opt.fold ? 'F' : '-', opt.strength ? 'S' : '-',
+                opt.dce ? 'D' : '-', opt.loops ? 'L' : '-', cb, db);
+    }
 }
 
 /* ------------------------------------------------------------ 网络命令 */

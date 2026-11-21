@@ -324,8 +324,22 @@ bool kernel_protected_info(u32 *image_len, u32 *crc, u8 digest[32]);
 
 /* ------------------------------------------------- 内置 C 编译器 (TC) */
 #define TC_SRC_MAX 32768
+/* 优化选项: 级别 0..4; 各 pass 可由 -f/-fno 单独覆盖 */
+struct tc_opts {
+    int  level;          /* -O0..-O4 */
+    bool fold;           /* 常量折叠 + 立即数运算 */
+    bool strength;       /* 强度削弱 (移位/无符号除取模) */
+    bool dce;            /* 常量 if 分支消除 */
+    bool loops;          /* 常量循环消除 */
+    bool verbose;        /* -v: 打印有效选项与统计 */
+};
+void tc_opts_default(struct tc_opts *o);
+void tc_opts_level(struct tc_opts *o, int level);
 const u8  *tc_compile(const char *src, u32 len, u32 *out_len,
                       const char *path);
+const u8  *tc_compile_opts(const char *src, u32 len, u32 *out_len,
+                           const char *path, const struct tc_opts *opt);
+void tc_stats(u32 *code_bytes, u32 *data_bytes);
 const char *tc_error(void);
 
 /* ------------------------------------------------------- 富文本 / 编辑器 */

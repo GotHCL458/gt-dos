@@ -128,6 +128,14 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 **内置 C 编译器 (TC) 与 SDK**
 - `TC <源.c> [-o 输出.gtp]` 直接把 C 子集编译为 x86-64 机器码，生成可由 `RUN`
   执行的 `.gtp` 程序，全程不依赖外部工具链
+- 编译优化：`-O0`..`-O4`（`-Os`、`-Ofast`），并可按 pass 覆盖：
+  `-fconst/-fno-const`、`-fstrength/-fno-strength`、`-fdce/-fno-dce`、
+  `-floop/-fno-loop`，另有 `-g`（调试，重置为 O0）与 `-v`（打印生效选项及
+  code/data 大小）。参数联动：`-fdce` 隐含折叠，`-floop` 隐含 `-fdce`，
+  `-fno-const` 关闭全部 pass，后出现的参数覆盖先前参数。各层含义：O1 常量折叠 +
+  立即数（消除常量两侧的 push/pop），O2 强度削弱（移位、无符号 2 的幂除法/取模），
+  O3 常量 `if` 死分支消除，O4 常量循环消除（`while(0)`、`while(1)`、
+  `do..while(0/1)`）
 - 支持：`int`/`char`/`double`/指针、1–4 维数组、`struct`/`union`（字段、嵌套结构、
   `.` 与 `->`、位域）、函数指针及函数指针数组、函数（最多 6 参数、递归、原型、
   用户可变参数 `...` 与 `va_list`/`va_start`/`va_arg`/`va_end`）、`if/else`、
@@ -369,16 +377,15 @@ build.py             构建脚本与镜像组装
 测试脚本通过串口 socket 与 QEMU monitor socket 驱动 QEMU 实例，
 因此它们校验的是真实启动输出，而非模拟数据。
 
-`tools/test_perf.py` 在 GT-DOS 内编译并运行 `\SDK\BENCH.C`，同时用 `rustc -O`
-在宿主运行同一组负载，生成 `build/perf_report.md`。测试机上的典型结果：
-整数循环约 18 ns/op、直接调用约 35 ns、函数指针调用约 50 ns（约 1.4×）、
-double 乘加约 30 ns、数组读取约 22 ns、fib(30) 约 60 ms；TC 编译该基准约 0.2 s。
-与原生相差 20–80×，主要来自 QEMU TCG 模拟以及 TC 刻意简单的无优化代码生成
-（所有值都放在栈槽中，不做寄存器分配）。
+`tools/test_perf.py` 分别在 `-O0` 与 `-O4` 下编译并运行 `\SDK\BENCH.C`，
+同时用 `rustc -O` 在宿主运行同一组负载，生成 `build/perf_report.md`。
+测试机上基准代码段由 3035 字节降至 2916 字节（-O4）；常量表达式循环约快 1.4×；
+整体仍比原生慢 20–170×（随负载变化），主要来自 QEMU TCG 模拟以及 TC 简单的
+无优化代码生成（所有值经栈槽、不做寄存器分配）。
 
 ## 说明与限制
 
-- 内核目前为 617 扇区（315,712 字节，含 48 字节 `GTK1` 尾部），构建上限 640 扇区
+- 内核目前为 529 扇区（270,656 字节，含 48 字节 `GTK1` 尾部），构建上限 640 扇区
   （320KB），加载区间为 `0x10000` 到 `0x60000`；链接脚本同时断言
   `.bss <= 0xA0000` 与 `.highbss <= LIB_BASE`。
 - GDT 在低端内存（0x6800）由入口代码构造，而非放在 `.data`：CPU 装载段寄存器

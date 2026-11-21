@@ -55,7 +55,7 @@ struct tsock {
     } ooo[TCP_OOO];
 };
 
-static struct tsock socks[TCP_MAX];
+static struct tsock socks[TCP_MAX] __attribute__((section(".highbss")));
 static u16 ephem = 40000;
 
 static u64 irq_save(void)

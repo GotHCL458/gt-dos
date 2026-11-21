@@ -158,6 +158,10 @@ static int gused;
 static bool failed;
 static char err_msg[96];
 
+/* 优化开关 (tc_compile_opts 设置) */
+static bool opt_fold, opt_strength, opt_dce, opt_loops;
+static u32  last_code_len, last_data_len;
+
 /* 大表放 .highbss, 避免把 .bss 推过 0xA0000 显存孔径 */
 static struct sym syms[MAX_SYM] __attribute__((section(".highbss")));
 static int nsyms;
@@ -186,7 +190,7 @@ struct enum_ent {
     char name[32];
     i64 val;
 };
-static struct enum_ent enums[MAX_ENUM];
+static struct enum_ent enums[MAX_ENUM] __attribute__((section(".highbss")));
 static int nenums;
 
 /* #include 处理: 最多 4 层, 每层 8KB; 标准库按包含的头文件按需编入 */
@@ -228,6 +232,8 @@ struct ety {
     bool lval;                    /* rax 中保存的是地址 */
     bool is_arr;                  /* 仍是数组视图 (rax=首地址) */
     bool is_bit;                  /* 位域 lvalue: rax=所在存储单元地址 */
+    bool is_const;                /* 编译期常量: 值在 cval, 尚未写入 rax */
+    i64  cval;
     int bit_off;
     int bit_width;
     int dims[MAX_DIM];
@@ -1297,6 +1303,7 @@ static void imul_rcx_imm(int v)
 }
 
 static void mov_rax_rcx(void) { e8(0x48); e8(0x89); e8(0xC8); }
+static void mov_rcx_rax(void) { e8(0x48); e8(0x89); e8(0xC1); }
 static void mov_rdx_rax(void) { e8(0x48); e8(0x89); e8(0xC2); }
 static void mov_rax_rdx(void) { e8(0x48); e8(0x89); e8(0xD0); }
 static void mov_r10_rax(void) { e8(0x49); e8(0x89); e8(0xC2); }
@@ -1472,6 +1479,171 @@ static void apply_cmp_uns(int op)
     }
     e8(0x0F); e8(cc); e8(0xC0);
     e8(0x48); e8(0x0F); e8(0xB6); e8(0xC0);
+}
+
+/* ------------------------------------------------- 优化辅助 (O1..O4) */
+static bool fits_i32(i64 v)
+{
+    return v >= -2147483648LL && v <= 2147483647LL;
+}
+
+static bool is_pow2(i64 v, int *sh)
+{
+    if (v <= 0)
+        return false;
+    if ((v & (v - 1)) != 0)
+        return false;
+    int s = 0;
+    while ((1LL << s) < v)
+        s++;
+    *sh = s;
+    return true;
+}
+
+static void and_rax_imm(i64 v) { e8(0x48); e8(0x25); e32((u32)v); }
+static void or_rax_imm(i64 v)  { e8(0x48); e8(0x0D); e32((u32)v); }
+static void xor_rax_imm(i64 v) { e8(0x48); e8(0x35); e32((u32)v); }
+
+static void shift_rax_imm(bool left, bool uns, int k)
+{
+    e8(0x48); e8(0xC1);
+    e8(left ? 0xE0 : (uns ? 0xE8 : 0xF8));
+    e8((u8)k);
+}
+
+static void cmp_rax_imm(i64 v) { e8(0x48); e8(0x3D); e32((u32)v); }
+
+static void setcc_al(u8 cc)
+{
+    e8(0x0F); e8(cc); e8(0xC0);
+    e8(0x48); e8(0x0F); e8(0xB6); e8(0xC0);
+}
+
+static u8 cmp_cc(int op, bool uns)
+{
+    switch (op) {
+    case T_EQ: return 0x94;
+    case T_NE: return 0x95;
+    case '<':  return uns ? 0x92 : 0x9C;
+    case T_LE: return uns ? 0x96 : 0x9E;
+    case '>':  return uns ? 0x97 : 0x9F;
+    case T_GE: return uns ? 0x93 : 0x9D;
+    default:   return 0x94;
+    }
+}
+
+/* 两个整数常量的二元折叠; 不支持或除零时返回 false */
+static bool fold_bin(int op, i64 a, i64 b, bool uns, i64 *out)
+{
+    u64 ua = (u64)a, ub = (u64)b;
+    switch (op) {
+    case '+': *out = (i64)(ua + ub); return true;
+    case '-': *out = (i64)(ua - ub); return true;
+    case '*': *out = (i64)(ua * ub); return true;
+    case '/':
+        if (ub == 0) return false;
+        *out = uns ? (i64)(ua / ub) : (i64)(a / b);
+        return true;
+    case '%':
+        if (ub == 0) return false;
+        *out = uns ? (i64)(ua % ub) : (i64)(a % b);
+        return true;
+    case '&': *out = (i64)(ua & ub); return true;
+    case '|': *out = (i64)(ua | ub); return true;
+    case '^': *out = (i64)(ua ^ ub); return true;
+    case T_SHL: *out = (i64)(ua << (ub & 63)); return true;
+    case T_SHR: *out = uns ? (i64)(ua >> (ub & 63)) : (i64)(a >> (ub & 63));
+        return true;
+    case T_EQ: *out = (a == b); return true;
+    case T_NE: *out = (a != b); return true;
+    case '<':  *out = uns ? (ua < ub) : (a < b); return true;
+    case T_LE: *out = uns ? (ua <= ub) : (a <= b); return true;
+    case '>':  *out = uns ? (ua > ub) : (a > b); return true;
+    case T_GE: *out = uns ? (ua >= ub) : (a >= b); return true;
+    default: return false;
+    }
+}
+
+/* 立即数右操作数: 进入时 rax=lhs; 成功则结果在 rax 并填好 g_e */
+static bool gen_imm_op(int op, i64 k, const struct ctype *lt,
+                       const bool cmpop, bool uns)
+{
+    int sh;
+    switch (op) {
+    case '+':
+        if (k != 0) {
+            if (!fits_i32(k)) return false;
+            add_rax_imm(k);
+        }
+        break;
+    case '-':
+        if (k != 0) {
+            if (!fits_i32(k) || k == -2147483648LL) return false;
+            add_rax_imm(-k);
+        }
+        break;
+    case '*':
+        if (k == 0) {
+            e8(0x31); e8(0xC0);             /* xor eax, eax */
+        } else if (k == 1) {
+            ;
+        } else if (opt_strength && is_pow2(k, &sh)) {
+            shift_rax_imm(true, false, sh);
+        } else {
+            if (!fits_i32(k)) return false;
+            imul_rax_imm((int)k);
+        }
+        break;
+    case '&':
+        if (k == -1) break;                 /* x & -1 = x */
+        if (!fits_i32(k)) return false;
+        and_rax_imm(k);
+        break;
+    case '|':
+        if (k == 0) break;
+        if (!fits_i32(k)) return false;
+        or_rax_imm(k);
+        break;
+    case '^':
+        if (k == 0) break;
+        if (!fits_i32(k)) return false;
+        xor_rax_imm(k);
+        break;
+    case T_SHL:
+        if (k < 0 || k > 63) return false;
+        shift_rax_imm(true, false, (int)k);
+        break;
+    case T_SHR:
+        if (k < 0 || k > 63) return false;
+        shift_rax_imm(false, lt->uns, (int)k);
+        break;
+    case '/':
+        if (!(opt_strength && lt->uns && is_pow2(k, &sh)))
+            return false;
+        shift_rax_imm(false, true, sh);
+        break;
+    case '%':
+        if (!(opt_strength && lt->uns && is_pow2(k, &sh)))
+            return false;
+        and_rax_imm(k - 1);
+        break;
+    default:
+        if (cmpop) {
+            if (!fits_i32(k)) return false;
+            cmp_rax_imm(k);
+            setcc_al(cmp_cc(op, uns));
+            break;
+        }
+        return false;
+    }
+    memset(&g_e, 0, sizeof(g_e));
+    g_e.t.kind = CK_INT;
+    g_e.t.obj = 8;
+    g_e.t.uns = cmpop ? 0 :
+        ((op == '/' || op == '%' || op == T_SHR) ? (uns ? 1 : 0)
+                                                 : (lt->uns ? 1 : 0));
+    g_e.lval = false;
+    return true;
 }
 
 /* ------------------------------------------------------------ 浮点 (SSE2) */
@@ -1944,6 +2116,11 @@ static void gen_unary(void);
 
 static void mat_value(void)
 {
+    if (g_e.is_const) {
+        mov_rax_imm((u64)g_e.cval);
+        g_e.is_const = false;
+        return;
+    }
     if (g_e.is_arr) {
         /* 数组退化为指针: 首地址已在 rax */
         struct ctype p = g_e.t;
@@ -2066,6 +2243,7 @@ static void gen_incdec(bool inc, bool prefix)
     g_e.lval = false;
     g_e.is_arr = false;
     g_e.is_bit = false;
+    g_e.is_const = false;
     g_e.t = t;
 }
 
@@ -2295,6 +2473,7 @@ static void gen_postfix(void)
             g_e.lval = false;
             g_e.is_arr = false;
             g_e.is_bit = false;
+            g_e.is_const = false;
             g_e.t = t;
             advance();
             continue;
@@ -2308,14 +2487,20 @@ static void gen_primary(void)
     memset(&g_e, 0, sizeof(g_e));
 
     if (cur.t == T_NUM) {
-        mov_rax_imm((u64)cur.v);
+        if (!opt_fold)
+            mov_rax_imm((u64)cur.v);
+        g_e.is_const = opt_fold;
+        g_e.cval = cur.v;
         g_e.t.kind = CK_INT;
         g_e.t.obj = 8;
         advance();
         return;
     }
     if (cur.t == T_FNUM) {
-        mov_rax_imm((u64)cur.v);
+        if (!opt_fold)
+            mov_rax_imm((u64)cur.v);
+        g_e.is_const = opt_fold;
+        g_e.cval = cur.v;
         g_e.t.kind = CK_DOUBLE;
         g_e.t.obj = 8;
         advance();
@@ -2345,7 +2530,10 @@ static void gen_primary(void)
 
         i64 ev;
         if (find_enum(name, &ev)) {
-            mov_rax_imm((u64)ev);
+            if (!opt_fold)
+                mov_rax_imm((u64)ev);
+            g_e.is_const = opt_fold;
+            g_e.cval = ev;
             g_e.t.kind = CK_INT;
             g_e.t.obj = 8;
             advance();
@@ -2400,12 +2588,13 @@ static void gen_unary(void)
     if (is_kw("sizeof")) {
         advance();
         bool paren = accept('(');
+        i64 szv = 0;
         if (paren && tok_is_type(&cur)) {
             struct ctype t;
             if (!parse_ctype(&t))
                 return;
             expect(')');
-            mov_rax_imm((u64)value_bytes(&t));
+            szv = value_bytes(&t);
         } else if (cur.t == T_ID &&
                    ((paren && nxt.t == ')') ||
                     (!paren && nxt.t != '[' && nxt.t != '.' &&
@@ -2424,7 +2613,7 @@ static void gen_unary(void)
             }
             if (paren)
                 expect(')');
-            mov_rax_imm((u64)sz);
+            szv = sz;
         } else {
             /* sizeof 表达式: 只取类型大小, 丢弃生成的代码 */
             u32 save = clen;
@@ -2439,9 +2628,16 @@ static void gen_unary(void)
             clen = save;
             if (paren)
                 expect(')');
-            mov_rax_imm((u64)sz);
+            szv = sz;
         }
-        memset(&g_e, 0, sizeof(g_e));
+        if (opt_fold) {
+            memset(&g_e, 0, sizeof(g_e));
+            g_e.is_const = true;
+            g_e.cval = szv;
+        } else {
+            mov_rax_imm((u64)szv);
+            memset(&g_e, 0, sizeof(g_e));
+        }
         g_e.t.kind = CK_INT;
         g_e.t.obj = 8;
         return;
@@ -2455,8 +2651,19 @@ static void gen_unary(void)
             return;
         expect(')');
         gen_unary();
-        mat_value();
         bool src_dbl = is_dbl(&g_e.t);
+        if (opt_fold && g_e.is_const && !src_dbl && !is_dbl(&t)) {
+            i64 v = g_e.cval;
+            if (t.ptr == 0 && t.kind == CK_CHAR)
+                v = (i64)(u8)v;
+            memset(&g_e, 0, sizeof(g_e));
+            g_e.is_const = true;
+            g_e.cval = v;
+            g_e.t = t;
+            g_e.t.uns = 0;
+            return;
+        }
+        mat_value();
         if (is_dbl(&t) && !src_dbl)
             dbl_from_int();
         else if (!is_dbl(&t) && src_dbl)
@@ -2474,6 +2681,14 @@ static void gen_unary(void)
     if (cur.t == T_DEC) { gen_incdec(false, true); return; }
     if (accept('-')) {
         gen_unary();
+        if (opt_fold && g_e.is_const) {
+            if (is_dbl(&g_e.t))
+                g_e.cval ^= (i64)0x8000000000000000ULL;
+            else
+                g_e.cval = (i64)(0 - (u64)g_e.cval);
+            g_e.lval = false;
+            return;
+        }
         mat_value();
         if (is_dbl(&g_e.t)) {
             mov_rcx_imm(0x8000000000000000ULL);
@@ -2488,6 +2703,15 @@ static void gen_unary(void)
     }
     if (accept('!')) {
         gen_unary();
+        if (opt_fold && g_e.is_const) {
+            i64 v = g_e.cval ? 0 : 1;
+            memset(&g_e, 0, sizeof(g_e));
+            g_e.is_const = true;
+            g_e.cval = v;
+            g_e.t.kind = CK_INT;
+            g_e.t.obj = 8;
+            return;
+        }
         mat_value();
         test_rax();
         e8(0x0F); e8(0x94); e8(0xC0);       /* sete al */
@@ -2498,6 +2722,14 @@ static void gen_unary(void)
     }
     if (accept('~')) {
         gen_unary();
+        if (opt_fold && g_e.is_const && !is_dbl(&g_e.t)) {
+            g_e.cval = ~g_e.cval;
+            g_e.t.kind = CK_INT;
+            g_e.t.ptr = 0;
+            g_e.t.obj = 8;
+            g_e.lval = false;
+            return;
+        }
         mat_value();
         e8(0x48); e8(0xF7); e8(0xD0);       /* not rax */
         g_e.t.kind = CK_INT; g_e.t.ptr = 0; g_e.t.obj = 8;
@@ -2575,6 +2807,7 @@ static void gen_expr(int minp)
             g_e.t = (mid.t.ptr > 0) ? mid.t : rhs.t;
             g_e.lval = false;
             g_e.is_arr = false;
+            g_e.is_const = false;
             continue;
         }
 
@@ -2642,6 +2875,7 @@ static void gen_expr(int minp)
             g_e.lval = false;
             g_e.is_arr = false;
             g_e.is_bit = false;
+            g_e.is_const = false;
             continue;
         }
 
@@ -2650,37 +2884,104 @@ static void gen_expr(int minp)
             break;
 
         int op = cur.t;
-        mat_value();
-        struct ctype lt = g_e.t;
         bool logic = (op == T_ANDAND || op == T_OROR);
-        if (logic)
-            boolify();
+        bool cmpop = (op == T_EQ || op == T_NE || op == '<' || op == '>' ||
+                      op == T_LE || op == T_GE);
 
-        push_rax();
+        bool lc = opt_fold && g_e.is_const;
+        i64 lcv = g_e.cval;
+        struct ctype lt = g_e.t;
+        if (!lc) {
+            mat_value();
+            lt = g_e.t;
+            if (logic) boolify();
+            push_rax();
+        }
+
         advance();
         gen_expr(prec + 1);
-        mat_value();
-        struct ety rt = g_e;
-        if (logic)
-            boolify();
-        pop_rcx();                         /* 左值在 rcx */
+
+        bool rc = opt_fold && g_e.is_const;
+        i64 rcv = g_e.cval;
+        struct ctype rt = g_e.t;
+        if (!rc) {
+            mat_value();
+            rt = g_e.t;
+            if (logic) boolify();
+        }
+
+        bool both_int = !is_dbl(&lt) && !is_dbl(&rt) &&
+                        lt.ptr == 0 && rt.ptr == 0 &&
+                        !lt.func && !rt.func;
+        bool uns = (lt.uns || rt.uns) && lt.ptr == 0 && rt.ptr == 0;
+        if (logic) {
+            if (lc) lcv = lcv ? 1 : 0;
+            if (rc) rcv = rcv ? 1 : 0;
+        }
+
+        /* O1: 两边都是整数常量 -> 直接折叠 */
+        if (opt_fold && lc && rc && both_int) {
+            i64 v = 0;
+            bool ok = true;
+            if (logic)
+                v = (op == T_ANDAND) ? ((lcv && rcv) ? 1 : 0)
+                                     : ((lcv || rcv) ? 1 : 0);
+            else
+                ok = fold_bin(op, lcv, rcv, uns, &v);
+            if (ok) {
+                memset(&g_e, 0, sizeof(g_e));
+                g_e.is_const = true;
+                g_e.cval = v;
+                g_e.t.kind = CK_INT;
+                g_e.t.obj = 8;
+                g_e.t.uns = (cmpop || logic) ? 0 : (uns ? 1 : 0);
+                continue;
+            }
+        }
+
+        /* O1/O2: 常量右操作数 -> 立即数或强度削弱 */
+        bool regs_ready = false;
+        if (opt_fold && !lc && rc && both_int) {
+            pop_rcx();                     /* lhs */
+            mov_rax_rcx();
+            if (gen_imm_op(op, rcv, &lt, cmpop, uns))
+                continue;
+            mov_rcx_rax();
+            mov_rax_imm((u64)rcv);
+            regs_ready = true;
+        }
+
+        /* 布置 rcx=lhs, rax=rhs */
+        if (!regs_ready) {
+            if (lc && rc) {
+                mov_rcx_imm((u64)lcv);
+                mov_rax_imm((u64)rcv);
+            } else if (lc) {
+                mov_rcx_imm((u64)lcv);
+            } else if (rc) {
+                pop_rcx();
+                mov_rax_imm((u64)rcv);
+            } else {
+                pop_rcx();
+            }
+        }
 
         if (logic) {
             apply_binop(op == T_ANDAND ? '&' : '|');
             g_e.t.kind = CK_INT; g_e.t.ptr = 0; g_e.t.obj = 8;
             g_e.lval = false;
             g_e.is_arr = false;
+            g_e.is_const = false;
+            g_e.is_bit = false;
             continue;
         }
 
-        bool cmpop = (op == T_EQ || op == T_NE || op == '<' || op == '>' ||
-                      op == T_LE || op == T_GE);
-        if (is_dbl(&lt) || is_dbl(&rt.t)) {
+        if (is_dbl(&lt) || is_dbl(&rt)) {
             if (op != '+' && op != '-' && op != '*' && op != '/' && !cmpop) {
                 fail("invalid float operator");
                 return;
             }
-            dbl_operands(is_dbl(&lt), is_dbl(&rt.t));
+            dbl_operands(is_dbl(&lt), is_dbl(&rt));
             if (cmpop) {
                 dbl_cmp(op);
                 g_e.t.kind = CK_INT;
@@ -2695,29 +2996,29 @@ static void gen_expr(int minp)
             g_e.lval = false;
             g_e.is_arr = false;
             g_e.is_bit = false;
+            g_e.is_const = false;
             continue;
         }
 
         /* 指针算术: 按元素大小缩放整数侧 */
         if (op == '+' || op == '-') {
-            if (lt.ptr > 0 && rt.t.ptr == 0) {
+            if (lt.ptr > 0 && rt.ptr == 0) {
                 int st = ptr_step(&lt);
                 if (st != 1)
                     imul_rax_imm(st);
-            } else if (op == '+' && lt.ptr == 0 && rt.t.ptr > 0) {
-                int st = ptr_step(&rt.t);
+            } else if (op == '+' && lt.ptr == 0 && rt.ptr > 0) {
+                int st = ptr_step(&rt);
                 if (st != 1)
                     imul_rcx_imm(st);
             }
         }
 
-        bool uns = (lt.uns || rt.t.uns) && lt.ptr == 0 && rt.t.ptr == 0;
-
         if (cmpop) {
             if (uns) apply_cmp_uns(op);
             else     apply_cmp(op);
             g_e.t.kind = CK_INT; g_e.t.ptr = 0; g_e.t.obj = 8;
-        } else if (op == '-' && lt.ptr > 0 && rt.t.ptr > 0) {
+            g_e.t.uns = 0;
+        } else if (op == '-' && lt.ptr > 0 && rt.ptr > 0) {
             /* 指针相减: 结果除以元素大小 */
             apply_binop('-');
             int st = ptr_step(&lt);
@@ -2730,10 +3031,10 @@ static void gen_expr(int minp)
         } else {
             if (uns) apply_binop_uns(op);
             else     apply_binop(op);
-            if ((op == '+' || op == '-') && lt.ptr > 0 && rt.t.ptr == 0)
+            if ((op == '+' || op == '-') && lt.ptr > 0 && rt.ptr == 0)
                 g_e.t = lt;
-            else if (op == '+' && lt.ptr == 0 && rt.t.ptr > 0)
-                g_e.t = rt.t;
+            else if (op == '+' && lt.ptr == 0 && rt.ptr > 0)
+                g_e.t = rt;
             else {
                 g_e.t.kind = CK_INT; g_e.t.ptr = 0; g_e.t.obj = 8;
                 g_e.t.uns = uns ? 1 : 0;
@@ -2742,6 +3043,7 @@ static void gen_expr(int minp)
         g_e.lval = false;
         g_e.is_arr = false;
         g_e.is_bit = false;
+        g_e.is_const = false;
     }
 }
 
@@ -3422,6 +3724,73 @@ static void parse_switch(void)
     nloop--;
 }
 
+static void skip_parens(void)
+{
+    int depth = 0;
+    while (cur.t != T_EOF) {
+        if (cur.t == '(') depth++;
+        else if (cur.t == ')') {
+            depth--;
+            if (depth == 0) { advance(); break; }
+        }
+        advance();
+    }
+}
+
+/* 跳过一条语句 (不进行语义/代码生成), 用于常量分支/循环消除 */
+static void skip_stmt(void)
+{
+    if (cur.t == T_EOF)
+        return;
+    if (cur.t == '{') {
+        int depth = 0;
+        while (cur.t != T_EOF) {
+            if (cur.t == '{') depth++;
+            else if (cur.t == '}') {
+                depth--;
+                if (depth == 0) { advance(); break; }
+            }
+            advance();
+        }
+        return;
+    }
+    if (accept_kw("if")) {
+        if (cur.t == '(') skip_parens();
+        skip_stmt();
+        if (accept_kw("else"))
+            skip_stmt();
+        return;
+    }
+    if (is_kw("while") || is_kw("for") || is_kw("switch")) {
+        advance();
+        if (cur.t == '(') skip_parens();
+        skip_stmt();
+        return;
+    }
+    if (accept_kw("do")) {
+        skip_stmt();
+        if (accept_kw("while")) {
+            if (cur.t == '(') skip_parens();
+            accept(';');
+        }
+        return;
+    }
+    int depth = 0;
+    while (cur.t != T_EOF) {
+        if (cur.t == '(' || cur.t == '[') depth++;
+        else if (cur.t == ')' || cur.t == ']') {
+            if (depth > 0) depth--;
+        } else if (cur.t == '}') {
+            if (depth == 0) return;
+            depth--;
+        } else if (cur.t == ';' && depth == 0) {
+            advance();
+            return;
+        }
+        advance();
+    }
+}
+
 static void parse_stmt(void)
 {
     if (failed)
@@ -3473,8 +3842,24 @@ static void parse_stmt(void)
     }
     if (accept_kw("if")) {
         expect('(');
-        gen_value(0, 0);
+        u32 csave = clen;
+        gen_expr(0);
+        bool cst = g_e.is_const;
+        i64 cv = g_e.cval;
+        if (!cst)
+            mat_value();
         expect(')');
+        if (opt_dce && cst) {
+            clen = csave;                  /* 丢弃条件代码 */
+            bool take = (cv != 0);
+            if (take) parse_stmt(); else skip_stmt();
+            if (accept_kw("else")) {
+                if (take) skip_stmt(); else parse_stmt();
+            }
+            return;
+        }
+        if (cst)
+            mov_rax_imm((u64)cv);
         test_rax();
         u32 jz = emit_jcc(0x84);
         parse_stmt();
@@ -3490,9 +3875,39 @@ static void parse_stmt(void)
     }
     if (accept_kw("while")) {
         expect('(');
-        u32 start = clen;
-        gen_value(0, 0);
+        u32 csave = clen;
+        gen_expr(0);
+        bool cst = g_e.is_const;
+        i64 cv = g_e.cval;
+        if (!cst)
+            mat_value();
         expect(')');
+        if (opt_loops && cst) {
+            clen = csave;
+            if (cv == 0) {             /* while (0): 整段删除 */
+                skip_stmt();
+                return;
+            }
+            u32 start = clen;          /* while (1): 只保留回跳 */
+            if (nloop >= MAX_NEST) { fail("loop nesting too deep"); return; }
+            struct loopctx *lp = &loops[nloop++];
+            lp->nbreak = 0;
+            lp->ncont = 0;
+            lp->cont = start;
+            lp->is_switch = false;
+            parse_stmt();
+            u32 back = emit_jmp();
+            patch_rel(back, start);
+            for (int i = 0; i < lp->nbreak; i++)
+                patch_rel(lp->breaks[i], clen);
+            for (int i = 0; i < lp->ncont; i++)
+                patch_rel(lp->conts[i], start);
+            nloop--;
+            return;
+        }
+        u32 start = csave;
+        if (cst)
+            mov_rax_imm((u64)cv);
         test_rax();
         u32 jz = emit_jcc(0x84);
         if (nloop >= MAX_NEST) { fail("loop nesting too deep"); return; }
@@ -3575,16 +3990,30 @@ static void parse_stmt(void)
         lp->cont = cond;
         if (!accept_kw("while")) { fail("expected while"); nloop--; return; }
         expect('(');
-        gen_value(0, 0);
+        gen_expr(0);
+        bool cconst = opt_loops && g_e.is_const;
+        i64 cval = g_e.cval;
+        if (g_e.is_const && !cconst)
+            mov_rax_imm((u64)cval);
+        if (!g_e.is_const)
+            mat_value();
         expect(')');
-        test_rax();
-        u32 jnz = emit_jcc(0x85);          /* jne -> 循环体 */
-        patch_rel(jnz, body);
+        if (cconst) {
+            clen = cond;                   /* 丢弃常量条件代码 */
+            if (cval != 0) {               /* do..while(1): 只保留回跳 */
+                u32 back = emit_jmp();
+                patch_rel(back, body);
+            }
+        } else {
+            test_rax();
+            u32 jnz = emit_jcc(0x85);      /* jne -> 循环体 */
+            patch_rel(jnz, body);
+        }
         expect(';');
         for (int i = 0; i < lp->nbreak; i++)
             patch_rel(lp->breaks[i], clen);
         for (int i = 0; i < lp->ncont; i++)
-            patch_rel(lp->conts[i], cond);
+            patch_rel(lp->conts[i], (cconst && cval == 0) ? clen : cond);
         nloop--;
         return;
     }
@@ -3981,8 +4410,49 @@ static void compile_lib_module(const char *mod_src)
 }
 
 /* ------------------------------------------------------------------ 入口 */
+void tc_opts_default(struct tc_opts *o)
+{
+    memset(o, 0, sizeof(*o));
+    tc_opts_level(o, 0);
+}
+
+void tc_opts_level(struct tc_opts *o, int level)
+{
+    if (level < 0) level = 0;
+    if (level > 4) level = 4;
+    o->level = level;
+    o->fold = (level >= 1);
+    o->strength = (level >= 2);
+    o->dce = (level >= 3);
+    o->loops = (level >= 4);
+}
+
+void tc_stats(u32 *code_bytes, u32 *data_bytes)
+{
+    if (code_bytes) *code_bytes = last_code_len;
+    if (data_bytes) *data_bytes = last_data_len;
+}
+
 const u8 *tc_compile(const char *src, u32 len, u32 *out_len, const char *path)
 {
+    struct tc_opts o;
+    tc_opts_default(&o);
+    return tc_compile_opts(src, len, out_len, path, &o);
+}
+
+const u8 *tc_compile_opts(const char *src, u32 len, u32 *out_len,
+                          const char *path, const struct tc_opts *opt)
+{
+    struct tc_opts dflt;
+    if (!opt) {
+        tc_opts_default(&dflt);
+        opt = &dflt;
+    }
+    opt_fold = opt->fold;
+    opt_strength = opt->strength;
+    opt_dce = opt->dce;
+    opt_loops = opt->loops;
+
     failed = false;
     err_msg[0] = 0;
     clen = 0;
@@ -4078,5 +4548,7 @@ const u8 *tc_compile(const char *src, u32 len, u32 *out_len, const char *path)
     }
     if (out_len)
         *out_len = TC_CODE_MAX + dlen;
+    last_code_len = clen;
+    last_data_len = dlen;
     return out_buf;
 }

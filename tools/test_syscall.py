@@ -5,7 +5,7 @@
    2) 退出码回传 (code 0)
    3) 缺失文件错误处理 (RUN NOPE.GTP)
    4) RUN 之后键盘/中断仍正常 (IF 经 exec_longjmp 恢复)"""
-import os, shutil, socket, subprocess, sys, time
+import os, re, shutil, socket, subprocess, sys, time
 
 QEMU = r"D:\GT-DOS\qemu\qemu-system-x86_64.exe"
 SRC = r"D:\GT-DOS\build"
@@ -399,6 +399,60 @@ def main():
     check("gtapi rich", vm.expect("rich_ret=0", 4000) and
           vm.expect("API Rich", 4000) and vm.expect("alpha", 4000),
           vm.buf[-500:])
+
+    # 编译优化级别与参数联动
+    optp = [
+        "#include <stdio.h>",
+        "int main(void) {",
+        "int s = 0;",
+        "if (0) s = 99; else s = 3;",
+        "if (1) s = s + 4;",
+        "while (0) s = 100;",
+        "do { s = s + 1; } while (0);",
+        "while (1) { s = s + 2; break; }",
+        'printf("opt=%d\\n", s);',
+        "return 0;",
+        "}",
+    ]
+    vm.cmd(f"put opt.c {optp[0]}", 600)
+    for line in optp[1:]:
+        vm.cmd(f"append opt.c {line}", 450)
+
+    vm.buf = ""
+    vm.cmd("tc -O0 -v -o opt0.gtp opt.c", 3000)
+    check("tc -O0 compiles", vm.expect("Compiled ", 8000), vm.buf[-300:])
+    m0 = re.search(r"code=(\d+)", vm.buf)
+    c0 = int(m0.group(1)) if m0 else 0
+    check("O0 option summary", "TC:-O0 ----" in vm.buf, vm.buf[-200:])
+
+    vm.buf = ""
+    vm.cmd("tc -O4 -v -o opt4.gtp opt.c", 3000)
+    check("tc -O4 compiles", vm.expect("Compiled ", 8000), vm.buf[-300:])
+    m4 = re.search(r"code=(\d+)", vm.buf)
+    c4 = int(m4.group(1)) if m4 else 0
+    check("O4 option summary", "TC:-O4 FSDL" in vm.buf, vm.buf[-200:])
+    check("O4 shrinks code", 0 < c4 < c0, f"O0={c0} O4={c4}")
+
+    vm.buf = ""
+    vm.cmd("run opt4.gtp", 2000)
+    check("O4 DCE/loop correctness", vm.expect("opt=10", 4000),
+          vm.buf[-300:])
+
+    vm.buf = ""
+    vm.cmd("tc -O3 -fno-const -v -o link.gtp opt.c", 3000)
+    check("-fno-const cascades", "TC:-O3 ----" in vm.buf, vm.buf[-200:])
+
+    vm.buf = ""
+    vm.cmd("tc -O0 -fdce -v -o link2.gtp opt.c", 3000)
+    check("-fdce implies fold", "TC:-O0 F-D-" in vm.buf, vm.buf[-200:])
+    vm.buf = ""
+    vm.cmd("run link2.gtp", 2000)
+    check("linked option correctness", vm.expect("opt=10", 4000),
+          vm.buf[-300:])
+
+    vm.buf = ""
+    vm.cmd("tc -O4 -g -v -o dbg.gtp opt.c", 3000)
+    check("-g after -O4 resets", "TC:-O0 ----" in vm.buf, vm.buf[-200:])
 
     # vim: 新文件 -> i 输入 -> ESC -> :wq -> cat 验证
     vm.buf = ""

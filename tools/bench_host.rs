@@ -33,7 +33,17 @@ fn main() {
     let t = Instant::now();
     s = 0;
     i = 0;
-    while i < 2_000_000 {
+    while i < 5_000_000 {
+        s = s.wrapping_add(black_box(2 * 3 + 4 * 5));
+        i += 1;
+    }
+    println!("HOST const_expr us={}", t.elapsed().as_micros());
+    black_box(s);
+
+    let t = Instant::now();
+    s = 0;
+    i = 0;
+    while i < 1_000_000 {
         s = s.wrapping_add(black_box(add1(black_box(i))));
         i += 1;
     }
@@ -44,7 +54,7 @@ fn main() {
     let t = Instant::now();
     s = 0;
     i = 0;
-    while i < 2_000_000 {
+    while i < 1_000_000 {
         s = s.wrapping_add(black_box(fp(black_box(i))));
         i += 1;
     }

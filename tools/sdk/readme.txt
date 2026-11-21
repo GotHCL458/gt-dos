@@ -7,6 +7,16 @@ TC compiles a small C subset directly to x86-64 machine code and writes a
   TC <src.c> [-o out.gtp]      compile (default output: current dir, .gtp)
   RUN <file.gtp>               run the program
 
+Optimization:
+  -O0 .. -O4    levels (default -O0); -Os size, -Ofast = -O4
+  -fconst       constant folding + immediate operands   (O1)
+  -fstrength    strength reduction                      (O2)
+  -fdce         constant-if dead branch elimination     (O3)
+  -floop        constant-loop elimination               (O4)
+  -fno-X        disable a pass; -fdce implies -fconst, -floop implies -fdce,
+                -fno-const disables all; later flags win
+  -g            debug (reset to -O0);  -v  print effective flags + sizes
+
 Files:
   TC.H       builtin function reference
   HELLO.C    minimal console output example

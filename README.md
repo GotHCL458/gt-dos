@@ -136,6 +136,15 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
 **Built-in C compiler (TC) & SDK**
 - `TC <src.c> [-o out.gtp]` compiles a C subset straight to x86-64 machine code and
   writes a `.gtp` program that `RUN` can execute — no external toolchain involved
+- Optimization: `-O0`..`-O4` (`-Os`, `-Ofast`), with per-pass switches
+  `-fconst/-fno-const`, `-fstrength/-fno-strength`, `-fdce/-fno-dce`,
+  `-floop/-fno-loop`, plus `-g` (debug, resets to O0) and `-v` (print the
+  effective flags and code/data sizes). Flags link: `-fdce` implies folding,
+  `-floop` implies `-fdce`, `-fno-const` disables every pass, and later flags
+  win over earlier ones. Passes: O1 constant folding + immediate operands
+  (removes push/pop around constants), O2 strength reduction (shifts, unsigned
+  div/mod by powers of two), O3 constant-`if` dead-branch elimination, O4
+  constant-loop elimination (`while(0)`, `while(1)`, `do..while(0/1)`)
 - Supported: `int`/`char`/`double`/pointers, 1-4D arrays, `struct`/`union` (fields,
   nested structs, `.` and `->`, bitfields), function pointers and function-pointer
   arrays, functions (up to 6 parameters, recursion, prototypes, user variadic
@@ -393,17 +402,18 @@ build.py             build script and image assembler
 The test scripts drive a QEMU instance over a serial socket and a QEMU monitor socket, so they
 assert on real boot output rather than on mocks.
 
-`tools/test_perf.py` compiles and runs `\SDK\BENCH.C` inside GT-DOS, runs the same
-workloads natively (`rustc -O`) and writes `build/perf_report.md`. Typical results on
-the QEMU test host: integer loop ≈18 ns/op, direct call ≈35 ns, function-pointer
-call ≈50 ns (≈1.4× direct), double multiply-add ≈30 ns, array read ≈22 ns,
-fib(30) ≈60 ms; TC compiles the benchmark in ≈0.2 s. The 20–80× gap to native is
-dominated by QEMU TCG emulation plus TC's deliberately simple, unoptimized code
-generation (every value lives in a stack slot and no register allocation is done).
+`tools/test_perf.py` compiles and runs `\SDK\BENCH.C` inside GT-DOS at both
+`-O0` and `-O4`, runs the same workloads natively (`rustc -O`) and writes
+`build/perf_report.md`. On the QEMU test host the benchmark's code section
+shrinks from 3035 to 2916 bytes at `-O4`; the constant-expression loop is
+≈1.4× faster and the whole program is 20–170× slower than native depending on
+the workload. That gap is dominated by QEMU TCG emulation plus TC's simple,
+unoptimized code generation (values live in stack slots, no register
+allocation).
 
 ## Notes and Limitations
 
-- The kernel currently fits in 617 sectors (315,712 bytes including the 48-byte `GTK1`
+- The kernel currently fits in 529 sectors (270,656 bytes including the 48-byte `GTK1`
   trailer); the build cap is 640 sectors (320 KB), loaded between `0x10000` and `0x60000`.
   The linker also asserts `.bss <= 0xA0000` and `.highbss <= LIB_BASE`.
 - The GDT is built in low memory (0x6800) rather than `.data`: loading a segment register

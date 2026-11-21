@@ -26,7 +26,14 @@ int main(void)
 
     t0 = uptime();
     s = 0;
-    for (i = 0; i < 2000000; i++)
+    for (i = 0; i < 5000000; i++)
+        s = s + (2 * 3 + 4 * 5);
+    t1 = uptime();
+    printf("BENCH const_expr ms=%d chk=%d\n", t1 - t0, s == 130000000 ? 1 : 0);
+
+    t0 = uptime();
+    s = 0;
+    for (i = 0; i < 1000000; i++)
         s = s + add1(i);
     t1 = uptime();
     printf("BENCH direct_call ms=%d chk=%d\n", t1 - t0, s > 0 ? 1 : 0);

@@ -283,7 +283,8 @@ def build_kernel():
     for name in C_SOURCES:
         src = os.path.join(ROOT, "kernel", name)
         obj = os.path.join(BUILD, name.replace(".c", ".o"))
-        run([TOOLS["clang"]] + CFLAGS + ["-c", src, "-o", obj], cwd=ROOT)
+        extra = ["-Os"] if name in ("tc.c", "richtext.c") else []
+        run([TOOLS["clang"]] + CFLAGS + extra + ["-c", src, "-o", obj], cwd=ROOT)
         objs.append(obj)
 
     objs.append(build_rust_kernel_lib())

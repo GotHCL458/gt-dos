@@ -26,8 +26,9 @@ FAILURES = []
 # 工作负载: 名称 -> (迭代次数, 说明)
 WORK = [
     ("int_loop", 5_000_000, "整数累加"),
-    ("direct_call", 2_000_000, "直接函数调用"),
-    ("indirect_call", 2_000_000, "函数指针调用"),
+    ("const_expr", 5_000_000, "常量表达式折叠"),
+    ("direct_call", 1_000_000, "直接函数调用"),
+    ("indirect_call", 1_000_000, "函数指针调用"),
     ("double_ops", 2_000_000, "double 乘加"),
     ("array_sum", 5_000_000, "数组索引读取"),
     ("fib30", 0, "递归 fib(30)"),
@@ -180,30 +181,46 @@ def main():
     vm.cmd("", 800)
     check("login", vm.expect(">", 5000))
 
-    stage("compile bench.c (TC)")
-    vm.buf = ""
-    t0 = time.time()
-    vm.cmd("tc \\sdk\\bench.c", 0)
-    ok = vm.expect("Compiled ", 20000)
-    compile_ms = int((time.time() - t0) * 1000)
-    m = re.search(r"Compiled (\d+) bytes", vm.buf)
-    code_bytes = int(m.group(1)) if m else 0
-    check("tc compiles bench", ok, vm.buf[-400:])
-    check("bench image size", 1000 <= code_bytes <= 262144,
-          f"{code_bytes} bytes")
-    print(f"  compile={compile_ms} ms, image={code_bytes} bytes", flush=True)
+    def compile_run(level):
+        vm.buf = ""
+        t0 = time.time()
+        vm.cmd(f"tc -O{level} -v \\sdk\\bench.c -o bench{level}.gtp", 0)
+        ok = vm.expect("Compiled ", 20000)
+        cms = int((time.time() - t0) * 1000)
+        m = re.search(r"Compiled (\d+) bytes", vm.buf)
+        img = int(m.group(1)) if m else 0
+        mc = re.search(r"code=(\d+) data=(\d+)", vm.buf)
+        code = int(mc.group(1)) if mc else 0
+        craw = vm.buf
+        vm.buf = ""
+        vm.cmd(f"run bench{level}.gtp", 0)
+        done = vm.expect("BENCH fib30", 90000)
+        return ok, done, img, code, cms, parse_guest(vm.buf), craw
 
-    stage("run bench (GT-DOS)")
-    vm.buf = ""
-    vm.cmd("run bench.gtp", 0)
-    check("bench runs to completion", vm.expect("BENCH fib30", 60000),
-          vm.buf[-400:])
-    guest = parse_guest(vm.buf)
+    stage("compile/run -O0")
+    o0ok, o0done, o0img, o0code, cm0, guest0, _ = compile_run(0)
+    check("tc compiles bench -O0", o0ok, f"code={o0code}")
+    check("bench -O0 runs", o0done)
+
+    stage("compile/run -O4")
+    o4ok, o4done, o4img, o4code, cm4, guest4, raw4 = compile_run(4)
+    check("tc compiles bench -O4", o4ok, f"code={o4code}")
+    check("bench -O4 runs", o4done)
+    check("O4 option linkage", "TC:-O4 FSDL" in raw4, raw4[-200:])
+    check("O4 smaller code", 0 < o4code < o0code,
+          f"code O0={o0code} O4={o4code}")
+    print(f"  code: O0={o0code} O4={o4code}  compile: {cm0}->{cm4} ms",
+          flush=True)
+
+    guest = guest4
     check("all workloads reported", len(guest) >= len(WORK),
           f"got {sorted(guest)}")
     for name, _, _ in WORK:
-        g = guest.get(name)
-        check(f"{name} chk", g is not None and g[1] == 1, str(g))
+        g0 = guest0.get(name)
+        g4 = guest.get(name)
+        check(f"{name} chk",
+              g0 is not None and g4 is not None and g0[1] == 1 and g4[1] == 1,
+              f"O0={g0} O4={g4}")
 
     # 语言特性对比: 直接调用 vs 函数指针调用
     d = guest.get("direct_call", (0, 0))[0]
@@ -213,49 +230,55 @@ def main():
           f"direct={d}ms indirect={ind}ms")
     print(f"  direct={d}ms  indirect={ind}ms  ratio={ratio:.2f}x", flush=True)
 
+    ce0 = guest0.get("const_expr", (0, 0))[0]
+    ce4 = guest.get("const_expr", (0, 0))[0]
+    check("O4 folds constant expressions", ce4 <= ce0,
+          f"const_expr O0={ce0} O4={ce4}")
+
     vm.close()
 
     # ---- 汇总表 ----
     rows = []
     for name, iters, desc in WORK:
-        g = guest.get(name)
-        gms = g[0] if g else 0
+        g0 = guest0.get(name, (0, 0))[0]
+        g4 = guest.get(name, (0, 0))[0]
         h_us = host.get(name, 0)
         hms = h_us / 1000.0
-        gns = ns_per_op(gms, iters)
-        hns = (h_us * 1000.0 / iters) if iters > 0 else 0.0
-        slow = (gms * 1000.0 / h_us) if h_us > 0 else 0.0
-        rows.append((name, desc, iters, gms, hms, gns, hns, slow))
+        sp = (g0 / g4) if g4 > 0 else 0.0
+        n4 = ns_per_op(g4, iters)
+        slow = (g4 * 1000.0 / h_us) if h_us > 0 else 0.0
+        rows.append((name, desc, iters, g0, g4, sp, hms, n4, slow))
 
     print()
-    print(f"{'workload':14s} {'iters':>9s} {'GT(ms)':>8s} "
-          f"{'host(ms)':>9s} {'GT ns/op':>10s} {'host ns/op':>11s} "
-          f"{'slowdown':>9s}")
+    print(f"{'workload':14s} {'iters':>9s} {'O0(ms)':>7s} "
+          f"{'O4(ms)':>7s} {'speedup':>8s} {'host(ms)':>9s} "
+          f"{'O4 ns/op':>9s} {'slow':>7s}")
     for r in rows:
-        print(f"{r[0]:14s} {r[2]:9d} {r[3]:8d} {r[4]:9.3f} "
-              f"{r[5]:10.2f} {r[6]:11.2f} "
-              f"{(f'{r[7]:.1f}x' if r[7] else '-'):>9s}")
+        print(f"{r[0]:14s} {r[2]:9d} {r[3]:7d} {r[4]:7d} "
+              f"{(f'{r[5]:.2f}x' if r[5] else '-'):>8s} {r[6]:9.3f} "
+              f"{r[7]:9.2f} {(f'{r[8]:.1f}x' if r[8] else '-'):>7s}")
 
     lines = [
-        "# TC 性能对比",
+        "# TC 性能与优化对比",
         "",
-        f"- 环境: GT-DOS in QEMU (32MB, TCG) vs 宿主原生 (rustc -O)",
-        f"- TC 编译: {compile_ms} ms, 程序镜像 {code_bytes} 字节",
-        f"- 直接调用 {d} ms vs 函数指针调用 {ind} ms "
-        f"(x{ratio:.2f})",
+        "- 环境: GT-DOS in QEMU (32MB, TCG) vs 宿主原生 (rustc -O)",
+        f"- TC 代码段: -O0 {o0code} 字节, -O4 {o4code} 字节",
+        f"- 编译时间: -O0 {cm0} ms, -O4 {cm4} ms",
+        f"- 直接调用 {d} ms vs 函数指针调用 {ind} ms (x{ratio:.2f})",
         "",
-        "| 工作负载 | 迭代 | GT-DOS ms | 宿主 ms | GT ns/op | 宿主 ns/op | 慢倍数 |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| 工作负载 | 迭代 | O0 ms | O4 ms | O4 加速 | 宿主 ms | O4 ns/op | 对比原生 |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for r in rows:
-        slow = f"{r[7]:.1f}x" if r[7] else "-"
-        lines.append(f"| {r[0]} ({r[1]}) | {r[2]} | {r[3]} | {r[4]:.3f} | "
-                     f"{r[5]:.2f} | {r[6]:.2f} | {slow} |")
+        sp = f"{r[5]:.2f}x" if r[5] else "-"
+        slow = f"{r[8]:.1f}x" if r[8] else "-"
+        lines.append(f"| {r[0]} ({r[1]}) | {r[2]} | {r[3]} | {r[4]} | {sp} | "
+                     f"{r[6]:.3f} | {r[7]:.2f} | {slow} |")
     lines += [
         "",
-        "说明: 宿主列是原生 x86-64 执行, GT-DOS 列运行在 QEMU TCG 上,",
-        "倍数主要反映模拟器开销 + TC 未优化代码生成; ns/op 用于横向比较",
-        "同一平台内不同语言特性 (如直接调用 vs 函数指针调用).",
+        "说明: O1 常量折叠/立即数, O2 强度削弱, O3 常量分支消除, O4 常量循环消除.",
+        "宿主列是原生执行, GT-DOS 列运行在 QEMU TCG 上, 差距主要来自模拟器",
+        "开销以及 TC 不做寄存器分配 (所有值经栈槽).",
         "",
     ]
     try:
