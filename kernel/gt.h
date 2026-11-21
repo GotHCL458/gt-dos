@@ -502,7 +502,9 @@ enum {
     SYS_THREAD_CREATE = 51, SYS_YIELD = 52, SYS_THREAD_EXIT = 53,
     SYS_THREAD_JOIN = 54, SYS_GETTID = 55,
     SYS_MUTEX_CREATE = 56, SYS_MUTEX_LOCK = 57, SYS_MUTEX_UNLOCK = 58,
-    SYS_THREAD_DETACH = 59
+    SYS_THREAD_DETACH = 59,
+    SYS_CRITICAL_ENTER = 60, SYS_CRITICAL_EXIT = 61,
+    SYS_MUTEX_TRYLOCK = 62, SYS_MUTEX_DESTROY = 63
 };
 void syscall_handle(struct regs *r);    /* 由 isr_handler 分派 */
 
@@ -555,6 +557,9 @@ void thread_reap_all(void);                       /* 程序结束时回收用户
 int  mutex_create(void);                          /* 互斥量: 返回 id */
 int  mutex_lock(int id);                          /* 阻塞直到加锁 */
 int  mutex_unlock(int id);
+int  mutex_trylock(int id);                       /* 0=成功 -3=忙 */
+int  mutex_destroy(int id);                       /* -2=仍被占用 */
+void thread_abort_current(void);                  /* 异常线程终止并切换 */
 void sched_dump(void);
 
 /* ---------------------------------------------------- 共享库 (.gtl) */

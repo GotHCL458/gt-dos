@@ -3518,6 +3518,14 @@ static void gen_call(const char *name)
         g_e.lval = false; g_e.is_arr = false; g_e.is_bit = false;
         return;
     }
+    /* yield(): 直接 INT 0x2F, 省掉一次系统调用门 */
+    if (!strcmp(name, "yield")) {
+        expect(')');
+        e8(0xCD); e8(SCHED_YIELD_VECTOR);
+        g_e.t.kind = CK_INT; g_e.t.ptr = 0; g_e.t.func = 0; g_e.t.obj = 8;
+        g_e.lval = false; g_e.is_arr = false; g_e.is_bit = false;
+        return;
+    }
 
     int nargs = 0;
     if (cur.t != ')') {
@@ -3578,11 +3586,12 @@ static void gen_call(const char *name)
         { "getcwd", 44, 2 }, { "hostname", 45, 2 }, { "username", 46, 2 },
         { "isadmin", 47, 0 }, { "version", 48, 2 }, { "unixtime", 49, 0 },
         { "rich", 50, 3 },
-        { "thread_create", 51, 2 }, { "yield", 52, 0 },
-        { "thread_exit", 53, 1 }, { "thread_join", 54, 1 },
-        { "gettid", 55, 0 },
+        { "thread_create", 51, 2 }, { "thread_exit", 53, 1 },
+        { "thread_join", 54, 1 }, { "gettid", 55, 0 },
         { "mutex_create", 56, 0 }, { "mutex_lock", 57, 1 },
         { "mutex_unlock", 58, 1 }, { "thread_detach", 59, 1 },
+        { "critical_enter", 60, 0 }, { "critical_exit", 61, 0 },
+        { "mutex_trylock", 62, 1 }, { "mutex_destroy", 63, 1 },
         { NULL, 0, 0 }
     };
     int nr = -1;

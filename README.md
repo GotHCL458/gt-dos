@@ -213,27 +213,36 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
 
 **Multithreading**
 - Round-robin scheduler: the main thread plus up to 7 children, each with its
-  own 8 KB stack; the 100 Hz timer preempts every 5 ticks (≈50 ms) and threads
-  may also yield (TC `yield()` / `INT 0x2F`)
+  own 12 KB stack; the 100 Hz timer preempts every 5 ticks (≈50 ms) and threads
+  may also yield (TC `yield()` emits `INT 0x2F` directly, skipping the syscall
+  gate)
 - Blocking waits: `thread_join(tid)`, `mutex_lock(id)` and `sleep(ms)` put the
   caller in BLOCKED state; exit/unlock wake the waiters and the timer handles
   sleep deadlines
 - Kernel mutex objects (up to 16): `mutex_create()`, `mutex_lock(id)`,
-  `mutex_unlock(id)`; a mutex owned by an exiting thread is released and its
-  next waiter woken. The `stdlib` malloc heap is mutex-protected for threads
+  `mutex_unlock(id)`, `mutex_trylock(id)` (0 / ‑2 reentrant / ‑3 busy) and
+  `mutex_destroy(id)`; a mutex owned by an exiting thread is released and its
+  next waiter woken. The `stdlib` malloc heap is mutex-protected (lazy creation
+  inside a critical section) so threads can share it
+- Critical sections: `critical_enter()` / `critical_exit()` suspend timer
+  preemption (nestable) for short cross-instruction shared-data updates
+- Stability: a child fault (divide-by-zero, bad access) only terminates that
+  thread (`join` returns ‑1) and the system keeps running; main-thread faults
+  still dump state and halt. Per-thread stack guards/overflow detection, and
+  xmm0–7 plus MXCSR are saved across switches
 - Threads run in ring0 and share the program address space and globals; timer
   preemption is disabled while a system call runs, so console, file and network
-  calls stay atomic
-- TC builtins: `thread_create(fn, arg)` → tid (51), `yield()` (52),
-  `thread_exit(code)` (53), `thread_join(tid)` (54), `gettid()` (55),
-  `mutex_create/lock/unlock` (56–58) and `thread_detach(tid)` (59);
+  calls stay atomic; thread ids restart at 2 for each program
+- TC builtins: `thread_create(fn, arg)` → tid (51), `yield()`, `thread_exit(code)`
+  (53), `thread_join(tid)` (54), `gettid()` (55), `mutex_*` (56–58, 62, 63),
+  `thread_detach(tid)` (59), `critical_enter/exit` (60/61);
   see `\SDK\THREAD.C`; the shell's `THREADS` command dumps the thread table
 - Entry functions receive the argument with TC's calling convention (on the
   stack); `exit()` in a child only ends that thread, and the kernel reaps all
   threads a program created when it exits; detached threads need no join
-- Limits: no priorities or condition variables, fixed 8 KB stacks, and threads
-  share one address space (ring0, no isolation) — protect shared data with
-  mutexes
+- Limits: no priorities or condition variables, and threads share one address
+  space (ring0, no isolation) — protect shared data with mutexes or critical
+  sections
 
 **Rich text and editor**
 - `CAT [-n] <file...>` concatenates one or more files; `-n` adds continuous line numbers

@@ -1,4 +1,4 @@
-; 多线程调度相关的汇编: yield 门、线程入口蹦床、xmm 保存/恢复
+; 多线程调度相关的汇编: yield 门、线程入口蹦床、xmm/mxcsr 保存恢复
 BITS 64
 section .text
 
@@ -24,13 +24,18 @@ thread_entry_asm:
     call thread_exit_current
     hlt
 
-; ---- xmm0..3 保存/恢复 (rdi = 64 字节缓冲) ----
+; ---- xmm0..7 + mxcsr 保存/恢复 (rdi = 136 字节缓冲) ----
 global sched_xmm_save
 sched_xmm_save:
     movdqu [rdi], xmm0
     movdqu [rdi + 16], xmm1
     movdqu [rdi + 32], xmm2
     movdqu [rdi + 48], xmm3
+    movdqu [rdi + 64], xmm4
+    movdqu [rdi + 80], xmm5
+    movdqu [rdi + 96], xmm6
+    movdqu [rdi + 112], xmm7
+    stmxcsr [rdi + 128]
     ret
 
 global sched_xmm_load
@@ -39,4 +44,9 @@ sched_xmm_load:
     movdqu xmm1, [rdi + 16]
     movdqu xmm2, [rdi + 32]
     movdqu xmm3, [rdi + 48]
+    movdqu xmm4, [rdi + 64]
+    movdqu xmm5, [rdi + 80]
+    movdqu xmm6, [rdi + 96]
+    movdqu xmm7, [rdi + 112]
+    ldmxcsr [rdi + 128]
     ret

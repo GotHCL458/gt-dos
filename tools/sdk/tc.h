@@ -23,10 +23,12 @@
  * Expression temporaries use r11/r10 with deferred saves; deeper expressions
  * spill to the stack, and user calls only save live temporaries.
  *
- * Threads (SYS 51..59): thread_create(fn, arg) -> tid, yield(), thread_exit(code),
- * thread_join(tid) (blocking), gettid(), mutex_create/lock/unlock, thread_detach.
- * sleep(ms) blocks only the calling thread. Threads share the program's memory;
- * the kernel preempts on the timer unless a system call is in progress.
+ * Threads (SYS 51..63): thread_create(fn, arg) -> tid, yield(), thread_exit(code),
+ * thread_join(tid) (blocking), gettid(), mutex_create/lock/trylock/unlock/destroy,
+ * thread_detach, critical_enter/exit (nestable preemption guard).
+ * sleep(ms) blocks only the calling thread; a child fault kills just that thread.
+ * Threads share the program's memory; the kernel preempts on the timer unless a
+ * system call is in progress.
  *
  * Standard library modules are compiled in only when #included:
  *   string.h  strlen strcpy strncpy strcmp strncmp strcat strncat strchr strrchr

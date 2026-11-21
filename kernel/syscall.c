@@ -448,6 +448,20 @@ void syscall_handle(struct regs *r)
     case SYS_THREAD_DETACH:
         r->rax = (u64)thread_detach((int)r->rdi);
         break;
+    case SYS_CRITICAL_ENTER:
+        sched_syscall_enter();              /* 嵌套计数: 定时器暂停抢占 */
+        r->rax = 0;
+        break;
+    case SYS_CRITICAL_EXIT:
+        sched_syscall_exit();
+        r->rax = 0;
+        break;
+    case SYS_MUTEX_TRYLOCK:
+        r->rax = (u64)mutex_trylock((int)r->rdi);
+        break;
+    case SYS_MUTEX_DESTROY:
+        r->rax = (u64)mutex_destroy((int)r->rdi);
+        break;
     case SYS_EXIT:
         if (!exec_is_active()) { r->rax = (u64)-1; break; }
         if (!sched_current_is_main()) {

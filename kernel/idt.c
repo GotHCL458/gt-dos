@@ -179,6 +179,14 @@ void isr_handler(struct regs *r)
 
     if (r->int_no < 32) {
         cpu_cli();
+        /* 子线程异常: 终止该线程并切回其它线程, 不拖垮系统 */
+        if (!sched_current_is_main()) {
+            kprintf("\n[thread #%d killed: exception %u (%s)]\n",
+                    sched_current_id(), (u32)r->int_no,
+                    exception_names[r->int_no]);
+            thread_abort_current();
+            return;
+        }
         kprintf("\n\n*** GT-DOS EXCEPTION %u: %s ***\n",
                 (u32)r->int_no, exception_names[r->int_no]);
         if (r->int_no == 14)

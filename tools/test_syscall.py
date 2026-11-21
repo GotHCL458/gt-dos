@@ -448,6 +448,12 @@ def main():
         "thread_detach(td);",
         "sleep(120);",
         'printf("detach=%d join=%d\\n", dflag, thread_join(td));',
+        "int l2 = mutex_create();",
+        "int ta = mutex_trylock(l2);",
+        "int tb = mutex_trylock(l2);",
+        "mutex_unlock(l2);",
+        "int tc2 = mutex_destroy(l2);",
+        'printf("mutexapi=%d,%d,%d\\n", ta, tb, tc2);',
         "return 0;",
         "}",
     ]
@@ -466,6 +472,38 @@ def main():
           vm.buf[-600:])
     check("detach then join fails", vm.expect("detach=1 join=-1", 8000),
           vm.buf[-600:])
+    check("mutex trylock/destroy", vm.expect("mutexapi=0,-2,0", 8000),
+          vm.buf[-600:])
+
+    # 子线程异常隔离: 除零只终止该线程, 主线程 join 得到 -1
+    vm.buf = ""
+    fault_src = [
+        "#include <stdio.h>",
+        "int boom(int x) {",
+        "int z;",
+        "z = 0;",
+        "return 5 / z;",
+        "}",
+        "int main(void) {",
+        "int t = thread_create(boom, 0);",
+        "int r = thread_join(t);",
+        'printf("faultsurvived=1 r=%d\\n", r);',
+        "return 0;",
+        "}",
+    ]
+    vm.cmd(f"put ft.c {fault_src[0]}", 600)
+    for line in fault_src[1:]:
+        vm.cmd(f"append ft.c {line}", 450)
+    vm.cmd("tc ft.c", 2000)
+    check("fault program compiles", vm.expect("Compiled ", 8000),
+          vm.buf[-300:])
+    vm.cmd("run ft.gtp", 2000)
+    check("thread fault isolated", vm.expect("thread #2 killed", 8000),
+          vm.buf[-600:])
+    check("faulting join returns -1", vm.expect("faultsurvived=1 r=-1", 8000),
+          vm.buf[-600:])
+    check("system alive after fault", vm.expect("exited with code 0", 4000),
+          vm.buf[-400:])
 
     # 未 include 时不编入库: strlen 应为未定义
     vm.buf = ""

@@ -9,8 +9,12 @@ char *malloc(int n)
     char *p = 0;
     if (n <= 0)
         return 0;
-    if (__heap_mx == 0)
-        __heap_mx = mutex_create();
+    if (__heap_mx == 0) {
+        critical_enter();               /* 防止两个线程同时惰性创建 */
+        if (__heap_mx == 0)
+            __heap_mx = mutex_create();
+        critical_exit();
+    }
     if (__heap_mx > 0)
         mutex_lock(__heap_mx);
     __heap_used = (__heap_used + 7) & ~7;

@@ -17,9 +17,10 @@
  * 网络/控制台的临界区切走; 显式 yield/阻塞仍然生效. */
 #include "gt.h"
 
-#define THREAD_STACK   8192
+#define THREAD_STACK   12288
 #define THREAD_QUANTUM 5                    /* 5 个 tick (约 50ms) */
 #define MUTEX_MAX      16
+#define STACK_GUARD    0x5A
 
 enum { TH_FREE = 0, TH_READY, TH_RUN, TH_BLOCKED, TH_ZOMBIE };
 
@@ -36,7 +37,8 @@ struct thread {
     int  wait_next;                         /* 等待链表的下一项 */
     int  join_head;                         /* 等待本线程退出的线程链表 */
     int  wake_tick;                         /* 睡眠到期 tick (0=无) */
-    u64  xmm[4][2];                         /* xmm0..3 */
+    u64  stack_base;                        /* 栈底 (溢出检测) */
+    u64  xstate[17];                        /* xmm0..7 + mxcsr */
     char name[16];
 };
 
@@ -150,8 +152,8 @@ static void switch_to(int nx)
 {
     struct thread *c = &th[th_cur];
     struct thread *n = &th[nx];
-    sched_xmm_save((u64 *)c->xmm);
-    sched_xmm_load((const u64 *)n->xmm);
+    sched_xmm_save(c->xstate);
+    sched_xmm_load(n->xstate);
     sched_next_sp = n->rsp;
     n->state = TH_RUN;
     if (c->state == TH_RUN)
@@ -179,6 +181,11 @@ void sched_tick(struct regs *r)
 {
     if (irq_in_service() > 1)
         return;
+
+    /* 线程栈溢出检测 (主线程使用内核 shell 栈, 不检查) */
+    if (!th[th_cur].is_main && th[th_cur].stack_base &&
+        (u64)r < th[th_cur].stack_base + 256)
+        panic("thread stack overflow");
 
     u32 now = timer_ticks();
     for (int i = 0; i < THREAD_MAX; i++) {
@@ -255,6 +262,8 @@ int thread_create(thread_fn_t fn, void *arg)
         return -2;
 
     u8 *base = tstacks[slot - 1];
+    for (int i = 0; i < 8; i++)
+        base[i] = STACK_GUARD;              /* 栈底哨兵 */
     u64 top = ((u64)base + THREAD_STACK) & ~15ULL;
     u64 sp = top - 8;                       /* 模拟 call 后的入口 rsp */
     u64 fb = sp - 176;                      /* 15 regs + int_no/err + iret 帧 */
@@ -276,6 +285,7 @@ int thread_create(thread_fn_t fn, void *arg)
     t->rsp = fb;
     t->fn = fn;
     t->arg = arg;
+    t->stack_base = (u64)base;
     t->wait_next = -1;
     t->join_head = -1;
     name_copy(t->name, "worker");
@@ -308,6 +318,34 @@ void thread_exit_current(int code)
     }
 }
 
+/* 当前线程发生异常: 结束该线程并切换到其它线程 (由异常处理调用).
+   主线程不适用 (由调用者判断). 返回后 isr_common 会恢复新线程的帧. */
+void thread_abort_current(void)
+{
+    struct thread *c = &th[th_cur];
+    if (c->is_main)
+        return;
+    c->exit_code = -1;
+    for (int i = 0; i < MUTEX_MAX; i++) {
+        if (mx[i].used && mx[i].owner == th_cur) {
+            mx[i].owner = -1;
+            wake_one(&mx[i].wait_head);
+        }
+    }
+    wake_all(&c->join_head);
+    c->state = c->detached ? TH_FREE : TH_ZOMBIE;
+    c->rsp = 0;
+
+    int nx = pick_next();
+    if (nx < 0)
+        panic("faulted thread: no runnable thread");
+    sched_xmm_load(th[nx].xstate);
+    sched_next_sp = th[nx].rsp;
+    th[nx].state = TH_RUN;
+    th_cur = nx;
+    th_slice = 0;
+}
+
 static int find_by_tid(int tid)
 {
     for (int i = 1; i < THREAD_MAX; i++)
@@ -319,7 +357,7 @@ static int find_by_tid(int tid)
 /* 等待线程结束并回收; 返回其退出码 */
 int thread_join(int tid)
 {
-    if (tid <= 1)
+    if (tid <= 1 || tid == sched_current_id())
         return -1;
     bool queued = false;
     for (;;) {
@@ -427,6 +465,29 @@ int mutex_unlock(int id)
     return 0;
 }
 
+int mutex_trylock(int id)
+{
+    if (id < 1 || id > MUTEX_MAX || !mx[id - 1].used)
+        return -1;
+    struct mutex *m = &mx[id - 1];
+    if (m->owner < 0) {
+        m->owner = th_cur;
+        return 0;
+    }
+    return (m->owner == th_cur) ? -2 : -3;  /* -2 重入, -3 忙 */
+}
+
+int mutex_destroy(int id)
+{
+    if (id < 1 || id > MUTEX_MAX || !mx[id - 1].used)
+        return -1;
+    struct mutex *m = &mx[id - 1];
+    if (m->owner >= 0 || m->wait_head >= 0)
+        return -2;                          /* 仍被持有或有人等待 */
+    m->used = false;
+    return 0;
+}
+
 /* --------------------------------------------------------------- 回收 */
 /* 程序退出时回收其创建的全部线程 (当前必须是主线程) */
 void thread_reap_all(void)
@@ -446,6 +507,10 @@ void thread_reap_all(void)
         mx[i].owner = -1;
         mx[i].wait_head = -1;
     }
+    /* 程序可能忘记 critical_exit: 复位主线程的调度锁 */
+    th[0].lock = 0;
+    th[0].wake_tick = 0;
+    th_next_id = 2;                     /* 每个程序的线程号从 2 开始 */
 }
 
 static const char *state_name(u8 s)
