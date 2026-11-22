@@ -751,6 +751,7 @@ bool gui_enter(void)
     slider_drag = false;
     resizing = false;
     app_canvas = false;
+    vga_hold_display(false);
     list_sel = 0;
     wdg_progress = 0;
     show_icons = true;
@@ -784,6 +785,7 @@ void gui_leave(void)
     slider_drag = false;
     resizing = false;
     app_canvas = false;
+    vga_hold_display(false);
     if (cur_x >= 0)
         gfx_fb_restore(cur_x - 1, cur_y - 1, cs_w + 2, cs_h + 2);
     cur_x = cur_y = -1;
@@ -804,6 +806,7 @@ bool gui_canvas_begin(void)
     widgets_open = false;
     menu_hot = -1;
     app_canvas = true;
+    vga_hold_display(true);          /* 程序 printf 不再画到画布上 */
     return true;
 }
 
@@ -812,6 +815,7 @@ void gui_canvas_end(void)
     if (!app_canvas)
         return;
     app_canvas = false;
+    vga_hold_display(false);         /* 恢复控制台绘制 */
     if (active)
         redraw_desktop();
 }

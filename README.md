@@ -111,9 +111,11 @@ GUI drawing and the user GUI canvas use calls 64–73:
   the first three follow the original ABI, so existing programs are unaffected
 - `SYS_GUI_BEGIN` takes over the full screen while the desktop is active, `SYS_GFX_*`
   render into the back buffer, `SYS_GUI_FLUSH` presents it, `SYS_GUI_POLL` returns
-  mouse position/buttons and a key, and `SYS_GUI_END` restores the desktop. The C
-  library `<gui.h>` (TC module `gui.c`) adds `gt_panel`, `gt_button`, `gt_checkbox`,
-  `gt_radio`, `gt_progress` and `gt_hit`; the demo is `\SDK\GUI_DEMO.C`
+  mouse position/buttons and a key, and `SYS_GUI_END` restores the desktop. While the
+  canvas is active the console still records program output (history + serial) but no
+  longer paints over the canvas. The C library `<gui.h>` (TC module `gui.c`) adds
+  `gt_panel`, `gt_button`, `gt_checkbox`, `gt_radio`, `gt_progress` and `gt_hit`; the
+  demo is `\SDK\GUI_DEMO.C` and the self-test is `\SDK\GUI_UT.C`
 
 - A small `open/read/write/close/seek` fd layer over exFAT (fds 0/1/2 are the console),
   plus directory handles through `SYS_OPENDIR`/`SYS_READDIR`
@@ -508,7 +510,8 @@ tools/
   sample_lib.asm     example shared library exporting add/mul (SAMPLE.GTL)
   svc_net.asm        system service program, seeded as \GT-DOS\SERVICES\NETSVC.GTP
   test_gui.py        desktop/widgets/mouse/drag/resize regression with screenshots
-  test_gui_lib.py    C GUI library unit test (return values, pixel checks, failure path)
+  test_gui_lib.py    C GUI library unit + boundary test (clipping, zero/negative
+                     sizes, percentage clamps, NULL args, repeated begin/end)
   test_v03.py        end-to-end test: OOBE, login, file commands
   test_v04.py        regression: single C: disk, GT-DOS directory, attributes, protection
   test_syscall.py    INT 0x21 gate and RUN program-execution test

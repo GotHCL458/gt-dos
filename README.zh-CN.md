@@ -107,9 +107,10 @@ GUI 绘图与用户画布使用 64–73 号调用：
   前三项与原 ABI 相同，既有程序不受影响
 - `SYS_GUI_BEGIN` 在桌面激活时接管全屏，`SYS_GFX_*` 画到后台缓冲，
   `SYS_GUI_FLUSH` 提交，`SYS_GUI_POLL` 取得鼠标位置/按键与键盘输入，
-  `SYS_GUI_END` 恢复桌面；C 库 `<gui.h>`（TC 模块 `gui.c`）提供
+  `SYS_GUI_END` 恢复桌面；画布活动期间程序输出仍写入历史与串口，但不再绘制
+  到画布上。C 库 `<gui.h>`（TC 模块 `gui.c`）提供
   `gt_panel`、`gt_button`、`gt_checkbox`、`gt_radio`、`gt_progress`、`gt_hit`，
-  示例为 `\SDK\GUI_DEMO.C`
+  示例为 `\SDK\GUI_DEMO.C`，自检为 `\SDK\GUI_UT.C`
 
 - 基于 exFAT 的 `open/read/write/close/seek` fd 层（fd 0/1/2 为控制台），
   目录句柄经 `SYS_OPENDIR`/`SYS_READDIR` 遍历
@@ -457,7 +458,8 @@ tools/
   sample_lib.asm     示例共享库, 导出 add/mul (SAMPLE.GTL)
   svc_net.asm        系统服务程序, 种子为 \GT-DOS\SERVICES\NETSVC.GTP
   test_gui.py        桌面/控件/鼠标/拖动/缩放回归 (截图像素校验)
-  test_gui_lib.py    C GUI 库单元测试 (返回值、绘制像素、失败路径)
+  test_gui_lib.py    C GUI 库单元与边界测试 (裁剪、零/负尺寸、百分比钳制、
+                     NULL 参数、重复 begin/end)
   test_v03.py        端到端测试: OOBE, 登录, 文件命令
   test_v04.py        回归测试: 单盘 C:, GT-DOS 目录, 属性, 系统保护
   test_syscall.py    INT 0x21 门与 RUN 程序执行测试

@@ -27,6 +27,7 @@ static int vp_x, vp_y;                 /* 视口像素原点 */
 static int vp_pw, vp_ph;               /* 视口像素尺寸 */
 static int vp_cols = VGA_COLS;         /* 视口文本列数 */
 static int vp_rows = TXT_ROWS;         /* 视口文本行数 */
+static bool disp_hold;                 /* 暂停屏幕绘制 (用户 GUI 画布占用时) */
 
 static u16 status_buf_cp[COLS_MAX] __attribute__((section(".highbss")));
 static u8   status_buf_attr[COLS_MAX] __attribute__((section(".highbss")));
@@ -153,6 +154,8 @@ static int cur_cx = -1;
 
 static void gfx_put_cell(int cpos, u16 cp, u8 a)
 {
+    if (disp_hold)
+        return;
     u32 fg = vga_pal[a & 0x0F];
     int w = cw(), h = ch();
     int x = vp_x + cpos * w, y = vp_y + (trows() - 1) * h;
@@ -174,6 +177,8 @@ static void gfx_put_cell(int cpos, u16 cp, u8 a)
 
 static void gfx_draw_cursor(bool on)
 {
+    if (disp_hold)
+        return;
     int w = cw(), h = ch();
     if (!on) {
         if (cur_cx >= 0) {
@@ -194,6 +199,8 @@ static void gfx_draw_cursor(bool on)
 
 static void render_gfx(void)
 {
+    if (disp_hold)
+        return;
     int newest = hist_total - 1;
     int cols = tcols(), rows = trows();
     int w = cw(), h = ch();
@@ -258,6 +265,8 @@ static void render_gfx(void)
 /* 单字符追加到当前行 (图形模式局部刷新, 不整屏重绘) */
 static void gfx_append_cell(int cpos, u16 cp, u8 a)
 {
+    if (disp_hold)
+        return;
     int w = cw(), h = ch();
     int x = vp_x + cpos * w;
     int y = vp_y + (trows() - 1) * h;
@@ -271,6 +280,8 @@ static void gfx_append_cell(int cpos, u16 cp, u8 a)
 /* 光标移动: 只刷新新旧两个单元格 */
 static void gfx_cursor_move(void)
 {
+    if (disp_hold)
+        return;
     int w = cw(), h = ch();
     int y = vp_y + (trows() - 1) * h;
     int old = cur_cx;
@@ -286,6 +297,8 @@ static void gfx_cursor_move(void)
    输入每个字符都调用, 这是控制台响应速度的关键路径. */
 void vga_line_sync(void)
 {
+    if (disp_hold)
+        return;
     if (!gfx_active()) {
         render();
         hw_cursor();
@@ -532,6 +545,7 @@ void vga_init(void)
     def_attr = 0x07;
     cursor_vis = true;
     gui_mode = false;
+    disp_hold = false;
     vp_x = vp_y = 0;
     vp_pw = vp_ph = 0;
     vp_cols = VGA_COLS;
@@ -558,6 +572,14 @@ void vga_refresh(void)
 {
     render();
     hw_cursor();
+}
+
+/* 暂停/恢复屏幕绘制. 暂停期间文本仍写入历史缓冲并透传串口, 恢复后整屏重绘 */
+void vga_hold_display(bool on)
+{
+    disp_hold = on;
+    if (!on)
+        render();
 }
 
 /* ------------------------------------------------ GUI 终端窗口视口 */

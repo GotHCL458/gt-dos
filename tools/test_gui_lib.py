@@ -190,8 +190,57 @@ if img:
     check("gfx_text pixels", region_count(img, 118, 218, 152, 240,
                                           (0xff, 0xff, 0x00)) > 2)
 
-# 程序结束应恢复桌面
-check("gui_end restores desktop", vm.expect("UT done", 9000), vm.buf[-300:])
+# ---- 阶段 2: 边界用例 ----
+check("gui_poll(NULL)/gfx_info(NULL)/nested begin",
+      vm.expect("UT edge rc=0 -1 -1 0", 9000), vm.buf[-400:])
+check("edge canvas drawn", vm.expect("UT edge drawn", 4000), vm.buf[-300:])
+time.sleep(0.4)
+imge = vm.shot(os.path.join(SRC, "gui_ut_edge.ppm"))
+check("screendump edge canvas", imge is not None)
+if imge:
+    w, h, pe = imge
+    check("edge resolution 1024x768", w == 1024 and h == 768, f"{w}x{h}")
+
+    def pixe(x, y):
+        i = (y * w + x) * 3
+        return (pe[i], pe[i + 1], pe[i + 2])
+
+    BG = (0x10, 0x1a, 0x30)
+    check("clip negative origin", pixe(0, 0) == (0x11, 0x22, 0x33) and
+          pixe(9, 9) == (0x11, 0x22, 0x33) and pixe(10, 10) == BG,
+          f"{pixe(0, 0)} {pixe(10, 10)}")
+    check("clip past bottom-right", pixe(1014, 758) == (0x44, 0x55, 0x66) and
+          pixe(1023, 767) == (0x44, 0x55, 0x66) and pixe(1013, 757) == BG,
+          f"{pixe(1014, 758)} {pixe(1013, 757)}")
+    check("zero-size fill no-op", pixe(100, 100) == BG, str(pixe(100, 100)))
+    check("1x1 fill", pixe(200, 100) == (0xff, 0x00, 0xff), str(pixe(200, 100)))
+    check("1x1 frame single pixel", pixe(220, 100) == (0x00, 0xff, 0xff),
+          str(pixe(220, 100)))
+    check("2x2 frame corner", pixe(241, 100) == (0x00, 0xff, 0xff),
+          str(pixe(241, 100)))
+    check("bar pct<0 clamps", pixe(103, 168) == (0x0e, 0x16, 0x22),
+          str(pixe(103, 168)))
+    check("bar pct>100 clamps", pixe(300, 168) == (0xff, 0x88, 0x00) and
+          pixe(335, 168) == (0xff, 0x88, 0x00), str(pixe(300, 168)))
+    check("gt_progress pct<0 clamps", pixe(103, 248) == (0x0e, 0x16, 0x22),
+          str(pixe(103, 248)))
+    check("gt_progress pct>100 clamps", pixe(300, 248) == (0x4f, 0x9f, 0xdf),
+          str(pixe(300, 248)))
+    check("gt_button NULL label", pixe(440, 112) == (0x3f, 0x6f, 0xae),
+          str(pixe(440, 112)))
+    check("gt_checkbox NULL label", pixe(405, 147) == (0x66, 0xcc, 0xff),
+          str(pixe(405, 147)))
+    check("gt_radio NULL label", pixe(405, 187) == (0x66, 0xcc, 0xff),
+          str(pixe(405, 187)))
+    check("gt_panel NULL title", pixe(450, 230) == (0x1f, 0x4e, 0x8a) and
+          pixe(450, 260) == (0x1b, 0x24, 0x34),
+          f"{pixe(450, 230)} {pixe(450, 260)}")
+    check("negative-origin checkbox clipped",
+          pixe(1, 307) == (0x66, 0xcc, 0xff), str(pixe(1, 307)))
+
+# 重复 gui_end 应为空操作, 结束返回 0
+check("repeated gui_end no-op", vm.expect("UT edge rc2=0", 9000), vm.buf[-300:])
+check("gui_end restores desktop", vm.expect("UT edge done", 5000), vm.buf[-300:])
 time.sleep(0.4)
 img2 = vm.shot(os.path.join(SRC, "gui_ut_done.ppm"))
 check("screendump desktop", img2 is not None)

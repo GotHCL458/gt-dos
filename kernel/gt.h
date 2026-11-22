@@ -169,6 +169,9 @@ void vga_gui_viewport(int x, int y, int w, int h);
 void vga_gui_leave(void);
 bool vga_gui_mode(void);
 void vga_refresh(void);
+/* 暂停/恢复控制台绘制: 用户程序占用 GUI 画布时仍可 printf (只更新历史与串口),
+   不会把文字画到程序画布上 */
+void vga_hold_display(bool on);
 
 /* ---------------------------------------------------------------- GUI */
 void vga_enter_gfx(void);            /* 控制台切到图形文本后端 */
