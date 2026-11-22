@@ -45,6 +45,7 @@ static bool menu_open;                  /* 开始菜单 */
 static bool about_open;                 /* 关于对话框 */
 static bool maximized;                  /* 窗口最大化 */
 static int theme;                       /* 壁纸配色 */
+static int menu_hot = -1;               /* 鼠标悬停的菜单项 */
 static int norm_x, norm_y, norm_w, norm_h;
 static int MB_X, MB_Y, MB_W, MB_H;      /* 开始按钮 */
 static int MN_X, MN_Y, MN_W, MN_H, MI_H;/* 开始菜单及项高 */
@@ -56,6 +57,7 @@ static int icon_sel = -1;               /* 最近点击的图标 */
 
 static bool inside(int x, int y, int bx, int by, int bw, int bh);
 static void redraw_desktop(void);
+static void draw_overlays(void);
 
 /* 经典箭头指针 (12x19, 每行低 12 位, 最高位为最左像素).
    逐像素拆成"白色主体"和"黑色描边"两张位图, 还原标准 Windows 箭头:
@@ -124,10 +126,20 @@ static void cursor_show(int x, int y)
     cursor_draw(x, y);
 }
 
-/* 控制台刚提交过矩形: 立即重画指针, 避免指针被覆盖后出现一帧闪烁 */
+/* 控制台刚提交过矩形: 立即重画指针, 避免指针被覆盖后出现一帧闪烁.
+   同时把菜单/对话框重新叠加回去 —— 控制台提交会重绘视口区域, 遮住浮层. */
 void gui_cursor_refresh(void)
 {
-    if (!active || cur_x < 0)
+    if (!active)
+        return;
+    if (menu_open || about_open) {
+        draw_overlays();                                  /* 重画进后台缓冲 */
+        if (menu_open)
+            gfx_fb_restore(MN_X - 2, MN_Y - 2, MN_W + 4, MN_H + 4);
+        if (about_open)
+            gfx_fb_restore(AB_X - 2, AB_Y - 2, AB_W + 4, AB_H + 4);
+    }
+    if (cur_x < 0)
         return;
     gfx_fb_restore(cur_x - 1, cur_y - 1, cs_w + 2, cs_h + 2);
     cursor_draw(cur_x, cur_y);
@@ -215,12 +227,24 @@ static void draw_menu(void)
     gfx_bevel(MN_X, MN_Y, MN_W, MN_H, 0xbfd0e8, 0x0c1220);
     for (int i = 0; i < 4; i++) {
         int y = MN_Y + 4 + i * MI_H;
-        bool hot = i == 0;                 /* Terminal 为默认焦点项 */
+        bool hot = i == menu_hot;
         gfx_fill(MN_X + 2, y + 1, MN_W - 4, MI_H - 2,
                  hot ? 0x2a4a70 : 0x223a58);
         gfx_text(MN_X + 10, y + (MI_H - ch) / 2, items[i],
                  i == 3 ? 0xff9a9a : 0xdce9ff);
     }
+}
+
+/* 命中开始菜单项; 返回 0..3, 未命中 -1 */
+static int menu_pick(int x, int y)
+{
+    if (inside(x, y, MN_X, MN_Y, MN_W, MN_H)) {
+        int idx = (y - (MN_Y + 4)) / MI_H;
+        if (idx < 0) idx = 0;
+        if (idx > 3) idx = 3;
+        return idx;
+    }
+    return -1;
 }
 
 /* 关于对话框 (模态): 版本/运行环境/操作说明 + OK 按钮 */
@@ -409,6 +433,7 @@ bool gui_enter(void)
     maximized = false;
     theme = 0;
     icon_sel = -1;
+    menu_hot = -1;
     gfx_poked = false;
     draw_desktop();
     vga_gui_viewport(CL_X, CL_Y, CL_W, CL_H);
@@ -431,6 +456,7 @@ void gui_leave(void)
     menu_open = false;
     about_open = false;
     maximized = false;
+    menu_hot = -1;
     if (cur_x >= 0)
         gfx_fb_restore(cur_x - 1, cur_y - 1, cs_w + 2, cs_h + 2);
     cur_x = cur_y = -1;
@@ -475,11 +501,10 @@ void gui_pump(void)
                 redraw_desktop();
             }
         } else if (menu_open) {
-            if (inside(x, y, MN_X, MN_Y, MN_W, MN_H)) {
-                int idx = (y - (MN_Y + 4)) / MI_H;
-                if (idx < 0) idx = 0;
-                if (idx > 3) idx = 3;
+            int idx = menu_pick(x, y);
+            if (idx >= 0) {
                 menu_open = false;
+                menu_hot = -1;
                 if (idx == 1) {
                     theme = (theme + 1) % 3;      /* Theme: 换壁纸配色 */
                     redraw_desktop();
@@ -494,13 +519,16 @@ void gui_pump(void)
                 }
             } else if (inside(x, y, MB_X, MB_Y, MB_W, MB_H)) {
                 menu_open = false;                /* 再点开始按钮收起 */
+                menu_hot = -1;
                 redraw_desktop();
             } else {
                 menu_open = false;                /* 点其它地方也收起 */
+                menu_hot = -1;
                 redraw_desktop();
             }
         } else if (inside(x, y, MB_X, MB_Y, MB_W, MB_H)) {
             menu_open = true;                     /* 打开开始菜单 */
+            menu_hot = -1;
             redraw_desktop();
         } else if (inside(x, y, BT_X, BT_Y, BT_W, BT_H) ||
                    inside(x, y, EX_X, EX_Y, EX_W, EX_H)) {
@@ -519,6 +547,16 @@ void gui_pump(void)
     }
     if (!left)
         dragging = false;
+
+    /* 菜单悬停高亮: 鼠标移到哪一项就高亮哪一项 */
+    if (menu_open && !pressed) {
+        int h = menu_pick(x, y);
+        if (h != menu_hot) {
+            menu_hot = h;
+            draw_menu();
+            gfx_flip_rect(MN_X - 2, MN_Y - 2, MN_W + 4, MN_H + 4);
+        }
+    }
 
     if (dragging) {
         int nx = x - drag_dx;

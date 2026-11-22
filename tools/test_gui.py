@@ -212,6 +212,13 @@ check("screendump menu", img_menu is not None)
 if img_menu:
     check("start menu drawn", color_count(img_menu, (0x22, 0x3a, 0x58)) > 200)
 
+# 悬停高亮: 移到 Theme 项, 该项背景应变亮
+goto(68, 678); time.sleep(0.3)
+img_hover = vm.shot(os.path.join(SRC, "gui_menu_hover.ppm"))
+check("screendump menu hover", img_hover is not None)
+if img_hover:
+    check("menu hover highlight", color_count(img_hover, (0x2a, 0x4a, 0x70)) > 500)
+
 # Theme: 换壁纸配色 (菜单关闭 + 壁纸颜色变化)
 theme_before = None
 if img_menu:
@@ -240,6 +247,17 @@ if img_about:
          pa[(300 * 1024 + 680) * 3 + 2])
     print(f"       about title pixel {c}")
     check("about dialog drawn", c == (0x1f, 0x4e, 0x8a))
+    # 控制台输出会重绘视口, 浮层必须仍在最上层
+    vm.buf = ""
+    vm.cmd("ver", 1000)
+    img_about2 = vm.shot(os.path.join(SRC, "gui_about_after.ppm"))
+    check("screendump about after output", img_about2 is not None)
+    if img_about2:
+        _, _, pb = img_about2
+        c2 = (pb[(300 * 1024 + 680) * 3], pb[(300 * 1024 + 680) * 3 + 1],
+              pb[(300 * 1024 + 680) * 3 + 2])
+        check("about stays above console output", c2 == (0x1f, 0x4e, 0x8a),
+              f"pixel={c2}")
 goto(660, 456); click(); time.sleep(0.2)
 
 # 最大化: 标题栏应铺到屏幕左侧 (x=10,y=8)
