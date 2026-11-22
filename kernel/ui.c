@@ -91,6 +91,8 @@ int ui_read_key(void)
         v = serial_read_key();
         if (v >= 0)
             return v;
+        if (gui_active())
+            gui_pump();               /* GUI: 处理鼠标/指针/时钟 */
         cpu_relax();                  /* 空闲时派发软中断 (扫描码解码) */
     }
 }

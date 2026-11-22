@@ -148,6 +148,21 @@ int  gfx_text(int x, int y, const char *s, u32 fg);
 int  gfx_text_w(const char *s);
 void gfx_flip(void);                 /* 整屏提交后台缓冲 */
 void gfx_flip_rect(int x, int y, int w, int h);
+extern volatile bool gfx_poked;      /* 发生过提交 (GUI 重画指针) */
+void gfx_fb_pixel(int x, int y, u32 c);          /* 直接写显存 (鼠标指针) */
+void gfx_fb_restore(int x, int y, int w, int h); /* 从后台恢复显存矩形 */
+
+/* --------------------------------------------------- 基础 GUI (gui.c) */
+bool gui_active(void);
+bool gui_enter(void);                 /* 进入桌面 (需图形模式) */
+void gui_leave(void);                 /* 返回纯文本控制台 */
+void gui_pump(void);                  /* 输入空闲时处理鼠标/时钟 */
+
+/* 控制台视口 (GUI 终端窗口) */
+void vga_gui_viewport(int x, int y, int w, int h);
+void vga_gui_leave(void);
+bool vga_gui_mode(void);
+void vga_refresh(void);
 
 /* ---------------------------------------------------------------- GUI */
 void vga_enter_gfx(void);            /* 控制台切到图形文本后端 */

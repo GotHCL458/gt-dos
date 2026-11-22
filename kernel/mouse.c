@@ -184,8 +184,10 @@ void mouse_input_byte(u8 b)
         int dx = (int)(signed char)pkt[1];
         int dy = (int)(signed char)pkt[2];
         int nbtn = pkt[0] & 0x07;
-        mx += dx;
-        my -= dy;                       /* PS/2 dy 向上为正, 屏幕 y 向下 */
+        /* 高分辨率下按 2 倍加速, 否则 1080p 上指针移动过慢 */
+        int k = (gfx_active() && gfx_w() >= 1280) ? 2 : 1;
+        mx += dx * k;
+        my -= dy * k;                   /* PS/2 dy 向上为正, 屏幕 y 向下 */
         int wmax = gfx_active() ? gfx_w() : 640;
         int hmax = gfx_active() ? gfx_h() : 480;
         if (mx < 0) mx = 0;

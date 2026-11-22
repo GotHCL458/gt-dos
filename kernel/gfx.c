@@ -339,6 +339,9 @@ int gfx_text_w(const char *s)
     return w;
 }
 
+/* GUI 光标提示: 任一提交后置位, 以便重画鼠标指针 */
+volatile bool gfx_poked;
+
 /* 提交后台缓冲到显存 (一次整屏拷贝, 无撕裂/闪烁) */
 void gfx_flip(void)
 {
@@ -349,6 +352,7 @@ void gfx_flip(void)
     int n = gw * gh / 2;
     for (int i = 0; i < n; i++)
         d[i] = src[i];
+    gfx_poked = true;
 }
 
 /* 只提交一个矩形区域 (局部刷新, 用于单字符输出) */
@@ -370,5 +374,30 @@ void gfx_flip_rect(int x, int y, int w, int h)
             d[i] = s[i];
         for (int i = x2; i < x + w; i++)             /* 奇数尾像素 */
             fb[yy * gw + i] = back[yy * gw + i];
+    }
+    gfx_poked = true;
+}
+
+/* GUI 鼠标指针: 直接写显存 (不进入后台缓冲), 恢复时从后台重拷.
+   这样控制台重绘不会破坏指针，指针也不会污染窗口内容. */
+void gfx_fb_pixel(int x, int y, u32 c)
+{
+    if (!gfx_ok || (unsigned)x >= (unsigned)gw || (unsigned)y >= (unsigned)gh)
+        return;
+    fb[y * gw + x] = c;
+}
+
+void gfx_fb_restore(int x, int y, int w, int h)
+{
+    if (!gfx_ok)
+        return;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > gw) w = gw - x;
+    if (y + h > gh) h = gh - y;
+    for (int j = 0; j < h; j++) {
+        int yy = y + j;
+        for (int i = 0; i < w; i++)
+            fb[yy * gw + x + i] = back[yy * gw + x + i];
     }
 }

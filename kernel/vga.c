@@ -21,6 +21,13 @@ static u8  def_attr = 0x07;
 static bool cursor_vis = true;
 static char scroll_msg[40];
 
+/* GUI 终端窗口视口: 图形模式下把文本网格限制在一个矩形内 */
+static bool gui_mode;
+static int vp_x, vp_y;                 /* 视口像素原点 */
+static int vp_pw, vp_ph;               /* 视口像素尺寸 */
+static int vp_cols = VGA_COLS;         /* 视口文本列数 */
+static int vp_rows = TXT_ROWS;         /* 视口文本行数 */
+
 static u16 status_buf_cp[COLS_MAX] __attribute__((section(".highbss")));
 static u8   status_buf_attr[COLS_MAX] __attribute__((section(".highbss")));
 static bool status_active = false;
@@ -38,10 +45,17 @@ static int cw(void) { return gfx_active() ? gfx_cell_w() : 8; }
 static int ch(void) { return gfx_active() ? gfx_cell_h() : 16; }
 static int tcols(void)
 {
+    if (gui_mode)
+        return vp_cols;
     int n = gfx_active() ? gfx_w() / cw() : VGA_COLS;
     return n > COLS_MAX ? COLS_MAX : n;
 }
-static int trows(void) { return gfx_active() ? gfx_h() / ch() - 1 : TXT_ROWS; }
+static int trows(void)
+{
+    if (gui_mode)
+        return vp_rows;
+    return gfx_active() ? gfx_h() / ch() - 1 : TXT_ROWS;
+}
 
 /* ---------------------------------------------------------- 汉字字库 */
 #define GLYPH_BYTES 128              /* 16 行 x 8 字节 (4bit 灰度/像素) */
@@ -141,7 +155,7 @@ static void gfx_put_cell(int cpos, u16 cp, u8 a)
 {
     u32 fg = vga_pal[a & 0x0F];
     int w = cw(), h = ch();
-    int x = cpos * w, y = (trows() - 1) * h;
+    int x = vp_x + cpos * w, y = vp_y + (trows() - 1) * h;
     if (cp == RIGHT_HALF || cp == ' ') {
         gfx_fill(x, y, w, h, vga_pal[a >> 4]);
         return;
@@ -163,7 +177,7 @@ static void gfx_draw_cursor(bool on)
     int w = cw(), h = ch();
     if (!on) {
         if (cur_cx >= 0) {
-            gfx_fill(cur_cx * w, (trows() - 1) * h, w, h,
+            gfx_fill(vp_x + cur_cx * w, vp_y + (trows() - 1) * h, w, h,
                      vga_pal[def_attr >> 4]);
             gfx_put_cell(cur_cx, hist_cp[hist_head][cur_cx],
                          hist_attr[hist_head][cur_cx]);
@@ -174,7 +188,7 @@ static void gfx_draw_cursor(bool on)
     if (view_off > 0 || !cursor_vis)
         return;
     cur_cx = cur_col;
-    gfx_fill(cur_cx * w, (trows() - 1) * h, w, h,
+    gfx_fill(vp_x + cur_cx * w, vp_y + (trows() - 1) * h, w, h,
              vga_pal[attr & 0x0F]);
 }
 
@@ -183,7 +197,10 @@ static void render_gfx(void)
     int newest = hist_total - 1;
     int cols = tcols(), rows = trows();
     int w = cw(), h = ch();
-    gfx_clear(vga_pal[def_attr >> 4]);
+    if (gui_mode)
+        gfx_fill(vp_x, vp_y, vp_pw, vp_ph, vga_pal[def_attr >> 4]);
+    else
+        gfx_clear(vga_pal[def_attr >> 4]);
 
     for (int r = 0; r < rows; r++) {
         int logical = newest - view_off - (rows - 1 - r);
@@ -196,7 +213,7 @@ static void render_gfx(void)
             u16 cp = srcp[c];
             if (cp == RIGHT_HALF) { c++; continue; }
             u32 fg = vga_pal[srca[c] & 0x0F];
-            int x = c * w, y = r * h;
+            int x = vp_x + c * w, y = vp_y + r * h;
             if (cp < 128) {
                 if (cp != ' ') gfx_char(x, y, cp, fg);
                 c++;
@@ -215,12 +232,12 @@ static void render_gfx(void)
         int len = (int)strlen(scroll_msg);
         if (len > cols - 2)
             len = cols - 2;
-        gfx_text((cols - 1 - len) * w, (rows - 1) * h,
+        gfx_text(vp_x + (cols - 1 - len) * w, vp_y + (rows - 1) * h,
                  scroll_msg, vga_pal[C_YELLOW]);
     }
 
-    /* 状态栏: 屏幕底部 (含缩放余量一起填满) */
-    if (status_active) {
+    /* 状态栏: 仅全屏文本模式; GUI 模式下由任务栏显示时钟 */
+    if (status_active && !gui_mode) {
         int sy = rows * h;
         gfx_fill(0, sy, gfx_w(), gfx_h() - sy, vga_pal[C_LGRAY]);
         int c = 0;
@@ -232,33 +249,37 @@ static void render_gfx(void)
         }
     }
     gfx_draw_cursor(true);
-    gfx_flip();
+    if (gui_mode)
+        gfx_flip_rect(vp_x - 2, vp_y - 2, vp_pw + 4, vp_ph + 4);
+    else
+        gfx_flip();
 }
 
 /* 单字符追加到当前行 (图形模式局部刷新, 不整屏重绘) */
 static void gfx_append_cell(int cpos, u16 cp, u8 a)
 {
     int w = cw(), h = ch();
-    int x = cpos * w;
+    int x = vp_x + cpos * w;
+    int y = vp_y + (trows() - 1) * h;
     int span = is_wide(cp) ? w * 2 : w;
     if (cpos == cur_cx)
         gfx_draw_cursor(false);
     gfx_put_cell(cpos, cp, a);
-    gfx_flip_rect(x, (trows() - 1) * h, span + w, h);
+    gfx_flip_rect(x, y, span + w, h);
 }
 
 /* 光标移动: 只刷新新旧两个单元格 */
 static void gfx_cursor_move(void)
 {
     int w = cw(), h = ch();
-    int y = (trows() - 1) * h;
+    int y = vp_y + (trows() - 1) * h;
     int old = cur_cx;
     gfx_draw_cursor(false);
     if (old >= 0)
-        gfx_flip_rect((old > 0 ? old - 1 : 0) * w, y, w * 2, h);
+        gfx_flip_rect(vp_x + (old > 0 ? old - 1 : 0) * w, y, w * 2, h);
     gfx_draw_cursor(true);
     if (cur_cx >= 0)
-        gfx_flip_rect(cur_cx * w, y, w * 2, h);
+        gfx_flip_rect(vp_x + cur_cx * w, y, w * 2, h);
 }
 
 /* 行编辑收尾: 与上次显示的当前行做差, 只重绘变化过的单元.
@@ -295,7 +316,7 @@ void vga_line_sync(void)
     }
 
     if (minc >= 0)
-        gfx_flip_rect(minc * w, (trows() - 1) * h,
+        gfx_flip_rect(vp_x + minc * w, vp_y + (trows() - 1) * h,
                       (maxc - minc + 1) * w, h);
 
     for (int c = 0; c < cols; c++) {
@@ -431,13 +452,15 @@ void vga_set_status(const char *left, const char *right)
         }
     }
     status_active = true;
-    render();
+    if (!gui_mode)
+        render();
 }
 
 void vga_clear_status(void)
 {
     status_active = false;
-    render();
+    if (!gui_mode)
+        render();
 }
 
 void vga_set_scroll_msg(const char *s)
@@ -508,6 +531,11 @@ void vga_init(void)
     attr = 0x07;
     def_attr = 0x07;
     cursor_vis = true;
+    gui_mode = false;
+    vp_x = vp_y = 0;
+    vp_pw = vp_ph = 0;
+    vp_cols = VGA_COLS;
+    vp_rows = TXT_ROWS;
 
     for (int r = 0; r < HIST_LINES; r++)
         for (int c = 0; c < COLS_MAX; c++) {
@@ -530,6 +558,47 @@ void vga_refresh(void)
 {
     render();
     hw_cursor();
+}
+
+/* ------------------------------------------------ GUI 终端窗口视口 */
+bool vga_gui_mode(void) { return gui_mode; }
+
+void vga_gui_viewport(int x, int y, int w, int h)
+{
+    if (!gfx_active())
+        return;
+    gui_mode = true;
+    vp_x = x;
+    vp_y = y;
+    vp_pw = w;
+    vp_ph = h;
+    int cols = w / cw();
+    int rows = h / ch();
+    if (cols < 1) cols = 1;
+    if (cols > COLS_MAX) cols = COLS_MAX;
+    if (rows < 1) rows = 1;
+    if (rows > HIST_LINES) rows = HIST_LINES;
+    vp_cols = cols;
+    vp_rows = rows;
+    view_off = 0;
+    last_valid = false;
+    cur_cx = -1;
+    render();
+}
+
+void vga_gui_leave(void)
+{
+    if (!gui_mode)
+        return;
+    gui_mode = false;
+    vp_x = vp_y = 0;
+    vp_pw = vp_ph = 0;
+    vp_cols = VGA_COLS;
+    vp_rows = TXT_ROWS;
+    view_off = 0;
+    last_valid = false;
+    cur_cx = -1;
+    render();
 }
 
 void vga_set_color(u8 fg, u8 bg)

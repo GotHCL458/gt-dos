@@ -1151,6 +1151,26 @@ static void cmd_threads(void)
     sched_dump();
 }
 
+/* DESKTOP/GUI: 进入图形桌面; TEXTMODE: 返回纯文本 */
+static void cmd_gui(void)
+{
+    if (gui_active()) {
+        kprintf("desktop already active (TEXTMODE to leave)\n");
+        return;
+    }
+    if (!gui_enter())
+        ui_err("GUI unavailable: no graphics mode\n");
+}
+
+static void cmd_textmode(void)
+{
+    if (!gui_active()) {
+        kprintf("desktop not active\n");
+        return;
+    }
+    gui_leave();
+}
+
 /* 系统服务是 \GT-DOS\SERVICES 下的 .gtp 程序, 以 SYS 任务身份运行且受保护 */
 static void cmd_service(int argc, char **argv)
 {
@@ -1902,6 +1922,10 @@ static void execute(char *line)
         cmd_tasks();
     } else if (!strcasecmp(cmd, "threads")) {
         cmd_threads();
+    } else if (!strcasecmp(cmd, "desktop") || !strcasecmp(cmd, "gui")) {
+        cmd_gui();
+    } else if (!strcasecmp(cmd, "textmode")) {
+        cmd_textmode();
     } else if (!strcasecmp(cmd, "service") || !strcasecmp(cmd, "services")) {
         cmd_service(argc, argv);
     } else if (!strcasecmp(cmd, "tc")) {
