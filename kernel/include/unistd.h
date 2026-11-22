@@ -50,6 +50,21 @@
 #define GT_SYS_UNIXTIME 49
 #define GT_SYS_RICH     50
 
+/* GUI 画布 / 绘图 (GTAPI, 需先 gui_begin) */
+#define GT_SYS_GFX_INFO  64
+#define GT_SYS_GUI_BEGIN 65
+#define GT_SYS_GUI_END   66
+#define GT_SYS_GFX_FILL  67
+#define GT_SYS_GFX_FRAME 68
+#define GT_SYS_GFX_TEXT  69
+#define GT_SYS_GFX_CLEAR 70
+#define GT_SYS_GUI_FLUSH 71
+#define GT_SYS_GUI_POLL  72
+#define GT_SYS_GFX_BAR   73
+
+struct gt_gui_info { long w, h, scale, cw, ch; };
+struct gt_gui_event { long x, y, buttons, key; };
+
 static inline long gt_syscall3(long nr, long a, long b, long c)
 {
     long ret;
@@ -62,6 +77,21 @@ static inline long gt_syscall3(long nr, long a, long b, long c)
 static inline long gt_syscall(long nr, long a, long b, long c)
 {
     return gt_syscall3(nr, a, b, c);
+}
+
+/* 6 参数版本: 第 4/5/6 个参数走 r10/r8/r9 (与内核 syscall_handle 一致) */
+static inline long gt_syscall6(long nr, long a, long b, long c,
+                               long d, long e, long f)
+{
+    register long r10 __asm__("r10") = d;
+    register long r8  __asm__("r8")  = e;
+    register long r9  __asm__("r9")  = f;
+    long ret;
+    __asm__ __volatile__("int $0x21" : "=a"(ret)
+                         : "a"(nr), "D"(a), "S"(b), "d"(c),
+                           "r"(r10), "r"(r8), "r"(r9)
+                         : "rcx", "r11", "memory");
+    return ret;
 }
 
 static inline int gt_write(int fd, const void *buf, unsigned n)
@@ -119,5 +149,28 @@ static inline long gt_unixtime(void)
 /* 富文本 */
 static inline int gt_rich(const char *md, unsigned len, const char *title)
 { return (int)gt_syscall(GT_SYS_RICH, (long)md, len, (long)title); }
+
+/* ---------------------------------------------------------------- GUI 画布 */
+static inline int gt_gfx_info(struct gt_gui_info *gi)
+{ return (int)gt_syscall(GT_SYS_GFX_INFO, (long)gi, 0, 0); }
+static inline int gt_gui_begin(void)
+{ return (int)gt_syscall(GT_SYS_GUI_BEGIN, 0, 0, 0); }
+static inline void gt_gui_end(void)
+{ gt_syscall(GT_SYS_GUI_END, 0, 0, 0); }
+static inline void gt_gfx_clear(unsigned color)
+{ gt_syscall(GT_SYS_GFX_CLEAR, (long)color, 0, 0); }
+static inline void gt_gfx_fill(int x, int y, int w, int h, unsigned color)
+{ gt_syscall6(GT_SYS_GFX_FILL, x, y, w, h, color, 0); }
+static inline void gt_gfx_frame(int x, int y, int w, int h, unsigned color)
+{ gt_syscall6(GT_SYS_GFX_FRAME, x, y, w, h, color, 0); }
+static inline int gt_gfx_text(int x, int y, const char *s, unsigned color)
+{ return (int)gt_syscall6(GT_SYS_GFX_TEXT, x, y, (long)s, color, 0, 0); }
+static inline void gt_gfx_bar(int x, int y, int w, int h, int pct,
+                              unsigned color)
+{ gt_syscall6(GT_SYS_GFX_BAR, x, y, w, h, pct, color); }
+static inline void gt_gui_flush(void)
+{ gt_syscall(GT_SYS_GUI_FLUSH, 0, 0, 0); }
+static inline int gt_gui_poll(struct gt_gui_event *ev)
+{ return (int)gt_syscall(GT_SYS_GUI_POLL, (long)ev, 0, 0); }
 
 #endif /* _GT_UNISTD_H */

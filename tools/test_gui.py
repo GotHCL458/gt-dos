@@ -221,8 +221,8 @@ check("screendump menu", img_menu is not None)
 if img_menu:
     check("start menu drawn", color_count(img_menu, (0x22, 0x3a, 0x58)) > 200)
 
-# 悬停高亮: 移到 Theme 项 (5 项菜单的), 该项背景应变亮
-goto(68, 654); time.sleep(0.3)
+# 悬停高亮: 移到 Theme 项 (6 项菜单的), 该项背景应变亮
+goto(68, 630); time.sleep(0.3)
 img_hover = vm.shot(os.path.join(SRC, "gui_menu_hover.ppm"))
 check("screendump menu hover", img_hover is not None)
 if img_hover:
@@ -234,7 +234,7 @@ if img_menu:
     _, _, pm = img_menu
     theme_before = (pm[(300 * 1024 + 960) * 3], pm[(300 * 1024 + 960) * 3 + 1],
                     pm[(300 * 1024 + 960) * 3 + 2])
-goto(68, 654); click(); time.sleep(0.3)
+goto(68, 630); click(); time.sleep(0.3)
 img_theme = vm.shot(os.path.join(SRC, "gui_theme.ppm"))
 check("screendump theme", img_theme is not None)
 if img_theme and theme_before:
@@ -246,7 +246,7 @@ if img_theme and theme_before:
 
 # About 对话框 + OK 关闭
 goto(44, 755); click()
-goto(68, 678); click(); time.sleep(0.3)
+goto(68, 654); click(); time.sleep(0.3)
 img_about = vm.shot(os.path.join(SRC, "gui_about.ppm"))
 check("screendump about", img_about is not None)
 if img_about:
@@ -271,7 +271,7 @@ goto(660, 456); click(); time.sleep(0.2)
 
 # ---- 设置对话框: 主题按钮 / 复选框 / 亮度滑块 ----
 goto(44, 755); click()
-goto(68, 702); click(); time.sleep(0.3)
+goto(68, 678); click(); time.sleep(0.3)
 img_set = vm.shot(os.path.join(SRC, "gui_settings.ppm"))
 check("screendump settings", img_set is not None)
 wall0 = wall1 = None
@@ -324,6 +324,50 @@ if img_noicon:
 # 恢复图标并关闭设置
 goto(428, 362); click(); time.sleep(0.2)
 goto(652, 456); click(); time.sleep(0.2)
+
+# ---- 控件演示: 单选组 / 进度条 / 列表 ----
+goto(44, 755); click()
+goto(68, 702); click(); time.sleep(0.5)
+img_wd = vm.shot(os.path.join(SRC, "gui_widgets.ppm"))
+check("screendump widgets", img_wd is not None)
+wall_wd = None
+if img_wd:
+    _, _, pw = img_wd
+    c = (pw[(274 * 1024 + 652) * 3], pw[(274 * 1024 + 652) * 3 + 1],
+         pw[(274 * 1024 + 652) * 3 + 2])
+    print(f"       widgets title pixel {c}")
+    check("widgets dialog drawn", c == (0x1f, 0x4e, 0x8a))
+    # 进度条已开始填充
+    pc = (pw[(348 * 1024 + 368) * 3], pw[(348 * 1024 + 368) * 3 + 1],
+          pw[(348 * 1024 + 368) * 3 + 2])
+    check("widgets progress drawn", pc == (0x4f, 0x9f, 0xdf), f"pixel={pc}")
+    wall_wd = (pw[(300 * 1024 + 960) * 3], pw[(300 * 1024 + 960) * 3 + 1],
+               pw[(300 * 1024 + 960) * 3 + 2])
+
+# 单选 Green: 壁纸配色变化
+goto(460, 304); click(); time.sleep(0.3)
+img_wd2 = vm.shot(os.path.join(SRC, "gui_widgets_radio.ppm"))
+check("screendump widgets radio", img_wd2 is not None)
+if img_wd2 and wall_wd:
+    _, _, pr2 = img_wd2
+    w2 = (pr2[(300 * 1024 + 960) * 3], pr2[(300 * 1024 + 960) * 3 + 1],
+          pr2[(300 * 1024 + 960) * 3 + 2])
+    print(f"       widgets radio {wall_wd} -> {w2}")
+    check("widgets radio works", w2 != wall_wd)
+
+# 列表选择 Beta: 选中行高亮
+goto(400, 396); click(); time.sleep(0.3)
+img_wd3 = vm.shot(os.path.join(SRC, "gui_widgets_list.ppm"))
+check("screendump widgets list", img_wd3 is not None)
+if img_wd3:
+    _, _, pl = img_wd3
+    c = (pl[(390 * 1024 + 370) * 3], pl[(390 * 1024 + 370) * 3 + 1],
+         pl[(390 * 1024 + 370) * 3 + 2])
+    print(f"       list selected pixel {c}")
+    check("widgets list selection", c == (0x2a, 0x4a, 0x70))
+
+# 关闭控件演示
+goto(636, 480); click(); time.sleep(0.2)
 
 # 最大化: 标题栏应铺到屏幕左侧 (x=10,y=8)
 goto(863, 95); click(); time.sleep(0.4)

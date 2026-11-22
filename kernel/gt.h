@@ -143,6 +143,7 @@ void gfx_clear(u32 c);
 void gfx_fill(int x, int y, int w, int h, u32 c);
 void gfx_frame(int x, int y, int w, int h, u32 c);
 void gfx_bevel(int x, int y, int w, int h, u32 light, u32 dark);
+void gfx_bar(int x, int y, int w, int h, int pct, u32 c);
 int  gfx_char(int x, int y, u32 cp, u32 fg);   /* 返回前进像素宽 */
 int  gfx_text(int x, int y, const char *s, u32 fg);
 int  gfx_text_w(const char *s);
@@ -158,6 +159,10 @@ bool gui_enter(void);                 /* 进入桌面 (需图形模式) */
 void gui_leave(void);                 /* 返回纯文本控制台 */
 void gui_pump(void);                  /* 输入空闲时处理鼠标/时钟 */
 void gui_cursor_refresh(void);        /* 控制台提交后立即重画指针 */
+bool gui_canvas_begin(void);          /* 用户程序接管全屏画布 (需桌面) */
+void gui_canvas_end(void);            /* 恢复桌面 */
+void gui_canvas_reset(void);          /* exec 返回后的兜底恢复 */
+bool gui_canvas_active(void);
 
 /* 控制台视口 (GUI 终端窗口) */
 void vga_gui_viewport(int x, int y, int w, int h);
@@ -465,6 +470,15 @@ struct gt_screen {
     u64 rows;
 };
 
+/* GUI 画布信息 / 输入事件 (SYS_GFX_INFO / SYS_GUI_POLL).
+   字段用 long: TC 的 int 为 8 字节, 与内核 ABI 保持一致. */
+struct gt_gui_info {
+    long w, h, scale, cw, ch;
+};
+struct gt_gui_event {
+    long x, y, buttons, key;
+};
+
 #define GT_VERSION "GT-DOS 0.10"
 
 /* 当前 shell 工作目录 (不含盘符, "" = 根) */
@@ -520,7 +534,11 @@ enum {
     SYS_MUTEX_CREATE = 56, SYS_MUTEX_LOCK = 57, SYS_MUTEX_UNLOCK = 58,
     SYS_THREAD_DETACH = 59,
     SYS_CRITICAL_ENTER = 60, SYS_CRITICAL_EXIT = 61,
-    SYS_MUTEX_TRYLOCK = 62, SYS_MUTEX_DESTROY = 63
+    SYS_MUTEX_TRYLOCK = 62, SYS_MUTEX_DESTROY = 63,
+    SYS_GFX_INFO = 64, SYS_GUI_BEGIN = 65, SYS_GUI_END = 66,
+    SYS_GFX_FILL = 67, SYS_GFX_FRAME = 68, SYS_GFX_TEXT = 69,
+    SYS_GFX_CLEAR = 70, SYS_GUI_FLUSH = 71, SYS_GUI_POLL = 72,
+    SYS_GFX_BAR = 73
 };
 void syscall_handle(struct regs *r);    /* 由 isr_handler 分派 */
 

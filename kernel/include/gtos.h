@@ -57,6 +57,21 @@
  *   48  SYS_VERSION buf, cap                               长度或 -1
  *   49  SYS_UNIXTIME-                                      Unix 秒或 -1
  *   50  SYS_RICH    md, len, title                         0 或 -1
+ *   64  SYS_GFX_INFO  gt_gui_info*                         0 或 -1
+ *   65  SYS_GUI_BEGIN -                                    0 或 -1 (需桌面)
+ *   66  SYS_GUI_END   -                                    0
+ *   67  SYS_GFX_FILL  x, y, w, h, color                     0
+ *   68  SYS_GFX_FRAME x, y, w, h, color                     0
+ *   69  SYS_GFX_TEXT  x, y, str, color                      文本像素宽
+ *   70  SYS_GFX_CLEAR color                                 0
+ *   71  SYS_GUI_FLUSH -                                    0
+ *   72  SYS_GUI_POLL  gt_gui_event*                         0 或 -1
+ *   73  SYS_GFX_BAR   x, y, w, h, pct, color                0
+ *
+ * GUI 画布: 先 GUI_BEGIN 接管全屏 (需已进入桌面), 用 FILL/FRAME/TEXT/BAR
+ * 画到后台缓冲, GUI_FLUSH 提交, GUI_POLL 读取鼠标/键盘, 最后 GUI_END 恢复
+ * 桌面. 配套 C 库见 <GUI.H> (gt_panel/gt_button/gt_progress/gt_checkbox/
+ * gt_radio). 6 参数调用经 r10/r8/r9 传递.
  *
  * SYS_RICH 直接用 Markdown 子集把一段文本渲染到控制台 (标题/粗体/斜体/
  * 删除线/代码/链接/图片/引用/列表/任务/表格/围栏代码块).
@@ -115,6 +130,21 @@ long gt_unixtime(void);
 
 /* 富文本 (Markdown 子集) */
 int  gt_rich(const char *md, unsigned len, const char *title);
+
+/* ------------------------------------------------------- GUI 画布 / 绘图 */
+struct gt_gui_info { long w, h, scale, cw, ch; };
+struct gt_gui_event { long x, y, buttons, key; };
+
+int  gt_gfx_info(struct gt_gui_info *gi);
+int  gt_gui_begin(void);
+void gt_gui_end(void);
+void gt_gfx_clear(unsigned color);
+void gt_gfx_fill(int x, int y, int w, int h, unsigned color);
+void gt_gfx_frame(int x, int y, int w, int h, unsigned color);
+int  gt_gfx_text(int x, int y, const char *s, unsigned color);
+void gt_gfx_bar(int x, int y, int w, int h, int pct, unsigned color);
+void gt_gui_flush(void);
+int  gt_gui_poll(struct gt_gui_event *ev);
 
 /* 进程/电源 */
 void gt_exit(int code);

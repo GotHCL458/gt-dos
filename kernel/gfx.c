@@ -265,6 +265,18 @@ void gfx_bevel(int x, int y, int w, int h, u32 light, u32 dark)
     }
 }
 
+/* 进度条: 外框 + 已填充比例 (供内核控件和用户 GUI 库共用) */
+void gfx_bar(int x, int y, int w, int h, int pct, u32 c)
+{
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    gfx_fill(x, y, w, h, 0x0e1622);
+    gfx_bevel(x, y, w, h, 0xbfd0e8, 0x101820);
+    int iw = w - 4;
+    if (iw < 0) iw = 0;
+    gfx_fill(x + 2, y + 2, iw * pct / 100, h - 4, c);
+}
+
 /* 4bit 灰度 alpha 混合画一个像素: lvl 0..15 -> 0..100% */
 static inline void px_blend(int x, int y, u8 lvl, u32 fg)
 {

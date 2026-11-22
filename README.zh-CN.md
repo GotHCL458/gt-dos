@@ -93,8 +93,23 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 | | | 49 | `SYS_UNIXTIME` |
 | | | 50 | `SYS_RICH` |
 
-- 套接字调用最多使用六个参数（`rdi`、`rsi`、`rdx`、`rcx`、`r8`、`r9`）；
+GUI 绘图与用户画布使用 64–73 号调用：
+
+| # | 调用 | # | 调用 |
+| --- | --- | --- | --- |
+| 64 | `SYS_GFX_INFO` | 69 | `SYS_GFX_TEXT` |
+| 65 | `SYS_GUI_BEGIN` | 70 | `SYS_GFX_CLEAR` |
+| 66 | `SYS_GUI_END` | 71 | `SYS_GUI_FLUSH` |
+| 67 | `SYS_GFX_FILL` | 72 | `SYS_GUI_POLL` |
+| 68 | `SYS_GFX_FRAME` | 73 | `SYS_GFX_BAR` |
+
+- 套接字与 GUI 调用最多使用六个参数（`rdi`、`rsi`、`rdx`、`r10`、`r8`、`r9`）；
   前三项与原 ABI 相同，既有程序不受影响
+- `SYS_GUI_BEGIN` 在桌面激活时接管全屏，`SYS_GFX_*` 画到后台缓冲，
+  `SYS_GUI_FLUSH` 提交，`SYS_GUI_POLL` 取得鼠标位置/按键与键盘输入，
+  `SYS_GUI_END` 恢复桌面；C 库 `<gui.h>`（TC 模块 `gui.c`）提供
+  `gt_panel`、`gt_button`、`gt_checkbox`、`gt_radio`、`gt_progress`、`gt_hit`，
+  示例为 `\SDK\GUI_DEMO.C`
 
 - 基于 exFAT 的 `open/read/write/close/seek` fd 层（fd 0/1/2 为控制台），
   目录句柄经 `SYS_OPENDIR`/`SYS_READDIR` 遍历
@@ -227,10 +242,13 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
   （标题栏、`M` 最大化/`R` 还原、关闭按钮）以及底部任务栏
   （`GT-DOS` 开始按钮、说明文字、运行时钟）
 - 开始菜单（点击任务栏 `GT-DOS`）：`Terminal` 收起菜单，`Theme` 轮换三套壁纸配色，
-  `About` 打开关于对话框，`Settings` 打开设置面板，`Exit GUI` 返回纯文本
+  `About` 打开关于对话框，`Settings` 打开设置面板，`Widgets` 打开控件演示，
+  `Exit GUI` 返回纯文本
 - 设置面板（模态，点 `Close` 或面板外部关闭）：`<` / `>` 主题切换按钮、
   `Desktop icons` 复选框（显隐桌面图标）、`24-hour clock` 复选框
   （取消后显示带 AM/PM 的 12 小时制）以及可拖动的 `Brightness` 壁纸亮度滑块
+- 控件演示（`Widgets`）：主题单选组、自动动画的进度条和可点击选择的列表；
+  C 程序可通过 `<gui.h>` 使用同一套控件（见系统调用章节）
 - 终端窗口用 `vga_gui_viewport` 把文本网格裁切到客户区，窗口内仍是完整的
   Shell / TC 程序 / 编辑器，控制台光标与滚动照常工作
 - 窗口可拖动：按住标题栏（按钮除外）移动，窗口被限制在任务栏之上；重绘会
@@ -432,7 +450,8 @@ rust/
   gtmkfs/            exFAT 格式化/填充 + 加密种子文件 (构建期工具)
   mkfont/            GDI 字模生成器 (4bit 灰度 font.gtd + cpm.gtd)
 tools/
-  sdk/               系统内 SDK: tc.h, net.h, hello.c, fib.c, net.c, readme.txt
+  sdk/               系统内 SDK: tc.h, net.h, gui.h, gui.c, gui_demo.c, hello.c,
+                     fib.c, net.c, readme.txt
   hello.asm          示例程序 (INT 0x21 SYS_WRITE/SYS_EXIT), 种子为 HELLO.GTP
   demo.asm           示例程序: .gtd 读取/seek、stat、.gtl 库调用 (DEMO.GTP)
   sample_lib.asm     示例共享库, 导出 add/mul (SAMPLE.GTL)
@@ -463,7 +482,7 @@ build.py             构建脚本与镜像组装
 
 ## 说明与限制
 
-- 内核目前为 585 扇区（299,376 字节，含 48 字节 `GTK1` 尾部），构建上限 640 扇区
+- 内核目前为 593 扇区（303,472 字节，含 48 字节 `GTK1` 尾部），构建上限 640 扇区
   （320KB），加载区间为 `0x10000` 到 `0x60000`；链接脚本同时断言
   `.bss <= 0xA0000` 与 `.highbss <= LIB_BASE`。
 - GDT 在低端内存（0x6800）由入口代码构造，而非放在 `.data`：CPU 装载段寄存器

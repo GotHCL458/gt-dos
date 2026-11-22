@@ -462,6 +462,70 @@ void syscall_handle(struct regs *r)
     case SYS_MUTEX_DESTROY:
         r->rax = (u64)mutex_destroy((int)r->rdi);
         break;
+    /* ---------------------------------------------- GUI 画布 / 绘图 (GTAPI) */
+    case SYS_GFX_INFO: {
+        struct gt_gui_info *gi = (struct gt_gui_info *)r->rdi;
+        if (!gi || !gfx_active()) { r->rax = (u64)-1; break; }
+        gi->w = gfx_w();
+        gi->h = gfx_h();
+        gi->scale = gfx_scale();
+        gi->cw = gfx_cell_w();
+        gi->ch = gfx_cell_h();
+        r->rax = 0;
+        break;
+    }
+    case SYS_GUI_BEGIN:
+        r->rax = gui_canvas_begin() ? 0 : (u64)-1;
+        break;
+    case SYS_GUI_END:
+        gui_canvas_end();
+        r->rax = 0;
+        break;
+    case SYS_GFX_CLEAR:
+        if (!gfx_active()) { r->rax = (u64)-1; break; }
+        gfx_clear((u32)r->rdi);
+        r->rax = 0;
+        break;
+    case SYS_GFX_FILL:
+        if (!gfx_active()) { r->rax = (u64)-1; break; }
+        gfx_fill((int)r->rdi, (int)r->rsi, (int)r->rdx,
+                 (int)r->r10, (u32)r->r8);
+        r->rax = 0;
+        break;
+    case SYS_GFX_FRAME:
+        if (!gfx_active()) { r->rax = (u64)-1; break; }
+        gfx_frame((int)r->rdi, (int)r->rsi, (int)r->rdx,
+                  (int)r->r10, (u32)r->r8);
+        r->rax = 0;
+        break;
+    case SYS_GFX_TEXT:
+        if (!gfx_active()) { r->rax = (u64)-1; break; }
+        r->rax = (u64)gfx_text((int)r->rdi, (int)r->rsi,
+                               (const char *)r->rdx, (u32)r->r10);
+        break;
+    case SYS_GFX_BAR:
+        if (!gfx_active()) { r->rax = (u64)-1; break; }
+        gfx_bar((int)r->rdi, (int)r->rsi, (int)r->rdx, (int)r->r10,
+                (int)r->r8, (u32)r->r9);
+        r->rax = 0;
+        break;
+    case SYS_GUI_FLUSH:
+        if (gfx_active()) {
+            gfx_flip();
+            gfx_poked = false;
+        }
+        r->rax = 0;
+        break;
+    case SYS_GUI_POLL: {
+        struct gt_gui_event *ev = (struct gt_gui_event *)r->rdi;
+        if (!ev) { r->rax = (u64)-1; break; }
+        ev->x = mouse_x();
+        ev->y = mouse_y();
+        ev->buttons = mouse_buttons();
+        ev->key = keyboard_read();
+        r->rax = 0;
+        break;
+    }
     case SYS_EXIT:
         if (!exec_is_active()) { r->rax = (u64)-1; break; }
         if (!sched_current_is_main()) {

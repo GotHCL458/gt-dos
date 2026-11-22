@@ -672,6 +672,17 @@ def main():
           vm.expect("API Rich", 4000) and vm.expect("alpha", 4000),
           vm.buf[-500:])
 
+    # C GUI 库: 编译并运行 \sdk\gui_demo.c (绘制面板/按钮/复选框/单选/进度条,
+    # 结束后 gui_end 恢复桌面)
+    vm.buf = ""
+    vm.cmd("tc \\sdk\\gui_demo.c", 5000)
+    check("tc gui library compiles", vm.expect("Compiled ", 8000),
+          vm.buf[-600:])
+    vm.buf = ""
+    vm.cmd("run gui_demo.gtp", 5000)
+    check("gui library demo runs", vm.expect("gui demo done", 9000),
+          vm.buf[-600:])
+
     # 编译优化级别与参数联动
     optp = [
         "#include <stdio.h>",

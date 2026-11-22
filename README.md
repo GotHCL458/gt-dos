@@ -97,8 +97,23 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
 | | | 49 | `SYS_UNIXTIME` |
 | | | 50 | `SYS_RICH` |
 
-- Socket calls may use up to six arguments (`rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9`); the first
-  three follow the original ABI, so existing programs are unaffected
+GUI drawing and the user GUI canvas use calls 64–73:
+
+| # | Call | # | Call |
+| --- | --- | --- | --- |
+| 64 | `SYS_GFX_INFO` | 69 | `SYS_GFX_TEXT` |
+| 65 | `SYS_GUI_BEGIN` | 70 | `SYS_GFX_CLEAR` |
+| 66 | `SYS_GUI_END` | 71 | `SYS_GUI_FLUSH` |
+| 67 | `SYS_GFX_FILL` | 72 | `SYS_GUI_POLL` |
+| 68 | `SYS_GFX_FRAME` | 73 | `SYS_GFX_BAR` |
+
+- Socket and GUI calls may use up to six arguments (`rdi`, `rsi`, `rdx`, `r10`, `r8`, `r9`);
+  the first three follow the original ABI, so existing programs are unaffected
+- `SYS_GUI_BEGIN` takes over the full screen while the desktop is active, `SYS_GFX_*`
+  render into the back buffer, `SYS_GUI_FLUSH` presents it, `SYS_GUI_POLL` returns
+  mouse position/buttons and a key, and `SYS_GUI_END` restores the desktop. The C
+  library `<gui.h>` (TC module `gui.c`) adds `gt_panel`, `gt_button`, `gt_checkbox`,
+  `gt_radio`, `gt_progress` and `gt_hit`; the demo is `\SDK\GUI_DEMO.C`
 
 - A small `open/read/write/close/seek` fd layer over exFAT (fds 0/1/2 are the console),
   plus directory handles through `SYS_OPENDIR`/`SYS_READDIR`
@@ -255,11 +270,15 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
   and a taskbar with a `GT-DOS` start button, caption and a running clock
 - Start menu (click the `GT-DOS` button): `Terminal` closes the menu, `Theme`
   cycles three wallpaper palettes, `About` opens a modal dialog, `Settings`
-  opens the control panel and `Exit GUI` returns to plain text
+  opens the control panel, `Widgets` opens the control demo and `Exit GUI`
+  returns to plain text
 - Settings panel (modal, close with `Close` or a click outside): `<` / `>`
   theme buttons, a `Desktop icons` checkbox, a `24-hour clock` checkbox
   (unchecked shows a 12-hour clock with AM/PM) and a draggable `Brightness`
   slider that dims the wallpaper
+- Widgets panel (start menu `Widgets`): a radio group for the wallpaper theme,
+  an animated progress bar and a selectable list; the same control set is
+  available to C programs through `<gui.h>` (see the system-call section)
 - `vga_gui_viewport` clips the text grid to the window client area, so the
   window still hosts the complete shell, TC programs and the editor with the
   normal console cursor and scrolling
@@ -482,7 +501,8 @@ rust/
   gtmkfs/            exFAT formatter/populator + encrypted seed files (build-time tool)
   mkfont/            GDI font generator (4-bit grayscale font.gtd + cpm.gtd)
 tools/
-  sdk/               in-system SDK: tc.h, net.h, hello.c, fib.c, net.c, readme.txt
+  sdk/               in-system SDK: tc.h, net.h, gui.h, gui.c, gui_demo.c, hello.c,
+                     fib.c, net.c, readme.txt
   hello.asm          example program (INT 0x21 SYS_WRITE/SYS_EXIT), seeded as HELLO.GTP
   demo.asm           example program: .gtd read/seek, stat, .gtl library call (DEMO.GTP)
   sample_lib.asm     example shared library exporting add/mul (SAMPLE.GTL)
@@ -514,7 +534,7 @@ live in stack slots, no register allocation).
 
 ## Notes and Limitations
 
-- The kernel currently fits in 585 sectors (299,376 bytes including the 48-byte `GTK1`
+- The kernel currently fits in 593 sectors (303,472 bytes including the 48-byte `GTK1`
   trailer); the build cap is 640 sectors (320 KB), loaded between `0x10000` and `0x60000`.
   The linker also asserts `.bss <= 0xA0000` and `.highbss <= LIB_BASE`.
 - The GDT is built in low memory (0x6800) rather than `.data`: loading a segment register

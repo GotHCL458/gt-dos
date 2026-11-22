@@ -44,6 +44,7 @@ static int drag_dx, drag_dy;
 static bool menu_open;                  /* 开始菜单 */
 static bool about_open;                 /* 关于对话框 */
 static bool settings_open;              /* 设置对话框 */
+static bool widgets_open;               /* 控件演示对话框 */
 static bool maximized;                  /* 窗口最大化 */
 static bool show_icons = true;          /* 显示桌面图标 */
 static bool clock24 = true;             /* 24 小时制时钟 */
@@ -68,6 +69,15 @@ static int SD_C2_X, SD_C2_Y;
 static int SD_SL_X, SD_SL_Y, SD_SL_W, SD_SL_H;
 static int SD_CLOSE_X, SD_CLOSE_Y, SD_CLOSE_W, SD_CLOSE_H;
 static int GX, GY, GWH;                 /* 窗口右下角缩放握把 */
+static int WD_X, WD_Y, WD_W, WD_H;      /* 控件演示对话框 */
+static int WR1_X, WR_Y, WR_SZ, WR_STEP; /* 单选组 */
+static int WP_LAB_Y, WP_X, WP_Y, WP_W, WP_H;  /* 进度条 */
+static int WL_X, WL_Y, WL_W, WL_IH;     /* 列表 */
+static int WC_X, WC_Y, WC_W, WC_H;      /* 关闭按钮 */
+static int list_sel;                    /* 列表选中项 */
+static int wdg_progress;                /* 演示进度 0..100 */
+static u32 wdg_last;                    /* 上次进度刷新 tick */
+static bool app_canvas;                 /* 用户程序占用全屏画布 */
 static int ICON_X, ICON_Y, ICON_W, ICON_H, ICON_STEP;  /* 桌面图标 */
 static int icon_sel = -1;               /* 最近点击的图标 */
 
@@ -148,7 +158,7 @@ void gui_cursor_refresh(void)
 {
     if (!active)
         return;
-    if (menu_open || about_open || settings_open) {
+    if (menu_open || about_open || settings_open || widgets_open) {
         draw_overlays();                                  /* 重画进后台缓冲 */
         if (menu_open)
             gfx_fb_restore(MN_X - 2, MN_Y - 2, MN_W + 4, MN_H + 4);
@@ -156,6 +166,8 @@ void gui_cursor_refresh(void)
             gfx_fb_restore(AB_X - 2, AB_Y - 2, AB_W + 4, AB_H + 4);
         if (settings_open)
             gfx_fb_restore(SD_X - 2, SD_Y - 2, SD_W + 4, SD_H + 4);
+        if (widgets_open)
+            gfx_fb_restore(WD_X - 2, WD_Y - 2, WD_W + 4, WD_H + 4);
     }
     if (cur_x < 0)
         return;
@@ -342,32 +354,32 @@ static void draw_button(int x, int y, int w, int h, const char *label,
 }
 
 /* ------------------------------------------------------- 浮层: 菜单/对话框 */
-/* 开始菜单: 5 个可点项 (Terminal / Theme / About / Settings / Exit GUI) */
+/* 开始菜单: 6 个可点项 (Terminal / Theme / About / Settings / Widgets / Exit) */
 static void draw_menu(void)
 {
     int ch = gfx_cell_h();
-    static const char *items[5] = {
-        "Terminal", "Theme", "About", "Settings", "Exit GUI"
+    static const char *items[6] = {
+        "Terminal", "Theme", "About", "Settings", "Widgets", "Exit GUI"
     };
     gfx_fill(MN_X, MN_Y, MN_W, MN_H, 0x1b2434);
     gfx_bevel(MN_X, MN_Y, MN_W, MN_H, 0xbfd0e8, 0x0c1220);
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 6; i++) {
         int y = MN_Y + 4 + i * MI_H;
         bool hot = i == menu_hot;
         gfx_fill(MN_X + 2, y + 1, MN_W - 4, MI_H - 2,
                  hot ? 0x2a4a70 : 0x223a58);
         gfx_text(MN_X + 10, y + (MI_H - ch) / 2, items[i],
-                 i == 4 ? 0xff9a9a : 0xdce9ff);
+                 i == 5 ? 0xff9a9a : 0xdce9ff);
     }
 }
 
-/* 命中开始菜单项; 返回 0..4, 未命中 -1 */
+/* 命中开始菜单项; 返回 0..5, 未命中 -1 */
 static int menu_pick(int x, int y)
 {
     if (inside(x, y, MN_X, MN_Y, MN_W, MN_H)) {
         int idx = (y - (MN_Y + 4)) / MI_H;
         if (idx < 0) idx = 0;
-        if (idx > 4) idx = 4;
+        if (idx > 5) idx = 5;
         return idx;
     }
     return -1;
@@ -459,6 +471,49 @@ static void draw_settings(void)
                 0x2f6f9f);
 }
 
+/* 单选按钮: 方框 + 选中时的中心方块 */
+static void draw_radio(int x, int y, int sz, bool on, const char *label)
+{
+    int ch = gfx_cell_h();
+    gfx_fill(x, y, sz, sz, 0x0e1622);
+    gfx_bevel(x, y, sz, sz, 0xbfd0e8, 0x101820);
+    if (on)
+        gfx_fill(x + sz / 4, y + sz / 4, sz / 2, sz / 2, C_ACCENT);
+    gfx_text(x + sz + 6, y + (sz - ch) / 2, label, on ? 0xdce9ff : 0x8fa8c8);
+}
+
+/* 控件演示对话框: 单选组 + 进度条 + 列表 (点击选择) */
+static void draw_widgets(void)
+{
+    int ch = gfx_cell_h();
+    static const char *rlab[3] = { "Blue", "Green", "Purple" };
+    static const char *items[4] = { "Alpha", "Beta", "Gamma", "Delta" };
+
+    gfx_fill(WD_X, WD_Y, WD_W, WD_H, 0x1b2434);
+    gfx_bevel(WD_X, WD_Y, WD_W, WD_H, 0xbfd0e8, 0x0c1220);
+    gfx_fill(WD_X + 2, WD_Y + 2, WD_W - 4, TITLE_H - 2, C_TITLE);
+    gfx_text(WD_X + 10, WD_Y + (TITLE_H - ch) / 2, "Widgets", C_TEXT);
+
+    for (int i = 0; i < 3; i++)
+        draw_radio(WR1_X + i * WR_STEP, WR_Y, WR_SZ, theme == i, rlab[i]);
+
+    gfx_text(WD_X + 12, WP_LAB_Y, "Progress", 0x8fa8c8);
+    gfx_bar(WP_X, WP_Y, WP_W, WP_H, wdg_progress, 0x4f9fdf);
+
+    gfx_fill(WL_X, WL_Y, WL_W, WL_IH * 4, 0x0e1622);
+    gfx_bevel(WL_X, WL_Y, WL_W, WL_IH * 4, 0xbfd0e8, 0x101820);
+    for (int i = 0; i < 4; i++) {
+        int iy = WL_Y + i * WL_IH;
+        bool on = i == list_sel;
+        if (on)
+            gfx_fill(WL_X + 2, iy + 1, WL_W - 4, WL_IH - 2, 0x2a4a70);
+        gfx_text(WL_X + 8, iy + (WL_IH - ch) / 2, items[i],
+                 on ? 0xdce9ff : 0x9fb3cc);
+    }
+
+    draw_button(WC_X, WC_Y, WC_W, WC_H, "Close", 0x2f6f9f);
+}
+
 /* 浮层绘制 (菜单/对话框): 画在后台缓冲, 随后 gfx_flip 一并提交.
    这样指针移动时 gfx_fb_restore 能从后台缓冲正确恢复, 不会擦掉菜单. */
 static void draw_overlays(void)
@@ -469,6 +524,8 @@ static void draw_overlays(void)
         draw_about();
     if (settings_open)
         draw_settings();
+    if (widgets_open)
+        draw_widgets();
 }
 
 /* 最大化/还原 (保存并恢复窗口位置与尺寸) */
@@ -526,7 +583,7 @@ static void layout(void)
     MB_H = TASK_H;
     MI_H = ch + 8;
     MN_W = 16 * cw;
-    MN_H = 5 * MI_H + 8;
+    MN_H = 6 * MI_H + 8;
     MN_X = 4;
     MN_Y = gh - TASK_H - MN_H;
     MX_W = BT_W;
@@ -571,6 +628,31 @@ static void layout(void)
     SD_CLOSE_H = ch + 8;
     SD_CLOSE_X = SD_X + SD_W - SD_CLOSE_W - 12;
     SD_CLOSE_Y = SD_Y + SD_H - SD_CLOSE_H - 12;
+
+    /* 控件演示对话框 */
+    WD_W = 40 * cw;
+    if (WD_W > gw - 40) WD_W = gw - 40;
+    WD_H = 15 * ch;
+    if (WD_H > gh - 40) WD_H = gh - 40;
+    WD_X = (gw - WD_W) / 2;
+    WD_Y = (gh - WD_H) / 2;
+    WR_SZ = ch;
+    WR_Y = WD_Y + TITLE_H + 8;
+    WR1_X = WD_X + 12;
+    WR_STEP = 11 * cw;
+    WP_LAB_Y = WR_Y + WR_SZ + 10;
+    WP_X = WD_X + 12;
+    WP_Y = WP_LAB_Y + ch + 2;
+    WP_W = WD_W - 24;
+    WP_H = ch;
+    WL_X = WD_X + 12;
+    WL_Y = WP_Y + WP_H + 10;
+    WL_W = WD_W - 24;
+    WL_IH = ch + 4;
+    WC_W = 6 * cw;
+    WC_H = ch + 8;
+    WC_X = WD_X + WD_W - WC_W - 12;
+    WC_Y = WD_Y + WD_H - WC_H - 12;
 
     /* 窗口右下角缩放握把 */
     GWH = 16;
@@ -661,12 +743,16 @@ bool gui_enter(void)
     menu_open = false;
     about_open = false;
     settings_open = false;
+    widgets_open = false;
     maximized = false;
     theme = 0;
     icon_sel = -1;
     menu_hot = -1;
     slider_drag = false;
     resizing = false;
+    app_canvas = false;
+    list_sel = 0;
+    wdg_progress = 0;
     show_icons = true;
     clock24 = true;
     bright = 100;
@@ -692,16 +778,51 @@ void gui_leave(void)
     menu_open = false;
     about_open = false;
     settings_open = false;
+    widgets_open = false;
     maximized = false;
     menu_hot = -1;
     slider_drag = false;
     resizing = false;
+    app_canvas = false;
     if (cur_x >= 0)
         gfx_fb_restore(cur_x - 1, cur_y - 1, cs_w + 2, cs_h + 2);
     cur_x = cur_y = -1;
     vga_gui_leave();
     kprintf("[gui] text mode\n");
 }
+
+/* ---------------------------------------------- 用户程序全屏画布 (GUI 库) */
+/* 程序调用 SYS_GUI_BEGIN 接管屏幕: 桌面停止处理输入与时钟重绘, 程序自己
+   通过 gfx 系统调用绘制并 flush; SYS_GUI_END 恢复桌面. */
+bool gui_canvas_begin(void)
+{
+    if (!gfx_active() || !active)
+        return false;
+    menu_open = false;
+    about_open = false;
+    settings_open = false;
+    widgets_open = false;
+    menu_hot = -1;
+    app_canvas = true;
+    return true;
+}
+
+void gui_canvas_end(void)
+{
+    if (!app_canvas)
+        return;
+    app_canvas = false;
+    if (active)
+        redraw_desktop();
+}
+
+/* exec 返回后兜底: 程序未调用 GUI_END 或异常退出时也恢复桌面 */
+void gui_canvas_reset(void)
+{
+    gui_canvas_end();
+}
+
+bool gui_canvas_active(void) { return app_canvas; }
 
 static bool inside(int x, int y, int bx, int by, int bw, int bh)
 {
@@ -736,6 +857,8 @@ void gui_pump(void)
 {
     if (!active)
         return;
+    if (app_canvas)
+        return;                     /* 用户程序接管屏幕, 桌面不处理输入 */
 
     int btn = mouse_buttons();
     int x = mouse_x(), y = mouse_y();
@@ -776,6 +899,26 @@ void gui_pump(void)
                 settings_open = false;
                 redraw_desktop();
             }
+        } else if (widgets_open) {
+            /* 模态控件演示: 单选组 / 列表 / 关闭 */
+            int r = -1, li = -1;
+            for (int i = 0; i < 3; i++)
+                if (inside(x, y, WR1_X + i * WR_STEP, WR_Y, WR_STEP, WR_SZ))
+                    r = i;
+            for (int i = 0; i < 4; i++)
+                if (inside(x, y, WL_X, WL_Y + i * WL_IH, WL_W, WL_IH))
+                    li = i;
+            if (r >= 0) {
+                theme = r;
+                redraw_desktop();
+            } else if (li >= 0) {
+                list_sel = li;
+                redraw_desktop();
+            } else if (inside(x, y, WC_X, WC_Y, WC_W, WC_H) ||
+                       !inside(x, y, WD_X, WD_Y, WD_W, WD_H)) {
+                widgets_open = false;
+                redraw_desktop();
+            }
         } else if (menu_open) {
             int idx = menu_pick(x, y);
             if (idx >= 0) {
@@ -791,6 +934,11 @@ void gui_pump(void)
                     settings_open = true;         /* Settings: 设置面板 */
                     redraw_desktop();
                 } else if (idx == 4) {
+                    widgets_open = true;          /* Widgets: 控件演示 */
+                    wdg_progress = 0;
+                    wdg_last = timer_ticks();
+                    redraw_desktop();
+                } else if (idx == 5) {
                     gui_leave();                  /* Exit GUI */
                     return;
                 } else {
@@ -867,6 +1015,22 @@ void gui_pump(void)
             menu_hot = h;
             draw_menu();
             gfx_flip_rect(MN_X - 2, MN_Y - 2, MN_W + 4, MN_H + 4);
+        }
+    }
+
+    /* 控件演示: 进度条按 1/8 秒步进 (只在变化时重画对话框) */
+    if (widgets_open) {
+        u32 hz = timer_hz();
+        if (!hz) hz = 100;
+        u32 step = hz / 8;
+        if (!step) step = 1;
+        if (timer_ticks() - wdg_last >= step) {
+            wdg_last = timer_ticks();
+            wdg_progress += 5;
+            if (wdg_progress > 100)
+                wdg_progress = 0;
+            draw_widgets();
+            gfx_flip_rect(WD_X - 2, WD_Y - 2, WD_W + 4, WD_H + 4);
         }
     }
 

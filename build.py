@@ -524,6 +524,7 @@ TC_LIB_MODULES = [
     ("ctype", "ctype.c"),
     ("stdio", "stdio.c"),
     ("net", "net.c"),
+    ("gui", "gui.c"),
 ]
 
 

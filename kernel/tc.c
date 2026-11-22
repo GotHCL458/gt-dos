@@ -207,6 +207,7 @@ static char inc_seen[TC_INC_SEEN][128];
 static int nseen;
 static bool want_lib_string, want_lib_stdlib, want_lib_ctype, want_lib_stdio;
 static bool want_lib_net;
+static bool want_lib_gui;
 
 /* goto / 标签 (函数作用域) */
 #define MAX_LABEL 64
@@ -367,6 +368,7 @@ static void mark_module(const char *name)
     else if (!strcasecmp(b, "ctype.h")) want_lib_ctype = true;
     else if (!strcasecmp(b, "stdio.h")) want_lib_stdio = true;
     else if (!strcasecmp(b, "net.h")) want_lib_net = true;
+    else if (!strcasecmp(b, "gui.h")) want_lib_gui = true;
 }
 
 /* 读入头文件并压栈; 找不到返回 false */
@@ -3592,6 +3594,11 @@ static void gen_call(const char *name)
         { "mutex_unlock", 58, 1 }, { "thread_detach", 59, 1 },
         { "critical_enter", 60, 0 }, { "critical_exit", 61, 0 },
         { "mutex_trylock", 62, 1 }, { "mutex_destroy", 63, 1 },
+        { "gfx_info", 64, 1 }, { "gui_begin", 65, 0 }, { "gui_end", 66, 0 },
+        { "gfx_fill", 67, 5 }, { "gfx_frame", 68, 5 },
+        { "gfx_text", 69, 4 }, { "gfx_clear", 70, 1 },
+        { "gui_flush", 71, 0 }, { "gui_poll", 72, 1 },
+        { "gfx_bar", 73, 6 },
         { NULL, 0, 0 }
     };
     int nr = -1;
@@ -4976,6 +4983,7 @@ const u8 *tc_compile_files(const struct tc_src *srcs, int n, u32 *out_len,
     exp_depth = 0;
     want_lib_string = want_lib_stdlib = want_lib_ctype = want_lib_stdio = false;
     want_lib_net = false;
+    want_lib_gui = false;
     inc_cur_dir[0] = 0;
 
     memset(gmem, 0, sizeof(gmem));
@@ -5004,6 +5012,8 @@ const u8 *tc_compile_files(const struct tc_src *srcs, int n, u32 *out_len,
         compile_lib_module(tc_lib_stdio, "stdio.c");
     if (want_lib_net)
         compile_lib_module(tc_lib_net, "net.c");
+    if (want_lib_gui)
+        compile_lib_module(tc_lib_gui, "gui.c");
 
     /* 解析函数调用 */
     for (int i = 0; i < nfc && !failed; i++) {
