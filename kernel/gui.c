@@ -14,8 +14,8 @@
 #define CUR_H 19
 
 /* 配色 */
-#define C_WALL_TOP  0x101a30
-#define C_WALL_BOT  0x1d3a55
+static const u32 wall_top[3] = { 0x101a30, 0x14251a, 0x2a1424 };
+static const u32 wall_bot[3] = { 0x1d3a55, 0x2f5a38, 0x5a2f48 };
 #define C_FRAME     0x2a3446
 #define C_FRAME_LT  0x9aa8c0
 #define C_FRAME_DK  0x0c1220
@@ -41,30 +41,36 @@ static u32 pump_guard;
 static u32 clock_sec = 0xFFFFFFFFu;
 static bool dragging;
 static int drag_dx, drag_dy;
+static bool menu_open;                  /* 开始菜单 */
+static bool about_open;                 /* 关于对话框 */
+static bool maximized;                  /* 窗口最大化 */
+static int theme;                       /* 壁纸配色 */
+static int norm_x, norm_y, norm_w, norm_h;
+static int MB_X, MB_Y, MB_W, MB_H;      /* 开始按钮 */
+static int MN_X, MN_Y, MN_W, MN_H, MI_H;/* 开始菜单及项高 */
+static int MX_X, MX_Y, MX_W, MX_H;      /* 最大化按钮 */
+static int AB_X, AB_Y, AB_W, AB_H;      /* 关于对话框 */
+static int AB_OK_X, AB_OK_Y, AB_OK_W, AB_OK_H;
+static int ICON_X, ICON_Y, ICON_W, ICON_H, ICON_STEP;  /* 桌面图标 */
+static int icon_sel = -1;               /* 最近点击的图标 */
 
-/* 箭头指针 (12x19): 黑色实心 + 1px 白色描边, 在深浅背景上都清晰.
-   每行低 12 位, 最高位为最左像素. */
-static const u16 cur_shape[CUR_H] = {
-    0x800, 0xC00, 0xE00, 0xF00, 0xF80, 0xFC0, 0xFE0, 0xFF0,
-    0xFF8, 0xFFC, 0xFFE, 0xFFF, 0xE00, 0xE00, 0xE00, 0xE00,
-    0xC00, 0x800, 0x800
+static bool inside(int x, int y, int bx, int by, int bw, int bh);
+static void redraw_desktop(void);
+
+/* 经典箭头指针 (12x19, 每行低 12 位, 最高位为最左像素).
+   逐像素拆成"白色主体"和"黑色描边"两张位图, 还原标准 Windows 箭头:
+   尖端在左上, 左缘竖直, 右缘斜向展开, 下方是向右下延伸的斜尾.
+   (之前用 bit + 邻域扩张生成的描边会出现粗竖条, 看起来像"旗子".) */
+static const u16 cur_white[CUR_H] = {
+    0x000, 0x000, 0x400, 0x600, 0x700, 0x780, 0x7C0, 0x7E0,
+    0x7F0, 0x7F8, 0x7FC, 0x7FE, 0x780, 0x6C0, 0x4C0, 0x060,
+    0x030, 0x030, 0x000
 };
-
-static int bit_at(int r, int c)
-{
-    if (r < 0 || r >= CUR_H || c < 0 || c >= CUR_W)
-        return 0;
-    return (cur_shape[r] >> (CUR_W - 1 - c)) & 1;
-}
-
-static bool near_shape(int r, int c)
-{
-    for (int dr = -1; dr <= 1; dr++)
-        for (int dc = -1; dc <= 1; dc++)
-            if (bit_at(r + dr, c + dc))
-                return true;
-    return false;
-}
+static const u16 cur_black[CUR_H] = {
+    0x800, 0xC00, 0xA00, 0x900, 0x880, 0x840, 0x820, 0x810,
+    0x808, 0x804, 0x802, 0x801, 0x83F, 0x920, 0xA90, 0xC90,
+    0x848, 0x048, 0x030
+};
 
 static void fb_block(int x, int y, int s, u32 c)
 {
@@ -73,19 +79,23 @@ static void fb_block(int x, int y, int s, u32 c)
             gfx_fb_pixel(x + i, y + j, c);
 }
 
-/* 白色主体 + 黑色描边 (经典指针配色): 深色/浅色背景上都清晰.
+/* 白体 + 黑边 (经典指针配色), 深色/浅色背景上都清晰.
    按字模缩放倍数放大 (最大 2 倍), 高分屏上不会显得过小. */
 static void cursor_draw(int x, int y)
 {
     int s = gfx_scale();
     if (s < 1) s = 1;
     if (s > 2) s = 2;
-    for (int r = -1; r <= CUR_H; r++) {
-        for (int c = -1; c <= CUR_W; c++) {
-            if (bit_at(r, c))
-                fb_block(x + c * s, y + r * s, s, 0xFFFFFF);
-            else if (near_shape(r, c))
+    for (int r = 0; r < CUR_H; r++) {
+        u16 w = cur_white[r], b = cur_black[r];
+        if (!(w | b))
+            continue;
+        for (int c = 0; c < CUR_W; c++) {
+            u16 m = (u16)(1u << (CUR_W - 1 - c));
+            if (b & m)
                 fb_block(x + c * s, y + r * s, s, 0x000000);
+            else if (w & m)
+                fb_block(x + c * s, y + r * s, s, 0xFFFFFF);
         }
     }
 }
@@ -137,25 +147,29 @@ static u32 lerp437(u32 a, u32 b, int t)      /* t: 0..255 */
 static void draw_wallpaper(void)
 {
     int H = gfx_h();
+    int t = theme % 3;
     for (int y = 0; y < H; y += 4) {
-        u32 c = lerp437(C_WALL_TOP, C_WALL_BOT, (y * 255) / (H > 1 ? H - 1 : 1));
+        u32 c = lerp437(wall_top[t], wall_bot[t], (y * 255) / (H > 1 ? H - 1 : 1));
         gfx_fill(0, y, gfx_w(), 4, c);
     }
-    int cw = gfx_cell_w(), ch = gfx_cell_h();
+    int ch = gfx_cell_h();
     int tw = gfx_text_w("GT-DOS Desktop");
     gfx_text((gfx_w() - tw) / 2, 2 * ch, "GT-DOS Desktop", 0xdfefff);
     gfx_text((gfx_w() - gfx_text_w("drag title bar | click to capture mouse")) / 2,
              3 * ch, "drag title bar | click to capture mouse", 0x8fb6d8);
-    /* 左侧桌面图标 */
+    /* 左侧桌面图标 (可点击) */
     const char *names[3] = { "TERM", "FILES", "SYS" };
     u32 cols[3] = { 0x2f6f9f, 0x3f8f5f, 0x8f6f2f };
-    int ix = 2 * cw, iy = 5 * ch;
     for (int i = 0; i < 3; i++) {
-        int y = iy + i * (5 * ch);
-        gfx_fill(ix, y, 4 * cw, 3 * ch, cols[i]);
-        gfx_bevel(ix, y, 4 * cw, 3 * ch, 0xffffff, 0x202020);
+        int y = ICON_Y + i * ICON_STEP;
+        gfx_fill(ICON_X, y, ICON_W, ICON_H, cols[i]);
+        gfx_bevel(ICON_X, y, ICON_W, ICON_H, 0xffffff, 0x202020);
+        if (icon_sel == i)
+            gfx_bevel(ICON_X - 3, y - 3, ICON_W + 6, ICON_H + 6,
+                      C_ACCENT, C_ACCENT);
         int lw = gfx_text_w(names[i]);
-        gfx_text(ix + (4 * cw - lw) / 2, y + 3 * ch + 2, names[i], 0xd8e8ff);
+        gfx_text(ICON_X + (ICON_W - lw) / 2, y + ICON_H + 2, names[i],
+                 0xd8e8ff);
     }
 }
 
@@ -191,6 +205,77 @@ static void draw_button(int x, int y, int w, int h, const char *label,
     }
 }
 
+/* ------------------------------------------------------- 浮层: 菜单/对话框 */
+/* 开始菜单: 4 个可点项 (Terminal / Theme / About / Exit GUI) */
+static void draw_menu(void)
+{
+    int ch = gfx_cell_h();
+    static const char *items[4] = { "Terminal", "Theme", "About", "Exit GUI" };
+    gfx_fill(MN_X, MN_Y, MN_W, MN_H, 0x1b2434);
+    gfx_bevel(MN_X, MN_Y, MN_W, MN_H, 0xbfd0e8, 0x0c1220);
+    for (int i = 0; i < 4; i++) {
+        int y = MN_Y + 4 + i * MI_H;
+        bool hot = i == 0;                 /* Terminal 为默认焦点项 */
+        gfx_fill(MN_X + 2, y + 1, MN_W - 4, MI_H - 2,
+                 hot ? 0x2a4a70 : 0x223a58);
+        gfx_text(MN_X + 10, y + (MI_H - ch) / 2, items[i],
+                 i == 3 ? 0xff9a9a : 0xdce9ff);
+    }
+}
+
+/* 关于对话框 (模态): 版本/运行环境/操作说明 + OK 按钮 */
+static void draw_about(void)
+{
+    int ch = gfx_cell_h();
+    gfx_fill(AB_X, AB_Y, AB_W, AB_H, 0x1b2434);
+    gfx_bevel(AB_X, AB_Y, AB_W, AB_H, 0xbfd0e8, 0x0c1220);
+    gfx_fill(AB_X + 2, AB_Y + 2, AB_W - 4, TITLE_H - 2, C_TITLE);
+    gfx_text(AB_X + 10, AB_Y + (TITLE_H - ch) / 2, "About GT-DOS", C_TEXT);
+
+    int x = AB_X + 12;
+    int y = AB_Y + TITLE_H + 8;
+    const char *lines[6] = {
+        GT_VERSION "  (x86-64 kernel)",
+        "GUI desktop demo: wallpaper, icons, window",
+        "Mouse: PS/2, captured on hover (Ctrl+Alt+G)",
+        "Drag title bar to move, M to maximize",
+        "Start menu -> Theme / About / Exit GUI",
+        "Click TEXT or the title-bar x to exit GUI"
+    };
+    for (int i = 0; i < 6 && y + ch <= AB_OK_Y; i++, y += ch + 2)
+        gfx_text(x, y, lines[i], 0xcfe0f5);
+
+    draw_button(AB_OK_X, AB_OK_Y, AB_OK_W, AB_OK_H, "OK", 0x2f6f9f);
+}
+
+/* 浮层绘制 (菜单/对话框): 画在后台缓冲, 随后 gfx_flip 一并提交.
+   这样指针移动时 gfx_fb_restore 能从后台缓冲正确恢复, 不会擦掉菜单. */
+static void draw_overlays(void)
+{
+    if (menu_open)
+        draw_menu();
+    if (about_open)
+        draw_about();
+}
+
+/* 最大化/还原 (保存并恢复窗口位置与尺寸) */
+static void toggle_max(void)
+{
+    if (!maximized) {
+        norm_x = WX; norm_y = WY; norm_w = WW; norm_h = WH;
+        WX = 0;
+        WY = 0;
+        WW = gfx_w();
+        WH = gfx_h() - TASK_H;
+        maximized = true;
+    } else {
+        WX = norm_x; WY = norm_y;
+        WW = norm_w; WH = norm_h;
+        maximized = false;
+    }
+    redraw_desktop();
+}
+
 /* 按当前 WX/WY 计算所有派生矩形; WX/WY<0 时居中, WW/WH<=0 时按 3/4 屏 */
 static void layout(void)
 {
@@ -220,6 +305,39 @@ static void layout(void)
     EX_Y = gh - TASK_H;
     CK_X = EX_X - 8 * cw - 18;
     CK_Y = gh - TASK_H + (TASK_H - ch) / 2;
+
+    /* 开始按钮 / 菜单 / 最大化按钮 / 关于对话框 */
+    MB_X = 4;
+    MB_Y = gh - TASK_H;
+    MB_W = 10 * cw;
+    MB_H = TASK_H;
+    MI_H = ch + 8;
+    MN_W = 16 * cw;
+    MN_H = 4 * MI_H + 8;
+    MN_X = 4;
+    MN_Y = gh - TASK_H - MN_H;
+    MX_W = BT_W;
+    MX_H = BT_H;
+    MX_X = BT_X - MX_W - 6;
+    MX_Y = BT_Y;
+
+    AB_W = 46 * cw;
+    if (AB_W > gw - 40) AB_W = gw - 40;
+    AB_H = 12 * ch;
+    if (AB_H > gh - 40) AB_H = gh - 40;
+    AB_X = (gw - AB_W) / 2;
+    AB_Y = (gh - AB_H) / 2;
+    AB_OK_W = 6 * cw;
+    AB_OK_H = ch + 8;
+    AB_OK_X = AB_X + AB_W - AB_OK_W - 12;
+    AB_OK_Y = AB_Y + AB_H - AB_OK_H - 12;
+
+    /* 左侧桌面图标: 4x3 格, 纵向间隔 5 行 */
+    ICON_X = 2 * cw;
+    ICON_Y = 5 * ch;
+    ICON_W = 4 * cw;
+    ICON_H = 3 * ch;
+    ICON_STEP = 5 * ch;
 }
 
 static void draw_desktop(void)
@@ -237,6 +355,7 @@ static void draw_desktop(void)
     gfx_fill(WX + 2, WY + 2, WW - 4, TITLE_H - 2, C_TITLE);
     gfx_fill(WX + 2, WY + 2, WW - 4, (TITLE_H - 2) / 2, C_TITLE2);
     gfx_text(WX + 10, WY + (TITLE_H - ch) / 2, "GT-DOS Terminal", C_TEXT);
+    draw_button(MX_X, MX_Y, MX_W, MX_H, maximized ? "R" : "M", 0x2f5a8a);
     draw_button(BT_X, BT_Y, BT_W, BT_H, "x", 0x8a2f2f);
 
     /* 客户区 (控制台视口) */
@@ -245,28 +364,26 @@ static void draw_desktop(void)
     /* 任务栏 */
     gfx_fill(0, gh - TASK_H, gw, TASK_H, C_TASK);
     gfx_fill(0, gh - TASK_H, gw, 2, C_TASK_LT);
-    gfx_text(10, gh - TASK_H + (TASK_H - ch) / 2, "GT-DOS", C_ACCENT);
-    char info[64];
-    int n = 0;
-    const char *s = "GUI desktop";
-    while (*s && n < 60) info[n++] = *s++;
-    info[n] = 0;
-    gfx_text(10 + gfx_text_w("GT-DOS") + 3 * cw,
-             gh - TASK_H + (TASK_H - ch) / 2, info, 0x8fa8c8);
+    draw_button(MB_X, MB_Y, MB_W, MB_H, "GT-DOS", 0x203850);
+    gfx_text(MB_X + MB_W + 3 * cw,
+             gh - TASK_H + (TASK_H - ch) / 2,
+             "start | terminal", 0x8fa8c8);
     draw_button(EX_X, EX_Y, EX_W, EX_H, "TEXT", 0x304050);
     clock_sec = 0xFFFFFFFFu;
     draw_clock();
 }
 
-/* 重绘桌面 (拖动窗口/位置变化): 恢复指针 -> 重画背景与窗口 -> 重设视口 */
+/* 重绘桌面 (拖动/最大化/菜单切换): 恢复指针 -> 重画背景与窗口 -> 重设视口
+   最后叠加菜单/对话框 (必须在视口重绘之后, 否则会被控制台内容覆盖) */
 static void redraw_desktop(void)
 {
     if (cur_x >= 0) {
-        gfx_fb_restore(cur_x - 1, cur_y - 1, CUR_W + 2, CUR_H + 2);
+        gfx_fb_restore(cur_x - 1, cur_y - 1, cs_w + 2, cs_h + 2);
         cur_x = cur_y = -1;
     }
     draw_desktop();
     vga_gui_viewport(CL_X, CL_Y, CL_W, CL_H);
+    draw_overlays();
     gfx_flip();
     gfx_poked = false;
     cursor_show(mouse_x(), mouse_y());
@@ -287,6 +404,11 @@ bool gui_enter(void)
     WX = WY = -1;
     WW = WH = 0;
     dragging = false;
+    menu_open = false;
+    about_open = false;
+    maximized = false;
+    theme = 0;
+    icon_sel = -1;
     gfx_poked = false;
     draw_desktop();
     vga_gui_viewport(CL_X, CL_Y, CL_W, CL_H);
@@ -306,8 +428,11 @@ void gui_leave(void)
         return;
     active = false;
     dragging = false;
+    menu_open = false;
+    about_open = false;
+    maximized = false;
     if (cur_x >= 0)
-        gfx_fb_restore(cur_x - 1, cur_y - 1, CUR_W + 2, CUR_H + 2);
+        gfx_fb_restore(cur_x - 1, cur_y - 1, cs_w + 2, cs_h + 2);
     cur_x = cur_y = -1;
     vga_gui_leave();
     kprintf("[gui] text mode\n");
@@ -316,6 +441,18 @@ void gui_leave(void)
 static bool inside(int x, int y, int bx, int by, int bw, int bh)
 {
     return x >= bx && x < bx + bw && y >= by && y < by + bh;
+}
+
+/* 命中桌面图标 (含下方文字标签); 返回 0..2, 未命中 -1 */
+static int icon_hit(int x, int y)
+{
+    int ch = gfx_cell_h();
+    for (int i = 0; i < 3; i++) {
+        int iy = ICON_Y + i * ICON_STEP;
+        if (inside(x, y, ICON_X, iy, ICON_W, ICON_H + ch))
+            return i;
+    }
+    return -1;
 }
 
 void gui_pump(void)
@@ -330,14 +467,51 @@ void gui_pump(void)
     last_btn = btn;
 
     if (pressed) {
-        if (inside(x, y, BT_X, BT_Y, BT_W, BT_H) ||
-            inside(x, y, EX_X, EX_Y, EX_W, EX_H)) {
-            gui_leave();
+        if (about_open) {
+            /* 模态: 只响应 OK 或点击对话框外部关闭 */
+            if (inside(x, y, AB_OK_X, AB_OK_Y, AB_OK_W, AB_OK_H) ||
+                !inside(x, y, AB_X, AB_Y, AB_W, AB_H)) {
+                about_open = false;
+                redraw_desktop();
+            }
+        } else if (menu_open) {
+            if (inside(x, y, MN_X, MN_Y, MN_W, MN_H)) {
+                int idx = (y - (MN_Y + 4)) / MI_H;
+                if (idx < 0) idx = 0;
+                if (idx > 3) idx = 3;
+                menu_open = false;
+                if (idx == 1) {
+                    theme = (theme + 1) % 3;      /* Theme: 换壁纸配色 */
+                    redraw_desktop();
+                } else if (idx == 2) {
+                    about_open = true;            /* About: 打开对话框 */
+                    redraw_desktop();
+                } else if (idx == 3) {
+                    gui_leave();                  /* Exit GUI */
+                    return;
+                } else {
+                    redraw_desktop();             /* Terminal: 收起菜单 */
+                }
+            } else if (inside(x, y, MB_X, MB_Y, MB_W, MB_H)) {
+                menu_open = false;                /* 再点开始按钮收起 */
+                redraw_desktop();
+            } else {
+                menu_open = false;                /* 点其它地方也收起 */
+                redraw_desktop();
+            }
+        } else if (inside(x, y, MB_X, MB_Y, MB_W, MB_H)) {
+            menu_open = true;                     /* 打开开始菜单 */
+            redraw_desktop();
+        } else if (inside(x, y, BT_X, BT_Y, BT_W, BT_H) ||
+                   inside(x, y, EX_X, EX_Y, EX_W, EX_H)) {
+            gui_leave();                          /* 关闭按钮 / TEXT */
             return;
-        }
-        /* 标题栏拖动 (关闭按钮除外) */
-        if (inside(x, y, WX, WY, WW, TITLE_H) &&
-            !inside(x, y, BT_X, BT_Y, BT_W, BT_H)) {
+        } else if (inside(x, y, MX_X, MX_Y, MX_W, MX_H)) {
+            toggle_max();                         /* 最大化 / 还原 */
+        } else if (icon_hit(x, y) >= 0) {
+            icon_sel = icon_hit(x, y);            /* 桌面图标: 高亮反馈 */
+            redraw_desktop();
+        } else if (inside(x, y, WX, WY, WW, TITLE_H)) {
             dragging = true;
             drag_dx = x - WX;
             drag_dy = y - WY;

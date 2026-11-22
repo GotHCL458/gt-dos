@@ -247,19 +247,26 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
 **GUI desktop and mouse**
 - `DESKTOP` / `GUI` enters the desktop; `TEXTMODE`, the bottom-right `TEXT`
   button or the title-bar `x` returns to plain text (documented in help, zh/en)
-- The desktop is drawn above the graphics console: gradient wallpaper, desktop
-  icons, a centred terminal window (title bar, close button) and a taskbar with
-  the GT-DOS label, caption and a running clock
+- The desktop is drawn above the graphics console: gradient wallpaper, clickable
+  desktop icons (`TERM`/`FILES`/`SYS`), a centred terminal window (title bar,
+  `M` maximize/`R` restore, close button) and a taskbar with a `GT-DOS` start
+  button, caption and a running clock
+- Start menu (click the `GT-DOS` button): `Terminal` closes the menu, `Theme`
+  cycles three wallpaper palettes, `About` opens a modal dialog (OK or click
+  outside to close) and `Exit GUI` returns to plain text
 - `vga_gui_viewport` clips the text grid to the window client area, so the
   window still hosts the complete shell, TC programs and the editor with the
   normal console cursor and scrolling
-- Window dragging: hold the title bar (except the close button) and move; the
-  window is clamped above the taskbar and the console viewport moves with it
-- PS/2 mouse: 2× acceleration at ≥1280 wide; the pointer is white with a black
-  outline and scales with the font, written straight to video memory and
-  repainted immediately after every console commit (no overwrite flicker);
-  movement restores the old area from the back buffer, so window content is
-  never polluted
+- Window dragging: hold the title bar (except the buttons) and move; the
+  window is clamped above the taskbar and the console viewport moves with it;
+  maximizing fills the screen above the taskbar and restoring returns to the
+  previous position/size
+- PS/2 mouse: 2× acceleration at ≥1280 wide; the pointer is the classic arrow
+  (12×19 white body with a black outline, exact per-pixel bitmap) and scales
+  with the font. It is written straight to video memory and repainted
+  immediately after every console commit (no overwrite flicker); movement
+  restores the old area from the back buffer, so window content, menus and
+  dialogs are never polluted
 - `python build.py run` uses `gtk,grab-on-hover=on,show-cursor=off`: the mouse
   is captured on hover and the host pointer hidden, avoiding double-cursor
   flicker and pointer escape at the window edges; `Ctrl+Alt+G` releases it

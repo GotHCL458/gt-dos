@@ -185,6 +185,84 @@ check("click TEXT exits GUI", vm.expect("[gui] text mode", 6000), vm.buf[-400:])
 vm.buf = ""
 vm.cmd("gui", 1200)
 check("re-enter desktop", vm.expect("[gui] desktop on", 6000), vm.buf[-400:])
+
+# ---- 新控件: 开始菜单 / 主题 / 关于 / 最大化 ----
+# gui_enter 把指针放到客户区中心; 这里维护绝对坐标并按相对位移移动.
+pos = [512, 380]
+def goto(gx, gy):
+    dx, dy = int(gx) - pos[0], int(gy) - pos[1]
+    while dx or dy:
+        sx = max(-100, min(100, dx)); sy = max(-100, min(100, dy))
+        vm.mon(f"mouse_move {sx} {sy}", 40)
+        dx -= sx; dy -= sy
+        pos[0] += sx; pos[1] += sy
+def click():
+    # QEMU 监视器的 mouse_button 可能随下一次移动才送达客户机;
+    # 按下/松开前后各抖动 1px, 强制产生携带按键状态的 PS/2 数据包.
+    vm.mon("mouse_move 1 0", 60); vm.mon("mouse_move -1 0", 60)
+    vm.mon("mouse_button 1", 250)
+    vm.mon("mouse_move 1 0", 60); vm.mon("mouse_move -1 0", 60)
+    vm.mon("mouse_button 0", 300)
+    vm.mon("mouse_move 1 0", 60); vm.mon("mouse_move -1 0", 60)
+
+# 开始菜单 (任务栏左下 GT-DOS 按钮)
+goto(44, 755); click(); time.sleep(0.3)
+img_menu = vm.shot(os.path.join(SRC, "gui_menu.ppm"))
+check("screendump menu", img_menu is not None)
+if img_menu:
+    check("start menu drawn", color_count(img_menu, (0x22, 0x3a, 0x58)) > 200)
+
+# Theme: 换壁纸配色 (菜单关闭 + 壁纸颜色变化)
+theme_before = None
+if img_menu:
+    _, _, pm = img_menu
+    theme_before = (pm[(300 * 1024 + 960) * 3], pm[(300 * 1024 + 960) * 3 + 1],
+                    pm[(300 * 1024 + 960) * 3 + 2])
+goto(68, 678); click(); time.sleep(0.3)
+img_theme = vm.shot(os.path.join(SRC, "gui_theme.ppm"))
+check("screendump theme", img_theme is not None)
+if img_theme and theme_before:
+    _, _, pt = img_theme
+    theme_after = (pt[(300 * 1024 + 960) * 3], pt[(300 * 1024 + 960) * 3 + 1],
+                   pt[(300 * 1024 + 960) * 3 + 2])
+    print(f"       theme {theme_before} -> {theme_after}")
+    check("theme switched wallpaper", theme_after != theme_before)
+
+# About 对话框 + OK 关闭
+goto(44, 755); click()
+goto(68, 702); click(); time.sleep(0.3)
+img_about = vm.shot(os.path.join(SRC, "gui_about.ppm"))
+check("screendump about", img_about is not None)
+if img_about:
+    _, _, pa = img_about
+    # 对话框标题栏 (右侧空白处) 应为 C_TITLE; 无对话框时这里是控制台黑底
+    c = (pa[(300 * 1024 + 680) * 3], pa[(300 * 1024 + 680) * 3 + 1],
+         pa[(300 * 1024 + 680) * 3 + 2])
+    print(f"       about title pixel {c}")
+    check("about dialog drawn", c == (0x1f, 0x4e, 0x8a))
+goto(660, 456); click(); time.sleep(0.2)
+
+# 最大化: 标题栏应铺到屏幕左侧 (x=10,y=8)
+goto(863, 95); click(); time.sleep(0.4)
+img_max = vm.shot(os.path.join(SRC, "gui_max.ppm"))
+check("screendump maximize", img_max is not None)
+if img_max:
+    _, _, pz = img_max
+    c = (pz[(8 * 1024 + 10) * 3], pz[(8 * 1024 + 10) * 3 + 1],
+         pz[(8 * 1024 + 10) * 3 + 2])
+    print(f"       maximized title pixel {c}")
+    check("window maximized", c in {(0x1f, 0x4e, 0x8a), (0x2a, 0x6a, 0xb0)})
+
+# 还原 (最大化后按钮移到最右侧)
+goto(991, 12); click(); time.sleep(0.4)
+img_rest = vm.shot(os.path.join(SRC, "gui_restore.ppm"))
+check("screendump restore", img_rest is not None)
+if img_rest:
+    _, _, pr = img_rest
+    c = (pr[(8 * 1024 + 10) * 3], pr[(8 * 1024 + 10) * 3 + 1],
+         pr[(8 * 1024 + 10) * 3 + 2])
+    check("window restored", c not in {(0x1f, 0x4e, 0x8a), (0x2a, 0x6a, 0xb0)})
+
 vm.buf = ""
 vm.cmd("textmode", 1200)
 check("textmode command", vm.expect("[gui] text mode", 6000), vm.buf[-400:])
