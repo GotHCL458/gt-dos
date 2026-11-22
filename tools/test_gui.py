@@ -212,8 +212,8 @@ check("screendump menu", img_menu is not None)
 if img_menu:
     check("start menu drawn", color_count(img_menu, (0x22, 0x3a, 0x58)) > 200)
 
-# 悬停高亮: 移到 Theme 项, 该项背景应变亮
-goto(68, 678); time.sleep(0.3)
+# 悬停高亮: 移到 Theme 项 (5 项菜单的), 该项背景应变亮
+goto(68, 654); time.sleep(0.3)
 img_hover = vm.shot(os.path.join(SRC, "gui_menu_hover.ppm"))
 check("screendump menu hover", img_hover is not None)
 if img_hover:
@@ -225,7 +225,7 @@ if img_menu:
     _, _, pm = img_menu
     theme_before = (pm[(300 * 1024 + 960) * 3], pm[(300 * 1024 + 960) * 3 + 1],
                     pm[(300 * 1024 + 960) * 3 + 2])
-goto(68, 678); click(); time.sleep(0.3)
+goto(68, 654); click(); time.sleep(0.3)
 img_theme = vm.shot(os.path.join(SRC, "gui_theme.ppm"))
 check("screendump theme", img_theme is not None)
 if img_theme and theme_before:
@@ -237,7 +237,7 @@ if img_theme and theme_before:
 
 # About 对话框 + OK 关闭
 goto(44, 755); click()
-goto(68, 702); click(); time.sleep(0.3)
+goto(68, 678); click(); time.sleep(0.3)
 img_about = vm.shot(os.path.join(SRC, "gui_about.ppm"))
 check("screendump about", img_about is not None)
 if img_about:
@@ -260,6 +260,58 @@ if img_about:
               f"pixel={c2}")
 goto(660, 456); click(); time.sleep(0.2)
 
+# ---- 设置对话框: 主题按钮 / 复选框 / 亮度滑块 ----
+goto(44, 755); click()
+goto(68, 702); click(); time.sleep(0.3)
+img_set = vm.shot(os.path.join(SRC, "gui_settings.ppm"))
+check("screendump settings", img_set is not None)
+wall0 = wall1 = None
+if img_set:
+    _, _, ps = img_set
+    c = (ps[(298 * 1024 + 668) * 3], ps[(298 * 1024 + 668) * 3 + 1],
+         ps[(298 * 1024 + 668) * 3 + 2])
+    print(f"       settings title pixel {c}")
+    check("settings dialog drawn", c == (0x1f, 0x4e, 0x8a))
+    wall0 = (ps[(300 * 1024 + 960) * 3], ps[(300 * 1024 + 960) * 3 + 1],
+             ps[(300 * 1024 + 960) * 3 + 2])
+
+# 主题 ">" 按钮: 壁纸变化
+goto(660, 333); click(); time.sleep(0.3)
+img_set2 = vm.shot(os.path.join(SRC, "gui_settings_theme.ppm"))
+check("screendump settings theme", img_set2 is not None)
+if img_set2 and wall0:
+    _, _, ps2 = img_set2
+    wall1 = (ps2[(300 * 1024 + 960) * 3], ps2[(300 * 1024 + 960) * 3 + 1],
+             ps2[(300 * 1024 + 960) * 3 + 2])
+    print(f"       settings theme {wall0} -> {wall1}")
+    check("settings theme button works", wall1 != wall0)
+
+# 亮度滑块: 拖到左侧变暗
+goto(450, 414); click(); time.sleep(0.3)
+img_set3 = vm.shot(os.path.join(SRC, "gui_settings_dim.ppm"))
+check("screendump settings brightness", img_set3 is not None)
+if img_set3 and wall1:
+    _, _, ps3 = img_set3
+    wall2 = (ps3[(300 * 1024 + 960) * 3], ps3[(300 * 1024 + 960) * 3 + 1],
+             ps3[(300 * 1024 + 960) * 3 + 2])
+    print(f"       brightness {wall1} -> {wall2}")
+    check("brightness slider works", sum(wall2) < sum(wall1))
+
+# 复选框: 隐藏桌面图标 (TERM 图标像素应变为壁纸)
+goto(428, 362); click(); time.sleep(0.3)
+img_noicon = vm.shot(os.path.join(SRC, "gui_settings_noicon.ppm"))
+check("screendump icons off", img_noicon is not None)
+if img_noicon:
+    _, _, pn = img_noicon
+    c = (pn[(88 * 1024 + 24) * 3], pn[(88 * 1024 + 24) * 3 + 1],
+         pn[(88 * 1024 + 24) * 3 + 2])
+    print(f"       icon pixel after hide {c}")
+    check("desktop icons hidden", c != (0x2f, 0x6f, 0x9f))
+
+# 恢复图标并关闭设置
+goto(428, 362); click(); time.sleep(0.2)
+goto(652, 456); click(); time.sleep(0.2)
+
 # 最大化: 标题栏应铺到屏幕左侧 (x=10,y=8)
 goto(863, 95); click(); time.sleep(0.4)
 img_max = vm.shot(os.path.join(SRC, "gui_max.ppm"))
@@ -280,6 +332,25 @@ if img_rest:
     c = (pr[(8 * 1024 + 10) * 3], pr[(8 * 1024 + 10) * 3 + 1],
          pr[(8 * 1024 + 10) * 3 + 2])
     check("window restored", c not in {(0x1f, 0x4e, 0x8a), (0x2a, 0x6a, 0xb0)})
+
+# ---- 缩放握把: 按住右下角拖动放大窗口 ----
+goto(888, 651)
+vm.mon("mouse_button 1", 250)
+vm.mon("mouse_move 1 0", 60); vm.mon("mouse_move -1 0", 60)
+time.sleep(0.3)
+goto(948, 691)                    # 向右下拖 (+60,+40)
+vm.mon("mouse_button 0", 300)
+time.sleep(0.4)
+img_rs = vm.shot(os.path.join(SRC, "gui_resize.ppm"))
+check("screendump resize", img_rs is not None)
+if img_rs:
+    _, _, prs = img_rs
+    # 放大后窗口右缘到达 x≈956, (900,95) 应落在标题栏 (右侧按钮之前)
+    c = (prs[(95 * 1024 + 900) * 3], prs[(95 * 1024 + 900) * 3 + 1],
+         prs[(95 * 1024 + 900) * 3 + 2])
+    print(f"       resized title pixel {c}")
+    check("window resized by grip",
+          c in {(0x1f, 0x4e, 0x8a), (0x2a, 0x6a, 0xb0)})
 
 vm.buf = ""
 vm.cmd("textmode", 1200)

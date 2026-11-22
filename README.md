@@ -252,15 +252,20 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
   `M` maximize/`R` restore, close button) and a taskbar with a `GT-DOS` start
   button, caption and a running clock
 - Start menu (click the `GT-DOS` button): `Terminal` closes the menu, `Theme`
-  cycles three wallpaper palettes, `About` opens a modal dialog (OK or click
-  outside to close) and `Exit GUI` returns to plain text
+  cycles three wallpaper palettes, `About` opens a modal dialog, `Settings`
+  opens the control panel and `Exit GUI` returns to plain text
+- Settings panel (modal, close with `Close` or a click outside): `<` / `>`
+  theme buttons, a `Desktop icons` checkbox, a `24-hour clock` checkbox
+  (unchecked shows a 12-hour clock with AM/PM) and a draggable `Brightness`
+  slider that dims the wallpaper
 - `vga_gui_viewport` clips the text grid to the window client area, so the
   window still hosts the complete shell, TC programs and the editor with the
   normal console cursor and scrolling
 - Window dragging: hold the title bar (except the buttons) and move; the
   window is clamped above the taskbar and the console viewport moves with it;
   maximizing fills the screen above the taskbar and restoring returns to the
-  previous position/size
+  previous position/size; dragging the grip in the bottom-right corner
+  resizes the window (minimum 40×12 text cells, clamped to the screen)
 - PS/2 mouse: 2× acceleration at ≥1280 wide; the pointer is the classic arrow
   (12×19 white body with a black outline, exact per-pixel bitmap) and scales
   with the font. It is written straight to video memory and repainted
@@ -507,7 +512,7 @@ live in stack slots, no register allocation).
 
 ## Notes and Limitations
 
-- The kernel currently fits in 569 sectors (291,184 bytes including the 48-byte `GTK1`
+- The kernel currently fits in 577 sectors (295,280 bytes including the 48-byte `GTK1`
   trailer); the build cap is 640 sectors (320 KB), loaded between `0x10000` and `0x60000`.
   The linker also asserts `.bss <= 0xA0000` and `.highbss <= LIB_BASE`.
 - The GDT is built in low memory (0x6800) rather than `.data`: loading a segment register
