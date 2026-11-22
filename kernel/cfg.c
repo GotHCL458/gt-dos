@@ -20,6 +20,7 @@ struct gt_config gcfg = {
     "admin",        /* last_user */
     "GT-DOS",       /* hostname */
     'C',            /* sys_drive */
+    true,           /* gui_default */
 };
 
 /* ------------------------------------------------------------ 行解析 */
@@ -41,6 +42,8 @@ static void set_key(const char *key, const char *val)
         gcfg.lang = (char)atoi_dec(val);
     } else if (!strcmp(key, "sys_drive")) {
         gcfg.sys_drive = (char)toupper_(val[0]);
+    } else if (!strcmp(key, "gui_default")) {
+        gcfg.gui_default = (val[0] == '1' || val[0] == 'y' || val[0] == 'Y');
     }
 }
 
@@ -134,6 +137,11 @@ bool cfg_save(void)
     s = "sys_drive=";
     while (*s) buf[n++] = *s++;
     buf[n++] = gcfg.sys_drive;
+    buf[n++] = '\n';
+
+    s = "gui_default=";
+    while (*s) buf[n++] = *s++;
+    buf[n++] = gcfg.gui_default ? '1' : '0';
     buf[n++] = '\n';
 
     fat_set_allow_sys(true);

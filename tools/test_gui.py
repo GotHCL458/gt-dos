@@ -110,9 +110,13 @@ vm.expect("User:", 8000)
 vm.cmd("admin"); vm.expect("Password", 3000); vm.cmd("")
 check("login", vm.expect(">", 5000))
 
-vm.buf = ""
-vm.cmd("desktop", 1500)
-check("enter desktop", vm.expect("[gui] desktop on", 8000), vm.buf[-400:])
+# 默认配置下登录后自动进入图形桌面; 若未自动进入则用 desktop 命令
+auto_gui = "[gui] desktop on" in vm.buf.lower()
+check("default GUI at boot", auto_gui, vm.buf[-400:])
+if not auto_gui:
+    vm.buf = ""
+    vm.cmd("desktop", 1500)
+    check("enter desktop", vm.expect("[gui] desktop on", 8000), vm.buf[-400:])
 time.sleep(0.5)
 img1 = vm.shot(os.path.join(SRC, "gui1.ppm"))
 check("screendump", img1 is not None)
@@ -274,6 +278,10 @@ if img_set:
     check("settings dialog drawn", c == (0x1f, 0x4e, 0x8a))
     wall0 = (ps[(300 * 1024 + 960) * 3], ps[(300 * 1024 + 960) * 3 + 1],
              ps[(300 * 1024 + 960) * 3 + 2])
+    # 终端图标: 图标底板 (蓝) 应被真实图标图形覆盖, 底板边缘仍为蓝色
+    ic = (ps[(84 * 1024 + 18) * 3], ps[(84 * 1024 + 18) * 3 + 1],
+          ps[(84 * 1024 + 18) * 3 + 2])
+    check("terminal icon rendered", ic == (0x2f, 0x6f, 0x9f), f"pixel={ic}")
 
 # 主题 ">" 按钮: 壁纸变化
 goto(660, 333); click(); time.sleep(0.3)
@@ -303,8 +311,8 @@ img_noicon = vm.shot(os.path.join(SRC, "gui_settings_noicon.ppm"))
 check("screendump icons off", img_noicon is not None)
 if img_noicon:
     _, _, pn = img_noicon
-    c = (pn[(88 * 1024 + 24) * 3], pn[(88 * 1024 + 24) * 3 + 1],
-         pn[(88 * 1024 + 24) * 3 + 2])
+    c = (pn[(84 * 1024 + 18) * 3], pn[(84 * 1024 + 18) * 3 + 1],
+         pn[(84 * 1024 + 18) * 3 + 2])
     print(f"       icon pixel after hide {c}")
     check("desktop icons hidden", c != (0x2f, 0x6f, 0x9f))
 

@@ -99,6 +99,10 @@ void kmain(void)
     /* 10) 状态栏上线 */
     tui_status_refresh();
 
+    /* 10.5) 默认图形桌面 (登录后自动进入, 可用 CONFIG GUI OFF 关闭) */
+    if (gcfg.gui_default && gfx_active())
+        gui_enter();
+
     /* 11) 交给 Shell */
     shell_run();
 

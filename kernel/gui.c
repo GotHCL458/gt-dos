@@ -182,6 +182,58 @@ static u32 color_scale(u32 c, int pct)
     return (r << 16) | (g << 8) | b;
 }
 
+/* ------------------------------------------------------- 桌面图标图形 */
+/* TERM: 迷你终端窗口 (标题栏 + 提示符) */
+static void draw_icon_term(int x, int y)
+{
+    int ch = gfx_cell_h();
+    int px = x + 4, py = y + 6;
+    int pw = ICON_W - 8, ph = ICON_H - 12;
+    int tb = ch / 2;
+    gfx_fill(px, py, pw, ph, 0x0a1018);
+    gfx_bevel(px, py, pw, ph, 0xdfefff, 0x101820);
+    gfx_fill(px + 1, py + 1, pw - 2, tb, 0x2f6f9f);
+    gfx_fill(px + pw - tb / 2 - 3, py + 2, 3, 3, 0xdfefff);
+    gfx_text(px + 3, py + tb + 2, ">_", 0x7fe0a0);
+}
+
+/* FILES: 文件夹 (标签 + 主体 + 文件线) */
+static void draw_icon_files(int x, int y)
+{
+    int ch = gfx_cell_h();
+    int fx = x + 4, fy = y + 8;
+    int fw = ICON_W - 8, fh = ICON_H - 16;
+    int tab_h = ch / 3;
+    int tab_w = fw / 2;
+    gfx_fill(fx, fy, tab_w, tab_h, 0xd8b040);
+    gfx_fill(fx, fy + tab_h, fw, fh - tab_h, 0xdfc060);
+    gfx_bevel(fx, fy + tab_h, fw, fh - tab_h, 0xfff0b0, 0x806010);
+    for (int i = 0; i < 3; i++)
+        gfx_fill(fx + 4, fy + tab_h + 4 + i * (fh - tab_h) / 4,
+                 fw - 8 - i * 3, 2, 0xb09030);
+}
+
+/* SYS: 芯片 (引脚 + 内核) */
+static void draw_icon_sys(int x, int y)
+{
+    int sx = x + 8, sy = y + 10;
+    int sw = ICON_W - 16, sh = ICON_H - 20;
+    gfx_fill(sx, sy, sw, sh, 0x2f7f7f);
+    gfx_bevel(sx, sy, sw, sh, 0xd0f0f0, 0x103838);
+    gfx_fill(sx + sw / 4, sy + sh / 4, sw / 2, sh / 2, 0x102028);
+    gfx_bevel(sx + sw / 4, sy + sh / 4, sw / 2, sh / 2, 0x60b0b0, 0x081818);
+    for (int i = 1; i < 4; i++) {
+        int off = sw * i / 4;
+        gfx_fill(sx + off - 1, sy - 3, 2, 3, 0xc0e0e0);
+        gfx_fill(sx + off - 1, sy + sh, 2, 3, 0xc0e0e0);
+    }
+    for (int i = 1; i < 3; i++) {
+        int off = sh * i / 3;
+        gfx_fill(sx - 3, sy + off - 1, 3, 2, 0xc0e0e0);
+        gfx_fill(sx + sw, sy + off - 1, 3, 2, 0xc0e0e0);
+    }
+}
+
 static void draw_wallpaper(void)
 {
     int H = gfx_h();
@@ -204,6 +256,12 @@ static void draw_wallpaper(void)
         int y = ICON_Y + i * ICON_STEP;
         gfx_fill(ICON_X, y, ICON_W, ICON_H, cols[i]);
         gfx_bevel(ICON_X, y, ICON_W, ICON_H, 0xffffff, 0x202020);
+        if (i == 0)
+            draw_icon_term(ICON_X, y);
+        else if (i == 1)
+            draw_icon_files(ICON_X, y);
+        else
+            draw_icon_sys(ICON_X, y);
         if (icon_sel == i)
             gfx_bevel(ICON_X - 3, y - 3, ICON_W + 6, ICON_H + 6,
                       C_ACCENT, C_ACCENT);

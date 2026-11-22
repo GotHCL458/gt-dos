@@ -558,6 +558,7 @@ static void cmd_config(int argc, char **argv)
         kprintf("theme      = fg %u / bg %u\n", gcfg.theme_fg, gcfg.theme_bg);
         kprintf("hostname   = %s\n", gcfg.hostname);
         kprintf("last_user  = %s\n", gcfg.last_user);
+        kprintf("gui_default= %s\n", gcfg.gui_default ? "yes" : "no");
         kprintf("storage    = %s\n", fat_ready() ? "\\GT-DOS\\GTOS.CFG on FAT"
                                                  : "memory only (no disk)");
     } else if (!strncasecmp(sub, "reset", 8)) {
@@ -568,8 +569,27 @@ static void cmd_config(int argc, char **argv)
         strncpy(gcfg.hostname, "GT-DOS", sizeof(gcfg.hostname) - 1);
         cfg_save();
         ok("Config reset. OOBE will run on next boot.\n");
+    } else if (!strncasecmp(sub, "gui", 3)) {
+        if (argc < 3) {
+            kprintf("gui_default = %s\n", gcfg.gui_default ? "yes" : "no");
+            return;
+        }
+        if (!need_admin()) return;
+        bool on = !strcasecmp(argv[2], "on") || !strcasecmp(argv[2], "yes") ||
+                  !strcmp(argv[2], "1");
+        bool off = !strcasecmp(argv[2], "off") || !strcasecmp(argv[2], "no") ||
+                   !strcmp(argv[2], "0");
+        if (!on && !off) {
+            err("Usage: CONFIG GUI ON|OFF\n");
+            return;
+        }
+        gcfg.gui_default = on;
+        if (cfg_save())
+            ok("Default GUI at startup: %s\n", on ? "on" : "off");
+        else
+            ui_info("Default GUI set (not saved: no disk).\n");
     } else {
-        err("Usage: CONFIG SHOW|RESET\n");
+        err("Usage: CONFIG SHOW|RESET|GUI ON|OFF\n");
     }
 }
 

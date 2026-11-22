@@ -712,6 +712,7 @@ struct gt_config {
     char last_user[16];
     char hostname[16];
     char sys_drive;                    /* 系统盘符, 默认 'C' */
+    bool gui_default;                  /* 登录后默认进入图形桌面 */
 };
 extern struct gt_config gcfg;
 

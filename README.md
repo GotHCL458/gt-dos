@@ -245,12 +245,14 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
   sections
 
 **GUI desktop and mouse**
-- `DESKTOP` / `GUI` enters the desktop; `TEXTMODE`, the bottom-right `TEXT`
-  button or the title-bar `x` returns to plain text (documented in help, zh/en)
-- The desktop is drawn above the graphics console: gradient wallpaper, clickable
-  desktop icons (`TERM`/`FILES`/`SYS`), a centred terminal window (title bar,
-  `M` maximize/`R` restore, close button) and a taskbar with a `GT-DOS` start
-  button, caption and a running clock
+- After login GT-DOS enters the graphical desktop automatically
+  (`gui_default=1` in `GTOS.CFG`); `CONFIG GUI OFF` disables it, and
+  `DESKTOP` / `GUI` re-enters on demand; `TEXTMODE`, the bottom-right `TEXT`
+  button or the title-bar `x` returns to plain text (documented in help)
+- The desktop is drawn above the graphics console: gradient wallpaper, rendered
+  desktop icons (`TERM` = mini terminal, `FILES` = folder, `SYS` = chip),
+  a centred terminal window (title bar, `M` maximize/`R` restore, close button)
+  and a taskbar with a `GT-DOS` start button, caption and a running clock
 - Start menu (click the `GT-DOS` button): `Terminal` closes the menu, `Theme`
   cycles three wallpaper palettes, `About` opens a modal dialog, `Settings`
   opens the control panel and `Exit GUI` returns to plain text
