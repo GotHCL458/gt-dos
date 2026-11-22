@@ -61,9 +61,14 @@ class VM:
         try: os.remove(path)
         except OSError: pass
         self.mon(f"screendump {path}", 700)
-        for _ in range(10):
-            if os.path.exists(path): return read_ppm(path)
-            time.sleep(0.2)
+        # QEMU 是异步写 PPM 的: 等文件达到整屏大小后再解析, 避免读到截断帧
+        for _ in range(40):
+            if os.path.exists(path) and os.path.getsize(path) >= 2359312:
+                time.sleep(0.15)
+                img = read_ppm(path)
+                if img:
+                    return img
+            time.sleep(0.1)
         return None
     def close(self):
         if self.p.poll() is None:

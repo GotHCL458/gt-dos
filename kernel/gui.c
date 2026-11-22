@@ -183,18 +183,48 @@ static u32 color_scale(u32 c, int pct)
 }
 
 /* ------------------------------------------------------- 桌面图标图形 */
-/* TERM: 迷你终端窗口 (标题栏 + 提示符) */
+/* TERM: 迷你终端窗口 (标题栏 + ">" 提示符 + 方块光标).
+   提示符用像素绘制而不是字模: 字号在半高的小图标里会显得过大且 "_" 会掉到
+   基线以下, 看起来像一根游离的横线. */
 static void draw_icon_term(int x, int y)
 {
     int ch = gfx_cell_h();
+    int s = gfx_scale();
+    if (s < 1) s = 1;
     int px = x + 4, py = y + 6;
     int pw = ICON_W - 8, ph = ICON_H - 12;
-    int tb = ch / 2;
-    gfx_fill(px, py, pw, ph, 0x0a1018);
+    int tb = ch / 2;                          /* 标题栏高度 */
+
+    gfx_fill(px, py, pw, ph, 0x0a141e);
     gfx_bevel(px, py, pw, ph, 0xdfefff, 0x101820);
-    gfx_fill(px + 1, py + 1, pw - 2, tb, 0x2f6f9f);
-    gfx_fill(px + pw - tb / 2 - 3, py + 2, 3, 3, 0xdfefff);
-    gfx_text(px + 3, py + tb + 2, ">_", 0x7fe0a0);
+    gfx_fill(px + 1, py + 1, pw - 2, tb, 0x1e4a72);
+
+    /* 标题栏三个按钮点 */
+    for (int i = 0; i < 3; i++)
+        gfx_fill(px + 3 + i * (s + 2), py + 1 + (tb - s) / 2, s, s, 0xdce9ff);
+
+    /* ">" 提示符: 上下两段斜线在中间汇合 */
+    int wv = (pw - 8) / 3;
+    if (wv > 6 * s) wv = 6 * s;
+    if (wv < 3) wv = 3;
+    int cvh = wv * 2;
+    int cmd_y = py + tb + 2;
+    if (cmd_y + cvh > py + ph - 2)
+        cvh = py + ph - 2 - cmd_y;
+    if (cvh < 4) cvh = 4;
+    wv = cvh / 2;
+    int bx = px + 4;
+    for (int i = 0; i < wv; i++) {
+        gfx_fill(bx + i, cmd_y + i, s, s, 0x7fe0a0);
+        gfx_fill(bx + i, cmd_y + cvh - 1 - i, s, s, 0x7fe0a0);
+    }
+
+    /* 方块光标 */
+    int kx = bx + wv + 2 * s;
+    int klen = pw - (kx - px) - 4;
+    if (klen > wv) klen = wv;
+    if (klen < 3) klen = 3;
+    gfx_fill(kx, cmd_y + cvh / 2 - s / 2, klen, s, 0x7fe0a0);
 }
 
 /* FILES: 文件夹 (标签 + 主体 + 文件线) */
