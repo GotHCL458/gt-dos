@@ -353,6 +353,7 @@ void gfx_flip(void)
     for (int i = 0; i < n; i++)
         d[i] = src[i];
     gfx_poked = true;
+    gui_cursor_refresh();              /* GUI: 防止指针被整屏提交覆盖 */
 }
 
 /* 只提交一个矩形区域 (局部刷新, 用于单字符输出) */
@@ -376,6 +377,7 @@ void gfx_flip_rect(int x, int y, int w, int h)
             fb[yy * gw + i] = back[yy * gw + i];
     }
     gfx_poked = true;
+    gui_cursor_refresh();              /* GUI: 立即补画指针, 避免一帧闪烁 */
 }
 
 /* GUI 鼠标指针: 直接写显存 (不进入后台缓冲), 恢复时从后台重拷.

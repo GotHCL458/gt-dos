@@ -253,9 +253,16 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
 - `vga_gui_viewport` clips the text grid to the window client area, so the
   window still hosts the complete shell, TC programs and the editor with the
   normal console cursor and scrolling
-- PS/2 mouse: 2× acceleration at ≥1280 wide; the pointer is written straight to
-  video memory and restored from the back buffer on movement, so it never
-  pollutes window content. Mouse and clock update while input is idle
+- Window dragging: hold the title bar (except the close button) and move; the
+  window is clamped above the taskbar and the console viewport moves with it
+- PS/2 mouse: 2× acceleration at ≥1280 wide; the pointer is white with a black
+  outline and scales with the font, written straight to video memory and
+  repainted immediately after every console commit (no overwrite flicker);
+  movement restores the old area from the back buffer, so window content is
+  never polluted
+- `python build.py run` uses `gtk,grab-on-hover=on,show-cursor=off`: the mouse
+  is captured on hover and the host pointer hidden, avoiding double-cursor
+  flicker and pointer escape at the window edges; `Ctrl+Alt+G` releases it
 - Requires VBE graphics; if only the VGA text fallback is available, `GUI`
   reports that the desktop is unavailable
 
@@ -493,7 +500,7 @@ live in stack slots, no register allocation).
 
 ## Notes and Limitations
 
-- The kernel currently fits in 561 sectors (287,072 bytes including the 48-byte `GTK1`
+- The kernel currently fits in 569 sectors (291,168 bytes including the 48-byte `GTK1`
   trailer); the build cap is 640 sectors (320 KB), loaded between `0x10000` and `0x60000`.
   The linker also asserts `.bss <= 0xA0000` and `.highbss <= LIB_BASE`.
 - The GDT is built in low memory (0x6800) rather than `.data`: loading a segment register

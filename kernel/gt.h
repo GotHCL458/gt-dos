@@ -157,6 +157,7 @@ bool gui_active(void);
 bool gui_enter(void);                 /* 进入桌面 (需图形模式) */
 void gui_leave(void);                 /* 返回纯文本控制台 */
 void gui_pump(void);                  /* 输入空闲时处理鼠标/时钟 */
+void gui_cursor_refresh(void);        /* 控制台提交后立即重画指针 */
 
 /* 控制台视口 (GUI 终端窗口) */
 void vga_gui_viewport(int x, int y, int w, int h);

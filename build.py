@@ -638,6 +638,10 @@ def run_qemu(hd, nogui=False, debug=False, full=False):
     ]
     if nogui:
         cmd += ["-display", "none"]
+    else:
+        # 鼠标移入窗口即捕获, 并隐藏宿主指针: 避免宿主光标与来宾指针重叠闪烁,
+        # 也避免移到屏幕边缘时指针逃出窗口 (Ctrl+Alt+G 释放)
+        cmd += ["-display", "gtk,grab-on-hover=on,show-cursor=off"]
     if full:
         cmd += ["-full-screen"]
     if debug:
@@ -645,7 +649,8 @@ def run_qemu(hd, nogui=False, debug=False, full=False):
 
     print("\n==> 启动 QEMU:")
     print("    " + " ".join(cmd))
-    print("    串口输出直接显示在本终端; 引导时先出现 BIOS 信息属正常现象.\n")
+    print("    串口输出直接显示在本终端; 引导时先出现 BIOS 信息属正常现象.")
+    print("    图形桌面: 输入 DESKTOP; 鼠标移入窗口自动捕获, Ctrl+Alt+G 释放.\n")
     try:
         subprocess.call(cmd)
     except KeyboardInterrupt:

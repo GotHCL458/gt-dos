@@ -127,14 +127,48 @@ vm.buf = ""
 vm.cmd("ver", 1200)
 check("keyboard inside GUI", vm.expect("GT-DOS", 6000), vm.buf[-300:])
 
+# 窗口拖动: 指针在客户区中心 -> 标题栏 -> 按下 -> 移动 -> 松开
+drag_ok = False
+img3 = None
+if img1:
+    w, h, p1 = img1
+    k = 2 if w >= 1280 else 1
+    def move_guest(gx, gy):
+        dx, dy = int(gx / k), int(gy / k)
+        while dx or dy:
+            sx = max(-100, min(100, dx)); sy = max(-100, min(100, dy))
+            vm.mon(f"mouse_move {sx} {sy}", 60)
+            dx -= sx; dy -= sy
+    tx, ty = int(w * 0.2), int(h * 0.12)          # 标题栏上的点
+    move_guest(tx - w // 2, ty - h // 2)
+    vm.mon("mouse_button 1", 300)
+    gdx, gdy = int(w * 0.08), int(h * 0.04)        # 拖动位移
+    move_guest(gdx, gdy)
+    vm.mon("mouse_button 0", 500)
+    time.sleep(0.4)
+    img3 = vm.shot(os.path.join(SRC, "gui3.ppm"))
+    check("screendump after drag", img3 is not None)
+    if img3:
+        _, _, p3 = img3
+        def px(p, x, y):
+            i = (y * w + x) * 3
+            return (p[i], p[i + 1], p[i + 2])
+        titles = {(0x2a, 0x6a, 0xb0), (0x1f, 0x4e, 0x8a)}
+        old = px(p3, tx, ty)
+        new = px(p3, tx + gdx + 40, ty + gdy)   # 避开指针本身
+        print(f"       drag old={old} new={new}")
+        check("window moved by drag", new in titles and old not in titles,
+              f"old={old} new={new}")
+        drag_ok = True
+
 # 鼠标移动: 连续相对移动后截屏, 与第一张比较
 for _ in range(8):
     vm.mon("mouse_move 40 30", 120)
 time.sleep(0.4)
 img2 = vm.shot(os.path.join(SRC, "gui2.ppm"))
 check("screendump after mouse", img2 is not None)
-if img1 and img2:
-    _, _, a = img1; _, _, b = img2
+if img3 and img2:
+    _, _, a = img3; _, _, b = img2
     diff = sum(1 for i in range(0, min(len(a), len(b)), 3 * 11)
                if a[i:i+3] != b[i:i+3])
     print(f"       mouse diff samples {diff}")

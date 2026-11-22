@@ -35,15 +35,19 @@ static int BT_X, BT_Y, BT_W, BT_H;      /* 标题栏关闭按钮 */
 static int EX_X, EX_Y, EX_W, EX_H;      /* 任务栏 TEXT 按钮 */
 static int CK_X, CK_Y;                  /* 时钟 */
 static int cur_x = -1, cur_y = -1;      /* 指针当前位置 */
+static int cs_w = CUR_W, cs_h = CUR_H;  /* 按字模缩放后的指针尺寸 */
 static int last_btn;
 static u32 pump_guard;
 static u32 clock_sec = 0xFFFFFFFFu;
+static bool dragging;
+static int drag_dx, drag_dy;
 
-/* 经典箭头指针 (12x19, 每行低 12 位, 最高位为最左像素) */
+/* 箭头指针 (12x19): 黑色实心 + 1px 白色描边, 在深浅背景上都清晰.
+   每行低 12 位, 最高位为最左像素. */
 static const u16 cur_shape[CUR_H] = {
     0x800, 0xC00, 0xE00, 0xF00, 0xF80, 0xFC0, 0xFE0, 0xFF0,
-    0xFF8, 0xFFC, 0xFFE, 0xC00, 0xE00, 0x600, 0x700, 0x300,
-    0x380, 0x180, 0x100
+    0xFF8, 0xFFC, 0xFFE, 0xFFF, 0xE00, 0xE00, 0xE00, 0xE00,
+    0xC00, 0x800, 0x800
 };
 
 static int bit_at(int r, int c)
@@ -53,15 +57,35 @@ static int bit_at(int r, int c)
     return (cur_shape[r] >> (CUR_W - 1 - c)) & 1;
 }
 
+static bool near_shape(int r, int c)
+{
+    for (int dr = -1; dr <= 1; dr++)
+        for (int dc = -1; dc <= 1; dc++)
+            if (bit_at(r + dr, c + dc))
+                return true;
+    return false;
+}
+
+static void fb_block(int x, int y, int s, u32 c)
+{
+    for (int j = 0; j < s; j++)
+        for (int i = 0; i < s; i++)
+            gfx_fb_pixel(x + i, y + j, c);
+}
+
+/* 白色主体 + 黑色描边 (经典指针配色): 深色/浅色背景上都清晰.
+   按字模缩放倍数放大 (最大 2 倍), 高分屏上不会显得过小. */
 static void cursor_draw(int x, int y)
 {
-    for (int r = 0; r < CUR_H; r++) {
-        for (int c = 0; c < CUR_W; c++) {
-            if (!bit_at(r, c))
-                continue;
-            bool border = !bit_at(r, c - 1) || !bit_at(r, c + 1) ||
-                          !bit_at(r - 1, c) || !bit_at(r + 1, c);
-            gfx_fb_pixel(x + c, y + r, border ? 0xFFFFFF : 0x101010);
+    int s = gfx_scale();
+    if (s < 1) s = 1;
+    if (s > 2) s = 2;
+    for (int r = -1; r <= CUR_H; r++) {
+        for (int c = -1; c <= CUR_W; c++) {
+            if (bit_at(r, c))
+                fb_block(x + c * s, y + r * s, s, 0xFFFFFF);
+            else if (near_shape(r, c))
+                fb_block(x + c * s, y + r * s, s, 0x000000);
         }
     }
 }
@@ -70,19 +94,33 @@ static void cursor_show(int x, int y)
 {
     if (!gfx_active())
         return;
+    int s = gfx_scale();
+    if (s < 1) s = 1;
+    if (s > 2) s = 2;
+    cs_w = CUR_W * s;
+    cs_h = CUR_H * s;
     if (cur_x >= 0)
-        gfx_fb_restore(cur_x, cur_y, CUR_W, CUR_H);
-    int maxx = gfx_w() - CUR_W - 1;
-    int maxy = gfx_h() - CUR_H - 1;
-    if (maxx < 0) maxx = 0;
-    if (maxy < 0) maxy = 0;
-    if (x < 0) x = 0;
-    if (y < 0) y = 0;
+        gfx_fb_restore(cur_x - 1, cur_y - 1, cs_w + 2, cs_h + 2);
+    int maxx = gfx_w() - cs_w - 2;
+    int maxy = gfx_h() - cs_h - 2;
+    if (maxx < 1) maxx = 1;
+    if (maxy < 1) maxy = 1;
+    if (x < 1) x = 1;
+    if (y < 1) y = 1;
     if (x > maxx) x = maxx;
     if (y > maxy) y = maxy;
     cur_x = x;
     cur_y = y;
     cursor_draw(x, y);
+}
+
+/* 控制台刚提交过矩形: 立即重画指针, 避免指针被覆盖后出现一帧闪烁 */
+void gui_cursor_refresh(void)
+{
+    if (!active || cur_x < 0)
+        return;
+    gfx_fb_restore(cur_x - 1, cur_y - 1, cs_w + 2, cs_h + 2);
+    cursor_draw(cur_x, cur_y);
 }
 
 /* --------------------------------------------------------------- 绘制 */
@@ -106,8 +144,8 @@ static void draw_wallpaper(void)
     int cw = gfx_cell_w(), ch = gfx_cell_h();
     int tw = gfx_text_w("GT-DOS Desktop");
     gfx_text((gfx_w() - tw) / 2, 2 * ch, "GT-DOS Desktop", 0xdfefff);
-    gfx_text((gfx_w() - gfx_text_w("basic GUI / PS2 mouse")) / 2,
-             3 * ch, "basic GUI / PS2 mouse", 0x8fb6d8);
+    gfx_text((gfx_w() - gfx_text_w("drag title bar | click to capture mouse")) / 2,
+             3 * ch, "drag title bar | click to capture mouse", 0x8fb6d8);
     /* 左侧桌面图标 */
     const char *names[3] = { "TERM", "FILES", "SYS" };
     u32 cols[3] = { 0x2f6f9f, 0x3f8f5f, 0x8f6f2f };
@@ -153,17 +191,18 @@ static void draw_button(int x, int y, int w, int h, const char *label,
     }
 }
 
-static void draw_desktop(void)
+/* 按当前 WX/WY 计算所有派生矩形; WX/WY<0 时居中, WW/WH<=0 时按 3/4 屏 */
+static void layout(void)
 {
     int cw = gfx_cell_w(), ch = gfx_cell_h();
     int gw = gfx_w(), gh = gfx_h();
 
     TASK_H = ch + 10;
     TITLE_H = ch + 8;
-    WW = gw * 3 / 4;
-    WH = gh * 3 / 4;
-    WX = (gw - WW) / 2;
-    WY = (gh - TASK_H - WH) / 2;
+    if (WW <= 0) WW = gw * 3 / 4;
+    if (WH <= 0) WH = gh * 3 / 4;
+    if (WX < 0) WX = (gw - WW) / 2;
+    if (WY < 0) WY = (gh - TASK_H - WH) / 2;
     CL_X = WX + 6;
     CL_Y = WY + TITLE_H;
     CL_W = WW - 12;
@@ -181,7 +220,14 @@ static void draw_desktop(void)
     EX_Y = gh - TASK_H;
     CK_X = EX_X - 8 * cw - 18;
     CK_Y = gh - TASK_H + (TASK_H - ch) / 2;
+}
 
+static void draw_desktop(void)
+{
+    int cw = gfx_cell_w(), ch = gfx_cell_h();
+    int gw = gfx_w(), gh = gfx_h();
+
+    layout();
     draw_wallpaper();
 
     /* 窗口阴影/边框/标题栏 */
@@ -212,6 +258,20 @@ static void draw_desktop(void)
     draw_clock();
 }
 
+/* 重绘桌面 (拖动窗口/位置变化): 恢复指针 -> 重画背景与窗口 -> 重设视口 */
+static void redraw_desktop(void)
+{
+    if (cur_x >= 0) {
+        gfx_fb_restore(cur_x - 1, cur_y - 1, CUR_W + 2, CUR_H + 2);
+        cur_x = cur_y = -1;
+    }
+    draw_desktop();
+    vga_gui_viewport(CL_X, CL_Y, CL_W, CL_H);
+    gfx_flip();
+    gfx_poked = false;
+    cursor_show(mouse_x(), mouse_y());
+}
+
 /* --------------------------------------------------------------- 接口 */
 bool gui_active(void) { return active; }
 
@@ -224,6 +284,9 @@ bool gui_enter(void)
     if (active)
         return true;
     cur_x = cur_y = -1;
+    WX = WY = -1;
+    WW = WH = 0;
+    dragging = false;
     gfx_poked = false;
     draw_desktop();
     vga_gui_viewport(CL_X, CL_Y, CL_W, CL_H);
@@ -242,8 +305,9 @@ void gui_leave(void)
     if (!active)
         return;
     active = false;
+    dragging = false;
     if (cur_x >= 0)
-        gfx_fb_restore(cur_x, cur_y, CUR_W, CUR_H);
+        gfx_fb_restore(cur_x - 1, cur_y - 1, CUR_W + 2, CUR_H + 2);
     cur_x = cur_y = -1;
     vga_gui_leave();
     kprintf("[gui] text mode\n");
@@ -260,17 +324,47 @@ void gui_pump(void)
         return;
 
     int btn = mouse_buttons();
-    if ((btn & 1) && !(last_btn & 1)) {
-        int x = mouse_x(), y = mouse_y();
+    int x = mouse_x(), y = mouse_y();
+    bool left = (btn & 1) != 0;
+    bool pressed = left && !(last_btn & 1);
+    last_btn = btn;
+
+    if (pressed) {
         if (inside(x, y, BT_X, BT_Y, BT_W, BT_H) ||
             inside(x, y, EX_X, EX_Y, EX_W, EX_H)) {
             gui_leave();
             return;
         }
+        /* 标题栏拖动 (关闭按钮除外) */
+        if (inside(x, y, WX, WY, WW, TITLE_H) &&
+            !inside(x, y, BT_X, BT_Y, BT_W, BT_H)) {
+            dragging = true;
+            drag_dx = x - WX;
+            drag_dy = y - WY;
+        }
     }
-    last_btn = btn;
+    if (!left)
+        dragging = false;
 
-    int x = mouse_x(), y = mouse_y();
+    if (dragging) {
+        int nx = x - drag_dx;
+        int ny = y - drag_dy;
+        int maxx = gfx_w() - WW;
+        int maxy = gfx_h() - TASK_H - WH;
+        if (maxx < 0) maxx = 0;
+        if (maxy < 0) maxy = 0;
+        if (nx < 0) nx = 0;
+        if (ny < 0) ny = 0;
+        if (nx > maxx) nx = maxx;
+        if (ny > maxy) ny = maxy;
+        if (nx != WX || ny != WY) {
+            WX = nx;
+            WY = ny;
+            redraw_desktop();
+            return;
+        }
+    }
+
     if (x != cur_x || y != cur_y || gfx_poked) {
         gfx_poked = false;
         cursor_show(x, y);
