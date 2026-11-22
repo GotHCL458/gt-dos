@@ -489,23 +489,23 @@ void syscall_handle(struct regs *r)
     case SYS_GFX_FILL:
         if (!gfx_active()) { r->rax = (u64)-1; break; }
         gfx_fill((int)r->rdi, (int)r->rsi, (int)r->rdx,
-                 (int)r->r10, (u32)r->r8);
+                 (int)r->rcx, (u32)r->r8);
         r->rax = 0;
         break;
     case SYS_GFX_FRAME:
         if (!gfx_active()) { r->rax = (u64)-1; break; }
         gfx_frame((int)r->rdi, (int)r->rsi, (int)r->rdx,
-                  (int)r->r10, (u32)r->r8);
+                  (int)r->rcx, (u32)r->r8);
         r->rax = 0;
         break;
     case SYS_GFX_TEXT:
         if (!gfx_active()) { r->rax = (u64)-1; break; }
         r->rax = (u64)gfx_text((int)r->rdi, (int)r->rsi,
-                               (const char *)r->rdx, (u32)r->r10);
+                               (const char *)r->rdx, (u32)r->rcx);
         break;
     case SYS_GFX_BAR:
         if (!gfx_active()) { r->rax = (u64)-1; break; }
-        gfx_bar((int)r->rdi, (int)r->rsi, (int)r->rdx, (int)r->r10,
+        gfx_bar((int)r->rdi, (int)r->rsi, (int)r->rdx, (int)r->rcx,
                 (int)r->r8, (u32)r->r9);
         r->rax = 0;
         break;

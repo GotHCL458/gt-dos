@@ -103,7 +103,7 @@ GUI 绘图与用户画布使用 64–73 号调用：
 | 67 | `SYS_GFX_FILL` | 72 | `SYS_GUI_POLL` |
 | 68 | `SYS_GFX_FRAME` | 73 | `SYS_GFX_BAR` |
 
-- 套接字与 GUI 调用最多使用六个参数（`rdi`、`rsi`、`rdx`、`r10`、`r8`、`r9`）；
+- 套接字与 GUI 调用最多使用六个参数（`rdi`、`rsi`、`rdx`、`rcx`、`r8`、`r9`）；
   前三项与原 ABI 相同，既有程序不受影响
 - `SYS_GUI_BEGIN` 在桌面激活时接管全屏，`SYS_GFX_*` 画到后台缓冲，
   `SYS_GUI_FLUSH` 提交，`SYS_GUI_POLL` 取得鼠标位置/按键与键盘输入，
@@ -450,12 +450,14 @@ rust/
   gtmkfs/            exFAT 格式化/填充 + 加密种子文件 (构建期工具)
   mkfont/            GDI 字模生成器 (4bit 灰度 font.gtd + cpm.gtd)
 tools/
-  sdk/               系统内 SDK: tc.h, net.h, gui.h, gui.c, gui_demo.c, hello.c,
-                     fib.c, net.c, readme.txt
+  sdk/               系统内 SDK: tc.h, net.h, gui.h, gui.c, gui_demo.c, gui_ut.c,
+                     hello.c, fib.c, net.c, readme.txt
   hello.asm          示例程序 (INT 0x21 SYS_WRITE/SYS_EXIT), 种子为 HELLO.GTP
   demo.asm           示例程序: .gtd 读取/seek、stat、.gtl 库调用 (DEMO.GTP)
   sample_lib.asm     示例共享库, 导出 add/mul (SAMPLE.GTL)
   svc_net.asm        系统服务程序, 种子为 \GT-DOS\SERVICES\NETSVC.GTP
+  test_gui.py        桌面/控件/鼠标/拖动/缩放回归 (截图像素校验)
+  test_gui_lib.py    C GUI 库单元测试 (返回值、绘制像素、失败路径)
   test_v03.py        端到端测试: OOBE, 登录, 文件命令
   test_v04.py        回归测试: 单盘 C:, GT-DOS 目录, 属性, 系统保护
   test_syscall.py    INT 0x21 门与 RUN 程序执行测试

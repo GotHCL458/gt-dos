@@ -79,18 +79,17 @@ static inline long gt_syscall(long nr, long a, long b, long c)
     return gt_syscall3(nr, a, b, c);
 }
 
-/* 6 参数版本: 第 4/5/6 个参数走 r10/r8/r9 (与内核 syscall_handle 一致) */
+/* 6 参数版本: 第 4/5/6 个参数走 rcx/r8/r9 (TC 代码生成与内核分派一致) */
 static inline long gt_syscall6(long nr, long a, long b, long c,
                                long d, long e, long f)
 {
-    register long r10 __asm__("r10") = d;
-    register long r8  __asm__("r8")  = e;
-    register long r9  __asm__("r9")  = f;
+    register long r8v __asm__("r8") = e;
+    register long r9v __asm__("r9") = f;
     long ret;
     __asm__ __volatile__("int $0x21" : "=a"(ret)
-                         : "a"(nr), "D"(a), "S"(b), "d"(c),
-                           "r"(r10), "r"(r8), "r"(r9)
-                         : "rcx", "r11", "memory");
+                         : "a"(nr), "D"(a), "S"(b), "d"(c), "c"(d),
+                           "r"(r8v), "r"(r9v)
+                         : "r11", "memory");
     return ret;
 }
 

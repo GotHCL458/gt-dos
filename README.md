@@ -107,7 +107,7 @@ GUI drawing and the user GUI canvas use calls 64–73:
 | 67 | `SYS_GFX_FILL` | 72 | `SYS_GUI_POLL` |
 | 68 | `SYS_GFX_FRAME` | 73 | `SYS_GFX_BAR` |
 
-- Socket and GUI calls may use up to six arguments (`rdi`, `rsi`, `rdx`, `r10`, `r8`, `r9`);
+- Socket and GUI calls may use up to six arguments (`rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9`);
   the first three follow the original ABI, so existing programs are unaffected
 - `SYS_GUI_BEGIN` takes over the full screen while the desktop is active, `SYS_GFX_*`
   render into the back buffer, `SYS_GUI_FLUSH` presents it, `SYS_GUI_POLL` returns
@@ -501,12 +501,14 @@ rust/
   gtmkfs/            exFAT formatter/populator + encrypted seed files (build-time tool)
   mkfont/            GDI font generator (4-bit grayscale font.gtd + cpm.gtd)
 tools/
-  sdk/               in-system SDK: tc.h, net.h, gui.h, gui.c, gui_demo.c, hello.c,
-                     fib.c, net.c, readme.txt
+  sdk/               in-system SDK: tc.h, net.h, gui.h, gui.c, gui_demo.c, gui_ut.c,
+                     hello.c, fib.c, net.c, readme.txt
   hello.asm          example program (INT 0x21 SYS_WRITE/SYS_EXIT), seeded as HELLO.GTP
   demo.asm           example program: .gtd read/seek, stat, .gtl library call (DEMO.GTP)
   sample_lib.asm     example shared library exporting add/mul (SAMPLE.GTL)
   svc_net.asm        system service program, seeded as \GT-DOS\SERVICES\NETSVC.GTP
+  test_gui.py        desktop/widgets/mouse/drag/resize regression with screenshots
+  test_gui_lib.py    C GUI library unit test (return values, pixel checks, failure path)
   test_v03.py        end-to-end test: OOBE, login, file commands
   test_v04.py        regression: single C: disk, GT-DOS directory, attributes, protection
   test_syscall.py    INT 0x21 gate and RUN program-execution test

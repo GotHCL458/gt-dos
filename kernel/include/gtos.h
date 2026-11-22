@@ -71,7 +71,7 @@
  * GUI 画布: 先 GUI_BEGIN 接管全屏 (需已进入桌面), 用 FILL/FRAME/TEXT/BAR
  * 画到后台缓冲, GUI_FLUSH 提交, GUI_POLL 读取鼠标/键盘, 最后 GUI_END 恢复
  * 桌面. 配套 C 库见 <GUI.H> (gt_panel/gt_button/gt_progress/gt_checkbox/
- * gt_radio). 6 参数调用经 r10/r8/r9 传递.
+ * gt_radio). 6 参数调用经 rcx/r8/r9 传递.
  *
  * SYS_RICH 直接用 Markdown 子集把一段文本渲染到控制台 (标题/粗体/斜体/
  * 删除线/代码/链接/图片/引用/列表/任务/表格/围栏代码块).
