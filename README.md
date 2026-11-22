@@ -267,20 +267,23 @@ GUI drawing and the user GUI canvas use calls 64–73:
   `DESKTOP` / `GUI` re-enters on demand; `TEXTMODE`, the bottom-right `TEXT`
   button or the title-bar `x` returns to plain text (documented in help)
 - The desktop is drawn above the graphics console: gradient wallpaper, rendered
-  desktop icons (`TERM` = mini terminal, `FILES` = folder, `SYS` = chip),
-  a centred terminal window (title bar, `M` maximize/`R` restore, close button)
-  and a taskbar with a `GT-DOS` start button, caption and a running clock
-- Start menu (click the `GT-DOS` button): `Terminal` closes the menu, `Theme`
+  desktop icons with drop shadows (`TERM` = mini terminal, `FILES` = folder,
+  `SYS` = chip), a centred terminal window (title bar with highlight/accent lines,
+  `M` maximize/`R` restore, close button) and a gradient taskbar with a four-colour
+  `Start` logo, an active-window `Terminal` button (click toggles maximize),
+  a running clock and the `TEXT` button
+- Start menu (click the `Start` button): `Terminal` closes the menu, `Theme`
   cycles three wallpaper palettes, `About` opens a modal dialog, `Settings`
   opens the control panel, `Widgets` opens the control demo and `Exit GUI`
-  returns to plain text
+  returns to plain text; each item has a colour key square
 - Settings panel (modal, close with `Close` or a click outside): `<` / `>`
   theme buttons, a `Desktop icons` checkbox, a `24-hour clock` checkbox
   (unchecked shows a 12-hour clock with AM/PM) and a draggable `Brightness`
   slider that dims the wallpaper
 - Widgets panel (start menu `Widgets`): a radio group for the wallpaper theme,
-  an animated progress bar and a selectable list; the same control set is
-  available to C programs through `<gui.h>` (see the system-call section)
+  an animated progress bar, a `Taskbar clock` toggle switch and a selectable
+  list; the same control set is available to C programs through `<gui.h>`
+  (see the system-call section)
 - `vga_gui_viewport` clips the text grid to the window client area, so the
   window still hosts the complete shell, TC programs and the editor with the
   normal console cursor and scrolling
@@ -539,7 +542,7 @@ live in stack slots, no register allocation).
 
 ## Notes and Limitations
 
-- The kernel currently fits in 593 sectors (303,472 bytes including the 48-byte `GTK1`
+- The kernel currently fits in 601 sectors (307,568 bytes including the 48-byte `GTK1`
   trailer); the build cap is 640 sectors (320 KB), loaded between `0x10000` and `0x60000`.
   The linker also asserts `.bss <= 0xA0000` and `.highbss <= LIB_BASE`.
 - The GDT is built in low memory (0x6800) rather than `.data`: loading a segment register

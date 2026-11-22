@@ -325,7 +325,7 @@ if img_noicon:
 goto(428, 362); click(); time.sleep(0.2)
 goto(652, 456); click(); time.sleep(0.2)
 
-# ---- 控件演示: 单选组 / 进度条 / 列表 ----
+# ---- 控件演示: 单选组 / 进度条 / 时钟开关 / 列表 ----
 goto(44, 755); click()
 goto(68, 702); click(); time.sleep(0.5)
 img_wd = vm.shot(os.path.join(SRC, "gui_widgets.ppm"))
@@ -333,19 +333,23 @@ check("screendump widgets", img_wd is not None)
 wall_wd = None
 if img_wd:
     _, _, pw = img_wd
-    c = (pw[(274 * 1024 + 652) * 3], pw[(274 * 1024 + 652) * 3 + 1],
-         pw[(274 * 1024 + 652) * 3 + 2])
+    c = (pw[(260 * 1024 + 650) * 3], pw[(260 * 1024 + 650) * 3 + 1],
+         pw[(260 * 1024 + 650) * 3 + 2])
     print(f"       widgets title pixel {c}")
     check("widgets dialog drawn", c == (0x1f, 0x4e, 0x8a))
     # 进度条已开始填充
-    pc = (pw[(348 * 1024 + 368) * 3], pw[(348 * 1024 + 368) * 3 + 1],
-          pw[(348 * 1024 + 368) * 3 + 2])
+    pc = (pw[(332 * 1024 + 368) * 3], pw[(332 * 1024 + 368) * 3 + 1],
+          pw[(332 * 1024 + 368) * 3 + 2])
     check("widgets progress drawn", pc == (0x4f, 0x9f, 0xdf), f"pixel={pc}")
+    # 时钟开关默认打开 (绿色轨道)
+    tc = (pw[(356 * 1024 + 632) * 3], pw[(356 * 1024 + 632) * 3 + 1],
+          pw[(356 * 1024 + 632) * 3 + 2])
+    check("widgets toggle on", tc == (0x2f, 0x8f, 0x5f), f"pixel={tc}")
     wall_wd = (pw[(300 * 1024 + 960) * 3], pw[(300 * 1024 + 960) * 3 + 1],
                pw[(300 * 1024 + 960) * 3 + 2])
 
 # 单选 Green: 壁纸配色变化
-goto(460, 304); click(); time.sleep(0.3)
+goto(460, 288); click(); time.sleep(0.3)
 img_wd2 = vm.shot(os.path.join(SRC, "gui_widgets_radio.ppm"))
 check("screendump widgets radio", img_wd2 is not None)
 if img_wd2 and wall_wd:
@@ -356,18 +360,47 @@ if img_wd2 and wall_wd:
     check("widgets radio works", w2 != wall_wd)
 
 # 列表选择 Beta: 选中行高亮
-goto(400, 396); click(); time.sleep(0.3)
+goto(400, 406); click(); time.sleep(0.3)
 img_wd3 = vm.shot(os.path.join(SRC, "gui_widgets_list.ppm"))
 check("screendump widgets list", img_wd3 is not None)
 if img_wd3:
     _, _, pl = img_wd3
-    c = (pl[(390 * 1024 + 370) * 3], pl[(390 * 1024 + 370) * 3 + 1],
-         pl[(390 * 1024 + 370) * 3 + 2])
+    c = (pl[(400 * 1024 + 370) * 3], pl[(400 * 1024 + 370) * 3 + 1],
+         pl[(400 * 1024 + 370) * 3 + 2])
     print(f"       list selected pixel {c}")
     check("widgets list selection", c == (0x2a, 0x4a, 0x70))
+    check("taskbar clock visible",
+          color_count(img_wd3, (0xcf, 0xe4, 0xff)) > 2)
+
+# 时钟开关 -> 关闭: 轨道变灰
+goto(644, 356); click(); time.sleep(0.35)
+img_wtg = vm.shot(os.path.join(SRC, "gui_widgets_toggle.ppm"))
+check("screendump widgets toggle off", img_wtg is not None)
+if img_wtg:
+    _, _, ptw = img_wtg
+    tc2 = (ptw[(356 * 1024 + 654) * 3], ptw[(356 * 1024 + 654) * 3 + 1],
+           ptw[(356 * 1024 + 654) * 3 + 2])
+    print(f"       toggle off pixel {tc2}")
+    check("widgets toggle off", tc2 == (0x3a, 0x46, 0x58), f"pixel={tc2}")
+    # 任务栏时钟完全隐藏 (时钟文字色不再出现)
+    check("taskbar clock hidden",
+          color_count(img_wtg, (0xcf, 0xe4, 0xff)) == 0,
+          f"clock_pixels={color_count(img_wtg, (0xcf, 0xe4, 0xff))}")
 
 # 关闭控件演示
-goto(636, 480); click(); time.sleep(0.2)
+goto(636, 496); click(); time.sleep(0.2)
+
+# ---- 任务栏窗口按钮: 点击最大化, 再点还原 ----
+goto(138, 755); click(); time.sleep(0.4)
+img_tb = vm.shot(os.path.join(SRC, "gui_taskbtn_max.ppm"))
+check("screendump taskbar button", img_tb is not None)
+if img_tb:
+    _, _, ptb = img_tb
+    c = (ptb[(8 * 1024 + 10) * 3], ptb[(8 * 1024 + 10) * 3 + 1],
+         ptb[(8 * 1024 + 10) * 3 + 2])
+    check("taskbar button maximizes",
+          c in {(0x1f, 0x4e, 0x8a), (0x2a, 0x6a, 0xb0)}, f"pixel={c}")
+goto(138, 755); click(); time.sleep(0.4)
 
 # 最大化: 标题栏应铺到屏幕左侧 (x=10,y=8)
 goto(863, 95); click(); time.sleep(0.4)

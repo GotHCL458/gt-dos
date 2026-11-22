@@ -47,6 +47,7 @@ static bool settings_open;              /* 设置对话框 */
 static bool widgets_open;               /* 控件演示对话框 */
 static bool maximized;                  /* 窗口最大化 */
 static bool show_icons = true;          /* 显示桌面图标 */
+static bool show_clock = true;          /* 显示任务栏时钟 */
 static bool clock24 = true;             /* 24 小时制时钟 */
 static int theme;                       /* 壁纸配色 */
 static int bright = 100;                /* 壁纸亮度 40..100 */
@@ -57,6 +58,7 @@ static int resize_base_w, resize_base_h;
 static int resize_px, resize_py;
 static int norm_x, norm_y, norm_w, norm_h;
 static int MB_X, MB_Y, MB_W, MB_H;      /* 开始按钮 */
+static int TK_X, TK_Y, TK_W, TK_H;      /* 任务栏窗口按钮 */
 static int MN_X, MN_Y, MN_W, MN_H, MI_H;/* 开始菜单及项高 */
 static int MX_X, MX_Y, MX_W, MX_H;      /* 最大化按钮 */
 static int AB_X, AB_Y, AB_W, AB_H;      /* 关于对话框 */
@@ -70,6 +72,7 @@ static int SD_SL_X, SD_SL_Y, SD_SL_W, SD_SL_H;
 static int SD_CLOSE_X, SD_CLOSE_Y, SD_CLOSE_W, SD_CLOSE_H;
 static int GX, GY, GWH;                 /* 窗口右下角缩放握把 */
 static int WD_X, WD_Y, WD_W, WD_H;      /* 控件演示对话框 */
+static int WT_X, WT_Y, WT_W, WT_H, WT_ROW_Y;  /* 时钟开关 (Toggle) */
 static int WR1_X, WR_Y, WR_SZ, WR_STEP; /* 单选组 */
 static int WP_LAB_Y, WP_X, WP_Y, WP_W, WP_H;  /* 进度条 */
 static int WL_X, WL_Y, WL_W, WL_IH;     /* 列表 */
@@ -296,6 +299,7 @@ static void draw_wallpaper(void)
     u32 cols[3] = { 0x2f6f9f, 0x3f8f5f, 0x8f6f2f };
     for (int i = 0; i < 3; i++) {
         int y = ICON_Y + i * ICON_STEP;
+        gfx_fill(ICON_X + 3, y + 3, ICON_W, ICON_H, 0x080c14);
         gfx_fill(ICON_X, y, ICON_W, ICON_H, cols[i]);
         gfx_bevel(ICON_X, y, ICON_W, ICON_H, 0xffffff, 0x202020);
         if (i == 0)
@@ -315,6 +319,8 @@ static void draw_wallpaper(void)
 
 static void draw_clock(void)
 {
+    if (!show_clock)
+        return;
     u32 hz = timer_hz();
     if (!hz) hz = 100;
     u32 sec = timer_ticks() / hz;
@@ -353,6 +359,38 @@ static void draw_button(int x, int y, int w, int h, const char *label,
     }
 }
 
+/* 小型终端应用图标 (标题栏/任务栏共用) */
+static void draw_app_glyph(int x, int y, int sz)
+{
+    int tb = sz / 3;
+    if (tb < 2) tb = 2;
+    gfx_fill(x, y, sz, sz, 0x0a141e);
+    gfx_bevel(x, y, sz, sz, 0xcfe0f5, 0x101820);
+    gfx_fill(x + 1, y + 1, sz - 2, tb, 0x2f6f9f);
+    for (int i = 0; i < 3; i++)
+        gfx_fill(x + 2 + i * (sz / 8 + 1), y + 2, 1, 1, 0xdce9ff);
+    int bx = x + sz / 4, by = y + tb + sz / 6;
+    int wv = sz / 5;
+    if (wv < 2) wv = 2;
+    for (int i = 0; i < wv; i++) {
+        gfx_fill(bx + i, by + i, 1, 1, 0x7fe0a0);
+        gfx_fill(bx + i, by + wv * 2 - 1 - i, 1, 1, 0x7fe0a0);
+    }
+    gfx_fill(bx + wv + 1, by + wv - 1, wv, 1, 0x7fe0a0);
+}
+
+/* 开关 (Toggle): 轨道 + 滑块 */
+static void draw_toggle(int x, int y, int w, int h, bool on)
+{
+    gfx_fill(x, y, w, h, on ? 0x2f8f5f : 0x3a4658);
+    gfx_bevel(x, y, w, h, 0xbfd0e8, 0x101820);
+    int k = h - 4;
+    if (k < 4) k = 4;
+    int kx = on ? x + w - 2 - k : x + 2;
+    gfx_fill(kx, y + 2, k, k, 0xe8f0ff);
+    gfx_bevel(kx, y + 2, k, k, 0xffffff, 0x606870);
+}
+
 /* ------------------------------------------------------- 浮层: 菜单/对话框 */
 /* 开始菜单: 6 个可点项 (Terminal / Theme / About / Settings / Widgets / Exit) */
 static void draw_menu(void)
@@ -363,12 +401,17 @@ static void draw_menu(void)
     };
     gfx_fill(MN_X, MN_Y, MN_W, MN_H, 0x1b2434);
     gfx_bevel(MN_X, MN_Y, MN_W, MN_H, 0xbfd0e8, 0x0c1220);
+    u32 icol[6] = { 0x66ccff, 0x7fe0a0, 0x9fb3ff,
+                    0xffc060, 0xc090ff, 0xff9090 };
     for (int i = 0; i < 6; i++) {
         int y = MN_Y + 4 + i * MI_H;
+        if (i == 5)
+            gfx_fill(MN_X + 6, y - 2, MN_W - 12, 1, 0x3c5a80);
         bool hot = i == menu_hot;
         gfx_fill(MN_X + 2, y + 1, MN_W - 4, MI_H - 2,
                  hot ? 0x2a4a70 : 0x223a58);
-        gfx_text(MN_X + 10, y + (MI_H - ch) / 2, items[i],
+        gfx_fill(MN_X + 8, y + (MI_H - 4) / 2, 4, 4, icol[i]);
+        gfx_text(MN_X + 18, y + (MI_H - ch) / 2, items[i],
                  i == 5 ? 0xff9a9a : 0xdce9ff);
     }
 }
@@ -500,6 +543,11 @@ static void draw_widgets(void)
     gfx_text(WD_X + 12, WP_LAB_Y, "Progress", 0x8fa8c8);
     gfx_bar(WP_X, WP_Y, WP_W, WP_H, wdg_progress, 0x4f9fdf);
 
+    /* 开关: 任务栏时钟 */
+    gfx_text(WD_X + 12, WT_ROW_Y + 2, "Taskbar clock",
+             show_clock ? 0xdce9ff : 0x8fa8c8);
+    draw_toggle(WT_X, WT_Y, WT_W, WT_H, show_clock);
+
     gfx_fill(WL_X, WL_Y, WL_W, WL_IH * 4, 0x0e1622);
     gfx_bevel(WL_X, WL_Y, WL_W, WL_IH * 4, 0xbfd0e8, 0x101820);
     for (int i = 0; i < 4; i++) {
@@ -581,6 +629,11 @@ static void layout(void)
     MB_Y = gh - TASK_H;
     MB_W = 10 * cw;
     MB_H = TASK_H;
+    /* 任务栏窗口按钮 (活动窗口) */
+    TK_X = MB_X + MB_W + 6;
+    TK_Y = MB_Y;
+    TK_W = 12 * cw;
+    TK_H = TASK_H;
     MI_H = ch + 8;
     MN_W = 16 * cw;
     MN_H = 6 * MI_H + 8;
@@ -632,7 +685,7 @@ static void layout(void)
     /* 控件演示对话框 */
     WD_W = 40 * cw;
     if (WD_W > gw - 40) WD_W = gw - 40;
-    WD_H = 15 * ch;
+    WD_H = 17 * ch;
     if (WD_H > gh - 40) WD_H = gh - 40;
     WD_X = (gw - WD_W) / 2;
     WD_Y = (gh - WD_H) / 2;
@@ -645,8 +698,13 @@ static void layout(void)
     WP_Y = WP_LAB_Y + ch + 2;
     WP_W = WD_W - 24;
     WP_H = ch;
+    WT_ROW_Y = WP_Y + WP_H + 8;
+    WT_W = 2 * ch;
+    WT_H = ch - 4;
+    WT_X = WD_X + WD_W - 12 - WT_W;
+    WT_Y = WT_ROW_Y + (ch + 4 - WT_H) / 2;
     WL_X = WD_X + 12;
-    WL_Y = WP_Y + WP_H + 10;
+    WL_Y = WT_ROW_Y + (ch + 4) + 8;
     WL_W = WD_W - 24;
     WL_IH = ch + 4;
     WC_W = 6 * cw;
@@ -681,7 +739,9 @@ static void draw_desktop(void)
     gfx_bevel(WX, WY, WW, WH, C_FRAME_LT, C_FRAME_DK);
     gfx_fill(WX + 2, WY + 2, WW - 4, TITLE_H - 2, C_TITLE);
     gfx_fill(WX + 2, WY + 2, WW - 4, (TITLE_H - 2) / 2, C_TITLE2);
+    gfx_fill(WX + 2, WY + 2, WW - 4, 1, 0xdfefff);
     gfx_text(WX + 10, WY + (TITLE_H - ch) / 2, "GT-DOS Terminal", C_TEXT);
+    gfx_fill(WX + 2, WY + TITLE_H - 3, WW - 4, 1, 0x4f9fdf);
     draw_button(MX_X, MX_Y, MX_W, MX_H, maximized ? "R" : "M", 0x2f5a8a);
     draw_button(BT_X, BT_Y, BT_W, BT_H, "x", 0x8a2f2f);
 
@@ -697,14 +757,44 @@ static void draw_desktop(void)
         }
     }
 
-    /* 任务栏 */
-    gfx_fill(0, gh - TASK_H, gw, TASK_H, C_TASK);
-    gfx_fill(0, gh - TASK_H, gw, 2, C_TASK_LT);
-    draw_button(MB_X, MB_Y, MB_W, MB_H, "GT-DOS", 0x203850);
-    gfx_text(MB_X + MB_W + 3 * cw,
-             gh - TASK_H + (TASK_H - ch) / 2,
-             "start | terminal", 0x8fa8c8);
-    draw_button(EX_X, EX_Y, EX_W, EX_H, "TEXT", 0x304050);
+    /* 任务栏: 渐变底 + 顶部高光 */
+    int ty0 = gh - TASK_H;
+    gfx_fill(0, ty0, gw, TASK_H, 0x141c2a);
+    gfx_fill(0, ty0, gw, TASK_H / 2, 0x1b2740);
+    gfx_fill(0, ty0, gw, 2, 0x3c5a80);
+
+    /* 开始按钮: 四色 logo + Start */
+    gfx_fill(MB_X, MB_Y, MB_W, MB_H, 0x22344f);
+    gfx_bevel(MB_X, MB_Y, MB_W, MB_H, 0xbfd0e8, 0x101820);
+    {
+        int sq = ch / 4;
+        if (sq < 3) sq = 3;
+        int gap = 2;
+        int lx = MB_X + 8;
+        int ly = MB_Y + (TASK_H - (sq * 2 + gap)) / 2;
+        u32 lc[4] = { 0x66ccff, 0x7fe0a0, 0xffc060, 0xc090ff };
+        gfx_fill(lx, ly, sq, sq, lc[0]);
+        gfx_fill(lx + sq + gap, ly, sq, sq, lc[1]);
+        gfx_fill(lx, ly + sq + gap, sq, sq, lc[2]);
+        gfx_fill(lx + sq + gap, ly + sq + gap, sq, sq, lc[3]);
+        gfx_text(lx + 2 * sq + gap + 6, MB_Y + (TASK_H - ch) / 2,
+                 "Start", C_TEXT);
+    }
+
+    /* 任务栏窗口按钮 (活动窗口, 点击切换最大化) */
+    gfx_fill(TK_X, TK_Y, TK_W, TK_H, 0x2a4a70);
+    gfx_bevel(TK_X, TK_Y, TK_W, TK_H, 0x9fc0e8, 0x0c1220);
+    {
+        int isz = ch;
+        if (isz > TK_H - 4) isz = TK_H - 4;
+        draw_app_glyph(TK_X + 5, TK_Y + (TASK_H - isz) / 2, isz);
+        gfx_text(TK_X + 7 + isz, TK_Y + (TASK_H - ch) / 2,
+                 "Terminal", 0xdce9ff);
+    }
+
+    /* 时钟分隔线 + TEXT 按钮 */
+    gfx_fill(CK_X - 8, ty0 + 4, 1, TASK_H - 8, 0x3c5a80);
+    draw_button(EX_X, EX_Y, EX_W, EX_H, "TEXT", 0x2a3a4e);
     clock_sec = 0xFFFFFFFFu;
     draw_clock();
 }
@@ -755,6 +845,7 @@ bool gui_enter(void)
     list_sel = 0;
     wdg_progress = 0;
     show_icons = true;
+    show_clock = true;
     clock24 = true;
     bright = 100;
     gfx_poked = false;
@@ -918,6 +1009,11 @@ void gui_pump(void)
             } else if (li >= 0) {
                 list_sel = li;
                 redraw_desktop();
+            } else if (inside(x, y, WD_X + 12, WT_ROW_Y,
+                              WT_X + WT_W - (WD_X + 12),
+                              gfx_cell_h() + 4)) {
+                show_clock = !show_clock;           /* Toggle 开关 */
+                redraw_desktop();
             } else if (inside(x, y, WC_X, WC_Y, WC_W, WC_H) ||
                        !inside(x, y, WD_X, WD_Y, WD_W, WD_H)) {
                 widgets_open = false;
@@ -965,6 +1061,8 @@ void gui_pump(void)
                    inside(x, y, EX_X, EX_Y, EX_W, EX_H)) {
             gui_leave();                          /* 关闭按钮 / TEXT */
             return;
+        } else if (inside(x, y, TK_X, TK_Y, TK_W, TK_H)) {
+            toggle_max();                         /* 任务栏窗口按钮 */
         } else if (inside(x, y, MX_X, MX_Y, MX_W, MX_H)) {
             toggle_max();                         /* 最大化 / 还原 */
         } else if (icon_hit(x, y) >= 0) {
@@ -1064,6 +1162,7 @@ void gui_pump(void)
 
     if (++pump_guard >= 512) {
         pump_guard = 0;
-        draw_clock();
+        if (show_clock)
+            draw_clock();
     }
 }
