@@ -720,6 +720,16 @@ bool png_draw(const u8 *data, u32 len, int dx, int dy)
     return png_render(data, len, dx, dy, 1);
 }
 
+/* 以整数倍最近邻放大绘制 (ICO 内嵌 PNG 等共用) */
+bool png_draw_scaled(const u8 *data, u32 len, int ox, int oy, int s)
+{
+    if (s < 1)
+        s = 1;
+    if (s > 16)
+        s = 16;
+    return png_render(data, len, ox, oy, s);
+}
+
 static bool png_load(const char *path, u32 *out_len)
 {
     struct fat_dirent de;

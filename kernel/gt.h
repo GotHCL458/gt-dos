@@ -160,8 +160,13 @@ void gfx_pixel_a(int x, int y, u32 rgb, u8 a);    /* 后台缓冲按 0..255 alph
 struct png_info { int w, h; u8 depth, ctype, interlace; };
 int  png_info(const u8 *data, u32 len, struct png_info *out); /* 0=ok, <0=错误 */
 bool png_draw(const u8 *data, u32 len, int dx, int dy);       /* 1:1 alpha 混合 */
+bool png_draw_scaled(const u8 *data, u32 len, int ox, int oy, int s); /* 整数倍放大 */
 bool png_draw_file(const char *path, int dx, int dy);         /* FAT 读文件后绘制 */
 bool png_draw_file_fit(const char *path);                     /* 居中/放大铺满屏幕 */
+
+/* ------------------------------------------------------- ICO / SVG 渲染 */
+bool ico_draw_file_fit(const char *path);   /* Windows 图标 (BMP/PNG 条目) */
+bool svg_draw_file_fit(const char *path);   /* SVG 子集 (矢量图形) */
 
 /* --------------------------------------------------- 基础 GUI (gui.c) */
 bool gui_active(void);

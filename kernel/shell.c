@@ -1212,7 +1212,18 @@ static void cmd_show(int argc, char **argv)
     }
 
     gfx_clear(0x101820);
-    bool drawn = png_draw_file_fit(abs);
+    /* 按扩展名选择解码器: .svg / .ico / 其它按 PNG */
+    const char *dot = abs;
+    for (const char *q = abs; *q; q++)
+        if (*q == '.')
+            dot = q;
+    bool drawn;
+    if (!strcasecmp(dot, ".svg"))
+        drawn = svg_draw_file_fit(abs);
+    else if (!strcasecmp(dot, ".ico"))
+        drawn = ico_draw_file_fit(abs);
+    else
+        drawn = png_draw_file_fit(abs);
     gfx_flip();
     gfx_poked = false;
 

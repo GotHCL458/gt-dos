@@ -57,6 +57,8 @@ an exFAT file system, a TCP/IP network stack, user accounts and a bilingual
 - User accounts with passwords; `admin` holds administrator privileges
 - Complete PNG rendering: zlib inflate, all colour types/bit depths, five filters,
   Adam7 interlacing, tRNS/alpha
+- ICO icon rendering (32/24/8/4/1-bit BMP, embedded PNG, AND mask) and an SVG subset
+  vector renderer
 - i18n layer with complete Chinese and English strings
 
 **System calls & programs**
@@ -309,18 +311,26 @@ GUI drawing and the user GUI canvas use calls 64–73:
 - Requires VBE graphics; if only the VGA text fallback is available, `GUI`
   reports that the desktop is unavailable
 
-**Graphical login / OOBE and PNG**
+**Graphical login / OOBE and image rendering**
 - The first-boot wizard and login page become full-screen GUIs in graphics mode: a
   centred panel, title bar, input field and caret. The backdrop prefers a root-level
   `WALLPAPER.PNG` (otherwise a gradient). Serial text output and ordering are unchanged,
   so automated tests still complete the handshake over the serial port; `LOGIN`/`LOGOUT`
   inside the desktop keep using the in-terminal login
 - `PNGINFO <file.png>` prints width/height, bit depth, colour type and interlace flag
-- `SHOW <file.png>` displays a PNG full-screen (any key returns): RGBA/RGB/greyscale/
-  greyscale+alpha/palette (with tRNS), 1/2/4/8/16-bit, all five row filters and Adam7,
-  scaled up by an integer nearest-neighbour factor and centred
+- `SHOW <file>` displays an image full-screen (any key returns), choosing the decoder by
+  extension:
+  - `.png`: RGBA/RGB/greyscale/greyscale+alpha/palette (with tRNS), 1/2/4/8/16-bit,
+    all five row filters and Adam7, scaled up by an integer nearest-neighbour factor
+  - `.ico`: Windows icons (largest ICONDIR entry; 32/24/8/4/1-bit BMP with palette and
+    AND transparency mask, or embedded PNG)
+  - `.svg`: vector subset (viewBox fit/centre; `rect/circle/ellipse/line/polyline/
+    polygon/path`; `M/L/H/V/Z/C/Q` and relative forms; `fill/stroke/stroke-width/
+    opacity`; `translate/scale/matrix`; #rgb/#rrggbb/named colours)
 - Build time generates test PNGs with plain Python (`SAMPLE/RGB8/PAL8/GRAY/GA/RGB16/PAL1/ADAM7`)
   plus `WALLPAPER.PNG`, seeded into the C: root
+- `\SDK\DL.C` example: reads `host:port` from `DL.CFG` and downloads `icon.ico` /
+  `image.png` / `logo.svg` over HTTP into the C: root (`TC \SDK\DL.C`, then `RUN DL.GTP`)
 
 **Rich text and editor**
 - `CAT [-n] <file...>` concatenates one or more files; `-n` adds continuous line numbers
@@ -526,7 +536,7 @@ rust/
   mkfont/            GDI font generator (4-bit grayscale font.gtd + cpm.gtd)
 tools/
   sdk/               in-system SDK: tc.h, net.h, gui.h, gui.c, gui_demo.c, gui_ut.c,
-                     hello.c, fib.c, net.c, readme.txt
+                     hello.c, fib.c, net.c, dl.c, readme.txt
   hello.asm          example program (INT 0x21 SYS_WRITE/SYS_EXIT), seeded as HELLO.GTP
   demo.asm           example program: .gtd read/seek, stat, .gtl library call (DEMO.GTP)
   sample_lib.asm     example shared library exporting add/mul (SAMPLE.GTL)
@@ -535,6 +545,8 @@ tools/
   test_gui_lib.py    C GUI library unit + boundary test (clipping, zero/negative
                      sizes, percentage clamps, NULL args, repeated begin/end)
   test_png.py        GUI login/OOBE + PNG pixel regression (RGBA/palette/16-bit/Adam7)
+  test_art.py        ICO/SVG/PNG rendering + TC program downloading from a host HTTP
+                     server, with screenshot pixel checks
   test_v03.py        end-to-end test: OOBE, login, file commands
   test_v04.py        regression: single C: disk, GT-DOS directory, attributes, protection
   test_syscall.py    INT 0x21 gate and RUN program-execution test
@@ -562,8 +574,8 @@ live in stack slots, no register allocation).
 
 ## Notes and Limitations
 
-- The kernel currently fits in 625 sectors (319,856 bytes including the 48-byte `GTK1`
-  trailer); the build cap is 640 sectors (320 KB), loaded between `0x10000` and `0x60000`.
+- The kernel currently fits in 649 sectors (332,144 bytes including the 48-byte `GTK1`
+  trailer); the build cap is 736 sectors (368 KB), loaded between `0x10000` and `0x6A000`.
   The linker also asserts `.bss <= 0xA0000` and `.highbss <= LIB_BASE`.
 - The GDT is built in low memory (0x6800) rather than `.data`: loading a segment register
   sets the descriptor's accessed bit, which would otherwise invalidate the kernel hash.

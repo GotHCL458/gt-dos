@@ -41,7 +41,7 @@ BOOT_PART_SECTORS = 8192            # 启动分区 4MB (4bit 灰度字库 2.75MB
 BOOT_PART_LBA = DISK_SECTORS - BOOT_PART_SECTORS
 PART1_SECTORS = BOOT_PART_LBA - PART1_LBA
 
-MAX_KERNEL_SECTORS = 640            # 内核上限 320KB (0x10000..0x60000)
+MAX_KERNEL_SECTORS = 736            # 内核上限 368KB (0x10000..0x6A000)
 
 # --------------------------------------------------------------------- 工具查找
 CANDIDATES = {
@@ -195,6 +195,8 @@ C_SOURCES = [
     "gui.c",
     "gscreen.c",
     "png.c",
+    "ico.c",
+    "svg.c",
     "net.c",
     "tcp.c",
     "netapp.c",
@@ -290,7 +292,8 @@ def build_kernel():
         src = os.path.join(ROOT, "kernel", name)
         obj = os.path.join(BUILD, name.replace(".c", ".o"))
         extra = ["-Os"] if name in ("tc.c", "asm.c", "sched.c", "gui.c",
-                                    "richtext.c", "png.c", "gscreen.c") else []
+                                    "richtext.c", "png.c", "gscreen.c",
+                                    "ico.c", "svg.c") else []
         jobs.append(([TOOLS["clang"]] + CFLAGS + extra + ["-c", src, "-o", obj],
                      obj))
 

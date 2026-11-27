@@ -50,6 +50,7 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 - 图形化登录页（用户名/口令掩码/错误提示/重试，Ctrl-C 跳过），串口输入保持兼容
 - 带口令的用户账户；`admin` 拥有管理员权限
 - 完整 PNG 渲染：zlib inflate、全部颜色类型/位深、5 种过滤、Adam7 隔行、tRNS/alpha
+- ICO 图标渲染（32/24/8/4/1 位 BMP + 内嵌 PNG + AND 掩码）与 SVG 子集矢量渲染
 - i18n 层，提供完整的中英文文案
 
 **系统调用与程序**
@@ -267,15 +268,23 @@ GUI 绘图与用户画布使用 64–73 号调用：
   `Ctrl+Alt+G` 释放鼠标
 - 需要 VBE 图形模式；仅 VGA 文本回退时 `GUI` 会提示不可用
 
-**图形化登录 / OOBE 与 PNG**
+**图形化登录 / OOBE 与图像渲染**
 - 首启向导与登录页在图形模式下为全屏 GUI：居中面板、标题栏、输入框与光标，
   背景优先使用根目录 `WALLPAPER.PNG`（否则渐变）。串口输出文案与顺序完全不变，
   自动化测试仍可通过串口完成握手；桌面内 `LOGIN`/`LOGOUT` 仍走终端内登录
 - `PNGINFO <文件.png>` 打印宽高/位深/颜色类型/隔行
-- `SHOW <文件.png>` 全屏看图（任意键返回）：完整解码 RGBA/RGB/灰度/灰度+alpha/
-  调色板（含 tRNS）、1/2/4/8/16 位、5 种行过滤与 Adam7，按屏幕整数倍最近邻放大居中
+- `SHOW <文件>` 全屏看图（任意键返回），按扩展名选择解码器：
+  - `.png`：完整解码 RGBA/RGB/灰度/灰度+alpha/调色板（含 tRNS）、
+    1/2/4/8/16 位、5 种行过滤与 Adam7，整数倍最近邻放大居中
+  - `.ico`：Windows 图标（ICONDIR 多条目取最大，32/24/8/4/1 位 BMP、
+    调色板、AND 透明掩码，或内嵌 PNG）
+  - `.svg`：矢量子集（viewBox 自适应缩放居中；`rect/circle/ellipse/line/
+    polyline/polygon/path`；`M/L/H/V/Z/C/Q` 与相对命令；`fill/stroke/
+    stroke-width/opacity`；`translate/scale/matrix`；#rgb/#rrggbb/命名色）
 - 构建期用纯 Python 生成一组测试 PNG（`SAMPLE/RGB8/PAL8/GRAY/GA/RGB16/PAL1/ADAM7`）
   与 `WALLPAPER.PNG`，随镜像写入 C: 根目录
+- `\SDK\DL.C` 示例：读取 `DL.CFG` 中的 `host:port`，通过 HTTP 依次下载
+  `icon.ico` / `image.png` / `logo.svg` 到 C: 根目录（`TC \SDK\DL.C` 后 `RUN DL.GTP`）
 
 **富文本与编辑器**
 - `CAT [-n] <文件...>` 依次显示多个文件；`-n` 连续编号
@@ -465,7 +474,7 @@ rust/
   mkfont/            GDI 字模生成器 (4bit 灰度 font.gtd + cpm.gtd)
 tools/
   sdk/               系统内 SDK: tc.h, net.h, gui.h, gui.c, gui_demo.c, gui_ut.c,
-                     hello.c, fib.c, net.c, readme.txt
+                     hello.c, fib.c, net.c, dl.c, readme.txt
   hello.asm          示例程序 (INT 0x21 SYS_WRITE/SYS_EXIT), 种子为 HELLO.GTP
   demo.asm           示例程序: .gtd 读取/seek、stat、.gtl 库调用 (DEMO.GTP)
   sample_lib.asm     示例共享库, 导出 add/mul (SAMPLE.GTL)
@@ -474,6 +483,7 @@ tools/
   test_gui_lib.py    C GUI 库单元与边界测试 (裁剪、零/负尺寸、百分比钳制、
                      NULL 参数、重复 begin/end)
   test_png.py        GUI 登录/OOBE + PNG 像素回归 (RGBA/调色板/16 位/Adam7)
+  test_art.py        ICO/SVG/PNG 渲染 + TC 程序从宿主 HTTP 服务器下载并截图
   test_v03.py        端到端测试: OOBE, 登录, 文件命令
   test_v04.py        回归测试: 单盘 C:, GT-DOS 目录, 属性, 系统保护
   test_syscall.py    INT 0x21 门与 RUN 程序执行测试
@@ -500,7 +510,7 @@ build.py             构建脚本与镜像组装
 
 ## 说明与限制
 
-- 内核目前为 625 扇区（319,856 字节，含 48 字节 `GTK1` 尾部），构建上限 640 扇区
+- 内核目前为 649 扇区（332,144 字节，含 48 字节 `GTK1` 尾部），构建上限 736 扇区
   （320KB），加载区间为 `0x10000` 到 `0x60000`；链接脚本同时断言
   `.bss <= 0xA0000` 与 `.highbss <= LIB_BASE`。
 - GDT 在低端内存（0x6800）由入口代码构造，而非放在 `.data`：CPU 装载段寄存器
