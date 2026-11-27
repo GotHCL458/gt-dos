@@ -23,6 +23,7 @@ GT-DOS 构建脚本
 import hashlib
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -192,6 +193,8 @@ C_SOURCES = [
     "asm.c",
     "sched.c",
     "gui.c",
+    "gscreen.c",
+    "png.c",
     "net.c",
     "tcp.c",
     "netapp.c",
@@ -286,7 +289,8 @@ def build_kernel():
     for name in C_SOURCES:
         src = os.path.join(ROOT, "kernel", name)
         obj = os.path.join(BUILD, name.replace(".c", ".o"))
-        extra = ["-Os"] if name in ("tc.c", "asm.c", "sched.c", "gui.c", "richtext.c") else []
+        extra = ["-Os"] if name in ("tc.c", "asm.c", "sched.c", "gui.c",
+                                    "richtext.c", "png.c", "gscreen.c") else []
         jobs.append(([TOOLS["clang"]] + CFLAGS + extra + ["-c", src, "-o", obj],
                      obj))
 
@@ -389,6 +393,244 @@ def build_demo_assets():
         "SAMPLE.GTL": build_asm_asset("sample_lib.asm", "sample.gtl"),
         "DATA.GTD": b"GTD-DATA\n",
     }
+
+
+# ----------------------------------------------------- PNG 测试资源 (构建期生成)
+# 纯 Python 生成 PNG, 覆盖全部颜色类型/位深/过滤/Adam7, 供测试与壁纸使用.
+# 内核 png.c 完整解码这些文件 (SHOW / PNGINFO / 登录 OOBE 背景).
+
+def _png_chunk(typ, data):
+    return (struct.pack(">I", len(data)) + typ + data +
+            struct.pack(">I", zlib.crc32(typ + data) & 0xFFFFFFFF))
+
+
+def _png_filter(ftype, row, prev, bpp):
+    n = len(row)
+    if ftype == 0:
+        return bytes(row)
+    out = bytearray(n)
+    if ftype == 1:
+        for i in range(n):
+            a = row[i - bpp] if i >= bpp else 0
+            out[i] = (row[i] - a) & 0xFF
+    elif ftype == 2:
+        for i in range(n):
+            b = prev[i] if prev else 0
+            out[i] = (row[i] - b) & 0xFF
+    elif ftype == 3:
+        for i in range(n):
+            a = row[i - bpp] if i >= bpp else 0
+            b = prev[i] if prev else 0
+            out[i] = (row[i] - ((a + b) >> 1)) & 0xFF
+    else:                                    # 4 = Paeth
+        for i in range(n):
+            a = row[i - bpp] if i >= bpp else 0
+            b = prev[i] if prev else 0
+            c = prev[i - bpp] if (prev and i >= bpp) else 0
+            p = a + b - c
+            pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+            pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+            out[i] = (row[i] - pr) & 0xFF
+    return bytes(out)
+
+
+def _png_encode(w, h, ctype, depth, full_rows, px_bytes, palette=None,
+                trns=None, interlace=0, split=0, filt=None):
+    ihdr = struct.pack(">IIBBBBB", w, h, depth, ctype, 0, 0, interlace)
+    chunks = [_png_chunk(b"IHDR", ihdr)]
+    if palette is not None:
+        chunks.append(_png_chunk(b"PLTE", palette))
+    if trns is not None:
+        chunks.append(_png_chunk(b"tRNS", trns))
+
+    scan = bytearray()
+    if interlace == 0:
+        prev = None
+        for y in range(h):
+            row = full_rows[y]
+            f = filt(y) if filt else (y % 5)
+            scan += bytes([f]) + _png_filter(f, row, prev, px_bytes)
+            prev = row
+    else:
+        xs = (0, 4, 0, 2, 0, 1, 0)
+        ys = (0, 0, 4, 0, 2, 0, 1)
+        dxs = (8, 8, 4, 4, 2, 2, 1)
+        dys = (8, 8, 8, 4, 4, 2, 2)
+        for p in range(7):
+            x0, y0, dx, dy = xs[p], ys[p], dxs[p], dys[p]
+            pw = (w - x0 + dx - 1) // dx
+            ph = (h - y0 + dy - 1) // dy
+            if pw <= 0 or ph <= 0:
+                continue
+            prev = None
+            for r in range(ph):
+                srow = full_rows[y0 + r * dy]
+                brow = bytearray()
+                for c in range(pw):
+                    sx = x0 + c * dx
+                    brow += srow[sx * px_bytes:(sx + 1) * px_bytes]
+                f = r % 5
+                brow = bytes(brow)
+                scan += bytes([f]) + _png_filter(f, brow, prev, px_bytes)
+                prev = brow
+
+    comp = zlib.compress(bytes(scan), 9)
+    if split and split > 0:
+        for i in range(0, len(comp), split):
+            chunks.append(_png_chunk(b"IDAT", comp[i:i + split]))
+    else:
+        chunks.append(_png_chunk(b"IDAT", comp))
+    chunks.append(_png_chunk(b"IEND", b""))
+    return b"\x89PNG\r\n\x1a\n" + b"".join(chunks)
+
+
+def build_png_assets():
+    """生成各颜色类型/位深/过滤/隔行的 PNG + 壁纸."""
+    out = {}
+
+    # SAMPLE.PNG: RGBA8 128x128, 透明角 + 中心标记, IDAT 分块 (测试串联读取)
+    W = H = 128
+    rows = []
+    for y in range(H):
+        row = bytearray(W * 4)
+        for x in range(W):
+            r = x * 255 // (W - 1)
+            g = y * 255 // (H - 1)
+            b = 128
+            a = 255
+            if x < 8 and y < 8:
+                a = 0
+            if x == W // 2 and y == H // 2:
+                r, g, b, a = 255, 32, 200, 255
+            o = x * 4
+            row[o:o + 4] = bytes((r, g, b, a))
+        rows.append(bytes(row))
+    out["SAMPLE.PNG"] = _png_encode(W, H, 6, 8, rows, 4, split=512)
+
+    # RGB8.PNG: 64x64, 每行依次使用过滤 0..4
+    W = H = 64
+    rows = []
+    for y in range(H):
+        row = bytearray(W * 3)
+        for x in range(W):
+            r = (20 + x * 3) & 255
+            g = (30 + y * 3) & 255
+            b = (200 - x) & 255
+            if x == W // 2 and y == H // 2:
+                r, g, b = 10, 200, 30
+            o = x * 3
+            row[o:o + 3] = bytes((r, g, b))
+        rows.append(bytes(row))
+    out["RGB8.PNG"] = _png_encode(W, H, 2, 8, rows, 3, split=256)
+
+    # PAL8.PNG: 32x32 调色板 8 位 + tRNS (index0 透明)
+    W = H = 32
+    palette = bytes((255, 0, 0, 0, 128, 255, 0, 255, 0, 30, 30, 30))
+    trns = bytes((0, 255, 255, 255))
+    rows = []
+    for y in range(H):
+        row = bytearray(W)
+        for x in range(W):
+            row[x] = 0 if (x < 8 and y < 8) else 1
+        rows.append(bytes(row))
+    out["PAL8.PNG"] = _png_encode(W, H, 3, 8, rows, 1,
+                                  palette=palette, trns=trns)
+
+    # GRAY.PNG: 32x32 灰度 8 位
+    W = H = 32
+    rows = []
+    for y in range(H):
+        row = bytearray(W)
+        for x in range(W):
+            v = (x * 8 + y * 4) & 255
+            if x == W // 2 and y == H // 2:
+                v = 200
+            row[x] = v
+        rows.append(bytes(row))
+    out["GRAY.PNG"] = _png_encode(W, H, 0, 8, rows, 1)
+
+    # GA.PNG: 32x32 灰度 + alpha
+    W = H = 32
+    rows = []
+    for y in range(H):
+        row = bytearray(W * 2)
+        for x in range(W):
+            v = (x * 6 + y * 3) & 255
+            a = 255
+            if x == W // 2 and y == H // 2:
+                v, a = 200, 255
+            if x < 4 and y < 4:
+                a = 0
+            o = x * 2
+            row[o] = v
+            row[o + 1] = a
+        rows.append(bytes(row))
+    out["GA.PNG"] = _png_encode(W, H, 4, 8, rows, 2)
+
+    # RGB16.PNG: 16x16 真彩 16 位
+    W = H = 16
+    rows = []
+    for y in range(H):
+        row = bytearray(W * 6)
+        for x in range(W):
+            r = (x * 4000) & 0xFFFF
+            g = (y * 4000) & 0xFFFF
+            b = 30000
+            if x == W // 2 and y == H // 2:
+                r, g, b = 1000, 50000, 30000
+            o = x * 6
+            row[o:o + 2] = struct.pack(">H", r)
+            row[o + 2:o + 4] = struct.pack(">H", g)
+            row[o + 4:o + 6] = struct.pack(">H", b)
+        rows.append(bytes(row))
+    out["RGB16.PNG"] = _png_encode(W, H, 2, 16, rows, 6)
+
+    # PAL1.PNG: 16x16 调色板 1 位
+    W = H = 16
+    palette = bytes((10, 20, 30, 200, 100, 50))
+    rows = []
+    for y in range(H):
+        row = bytearray(W // 8)
+        for x in range(W):
+            if x >= W // 2:
+                row[x // 8] |= (1 << (7 - (x % 8)))
+        rows.append(bytes(row))
+    out["PAL1.PNG"] = _png_encode(W, H, 3, 1, rows, 1, palette=palette)
+
+    # ADAM7.PNG: 64x64 RGBA8 隔行
+    W = H = 64
+    rows = []
+    for y in range(H):
+        row = bytearray(W * 4)
+        for x in range(W):
+            r = (x * 4) & 255
+            g = (y * 4) & 255
+            b = (x + y) & 255
+            a = 255
+            if x == W // 2 and y == H // 2:
+                r, g, b, a = 250, 10, 120, 255
+            o = x * 4
+            row[o:o + 4] = bytes((r, g, b, a))
+        rows.append(bytes(row))
+    out["ADAM7.PNG"] = _png_encode(W, H, 6, 8, rows, 4, interlace=1)
+
+    # WALLPAPER.PNG: 256x192 RGBA8 竖向渐变 (登录/OOBE 背景)
+    W, H = 256, 192
+    rows = []
+    for y in range(H):
+        row = bytearray(W * 4)
+        t = y * 255 // (H - 1)
+        r = (14 * (255 - t) + 47 * t) // 255
+        g = (26 * (255 - t) + 90 * t) // 255
+        b = (48 * (255 - t) + 122 * t) // 255
+        for x in range(W):
+            o = x * 4
+            row[o:o + 4] = bytes((r, g, b, 255))
+        rows.append(bytes(row))
+    out["WALLPAPER.PNG"] = _png_encode(W, H, 6, 8, rows, 4,
+                                       filt=lambda y: 0, split=8192)
+    return out
+
 
 
 # ------------------------------------------------------- 构建期 exFAT 工具 (Rust)
@@ -576,6 +818,7 @@ def build():
     font = open(os.path.join(BUILD, "font.gtd"), "rb").read()
     cpm = open(os.path.join(BUILD, "cpm.gtd"), "rb").read()
     assets = build_demo_assets()
+    assets.update(build_png_assets())
     services = {"NETSVC.GTP": build_asm_asset("svc_net.asm", "svc_net.gtp")}
     print("==> 组装单硬盘镜像 (MBR + C: exFAT + 隐藏启动分区)")
     hd = make_hd_image(mbr, boot2, kernel, font, cpm, assets, services,

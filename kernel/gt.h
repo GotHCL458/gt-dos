@@ -152,6 +152,16 @@ void gfx_flip_rect(int x, int y, int w, int h);
 extern volatile bool gfx_poked;      /* 发生过提交 (GUI 重画指针) */
 void gfx_fb_pixel(int x, int y, u32 c);          /* 直接写显存 (鼠标指针) */
 void gfx_fb_restore(int x, int y, int w, int h); /* 从后台恢复显存矩形 */
+void gfx_pixel_a(int x, int y, u32 rgb, u8 a);    /* 后台缓冲按 0..255 alpha 混合写点 */
+
+/* ------------------------------------------------------- PNG 解码/渲染 */
+/* 完整 PNG: zlib inflate + 全部颜色类型/位深 + 5 种过滤 + Adam7 + tRNS/alpha.
+   解码流式进行, 逐行直接混合到 gfx 后台缓冲 (无需整幅输出缓冲). */
+struct png_info { int w, h; u8 depth, ctype, interlace; };
+int  png_info(const u8 *data, u32 len, struct png_info *out); /* 0=ok, <0=错误 */
+bool png_draw(const u8 *data, u32 len, int dx, int dy);       /* 1:1 alpha 混合 */
+bool png_draw_file(const char *path, int dx, int dy);         /* FAT 读文件后绘制 */
+bool png_draw_file_fit(const char *path);                     /* 居中/放大铺满屏幕 */
 
 /* --------------------------------------------------- 基础 GUI (gui.c) */
 bool gui_active(void);
@@ -163,6 +173,11 @@ bool gui_canvas_begin(void);          /* 用户程序接管全屏画布 (需桌�
 void gui_canvas_end(void);            /* 恢复桌面 */
 void gui_canvas_reset(void);          /* exec 返回后的兜底恢复 */
 bool gui_canvas_active(void);
+
+/* 图形登录/OOBE 界面 (gscreen.c): 仅在 gfx 可用且桌面未激活时启用 */
+bool gs_available(void);
+void gs_oobe_run(void);
+const struct gt_user *gs_login_screen(void);
 
 /* 控制台视口 (GUI 终端窗口) */
 void vga_gui_viewport(int x, int y, int w, int h);

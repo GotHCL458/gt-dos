@@ -161,6 +161,8 @@ void gui_cursor_refresh(void)
 {
     if (!active)
         return;
+    if (app_canvas)
+        return;                       /* 用户画布/看图: 不叠加桌面指针 */
     if (menu_open || about_open || settings_open || widgets_open) {
         draw_overlays();                                  /* 重画进后台缓冲 */
         if (menu_open)
@@ -727,7 +729,7 @@ static void layout(void)
 
 static void draw_desktop(void)
 {
-    int cw = gfx_cell_w(), ch = gfx_cell_h();
+    int ch = gfx_cell_h();
     int gw = gfx_w(), gh = gfx_h();
 
     layout();

@@ -42,6 +42,12 @@ static int ask_choice(const char *prompt, int min, int max)
 
 void oobe_run(void)
 {
+    /* 图形模式可用时优先走 GUI 向导 (串口握手保持兼容) */
+    if (gs_available()) {
+        gs_oobe_run();
+        return;
+    }
+
     char buf[64];
 
     console_clear();

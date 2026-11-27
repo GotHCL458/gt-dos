@@ -1191,6 +1191,79 @@ static void cmd_textmode(void)
     gui_leave();
 }
 
+/* SHOW <file.png>: 图形模式查看 PNG (完整解码: 所有颜色类型/位深/过滤/隔行).
+   桌面激活时借用画布, 否则暂停控制台绘制; 任意键返回. */
+static void cmd_show(int argc, char **argv)
+{
+    if (argc < 2) { err("Usage: SHOW <file.png>\n"); return; }
+    if (!gfx_active()) { err("No graphics mode (SHOW needs VBE).\n"); return; }
+    if (!fat_ready()) { err("No volume mounted. Type MOUNT first.\n"); return; }
+
+    char abs[PATHMAX];
+    resolve_path(argv[1], abs);
+
+    bool canvas = false;
+    if (gui_active()) {
+        canvas = gui_canvas_begin();
+        if (!canvas)
+            vga_hold_display(true);
+    } else {
+        vga_hold_display(true);
+    }
+
+    gfx_clear(0x101820);
+    bool drawn = png_draw_file_fit(abs);
+    gfx_flip();
+    gfx_poked = false;
+
+    kprintf("%s: %s\n", abs, drawn ? "displayed" : "decode failed");
+    if (!drawn)
+        kprintf("  (no graphics, missing file, or unsupported PNG)\n");
+    kprintf("Press any key to continue...\n");
+    ui_read_key();
+
+    if (canvas) {
+        gui_canvas_end();
+    } else {
+        vga_hold_display(false);
+        vga_refresh();
+    }
+}
+
+/* PNGINFO <file.png>: 打印 PNG 头信息 (宽高/位深/颜色类型/隔行) */
+static void cmd_pnginfo(int argc, char **argv)
+{
+    if (argc < 2) { err("Usage: PNGINFO <file.png>\n"); return; }
+    if (!fat_ready()) { err("No volume mounted. Type MOUNT first.\n"); return; }
+
+    static u8 hdr[2048] __attribute__((section(".highbss")));
+    char abs[PATHMAX];
+    resolve_path(argv[1], abs);
+
+    struct fat_dirent de;
+    if (!fat_find(abs, &de) || de.is_dir) {
+        err("No such file: %s\n", abs);
+        return;
+    }
+    u32 got = 0;
+    if (!fat_read_file(abs, hdr, sizeof(hdr), &got) || got < 33) {
+        err("Not a PNG (too small or read failed)\n");
+        return;
+    }
+    struct png_info pi;
+    if (png_info(hdr, got, &pi) != 0) {
+        err("Not a valid PNG: %s\n", abs);
+        return;
+    }
+    static const char *cname[7] = {
+        0, "gray", "rgb", "palette", "gray+alpha", 0, "rgba"
+    };
+    const char *cn = (pi.ctype < 7 && cname[pi.ctype]) ? cname[pi.ctype] : "?";
+    ok("PNG %s: %d x %d, depth=%d, color=%s, interlace=%d\n",
+       abs, pi.w, pi.h, pi.depth, cn, pi.interlace);
+}
+
+
 /* 系统服务是 \GT-DOS\SERVICES 下的 .gtp 程序, 以 SYS 任务身份运行且受保护 */
 static void cmd_service(int argc, char **argv)
 {
@@ -1946,6 +2019,11 @@ static void execute(char *line)
         cmd_gui();
     } else if (!strcasecmp(cmd, "textmode")) {
         cmd_textmode();
+    } else if (!strcasecmp(cmd, "show") || !strcasecmp(cmd, "image") ||
+               !strcasecmp(cmd, "view")) {
+        cmd_show(argc, argv);
+    } else if (!strcasecmp(cmd, "pnginfo")) {
+        cmd_pnginfo(argc, argv);
     } else if (!strcasecmp(cmd, "service") || !strcasecmp(cmd, "services")) {
         cmd_service(argc, argv);
     } else if (!strcasecmp(cmd, "tc")) {

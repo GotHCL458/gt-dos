@@ -273,6 +273,10 @@ void user_logout(void)
 /* --------------------------------------------------------- 登录界面 */
 const struct gt_user *ui_login_screen(void)
 {
+    /* 图形模式且桌面未激活时使用 GUI 登录页 (串口握手保持兼容) */
+    if (gs_available())
+        return gs_login_screen();
+
     char name[UNAME_MAX];
     char pass[64];
     const struct gt_user *result = &default_user;

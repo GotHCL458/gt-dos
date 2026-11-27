@@ -415,3 +415,22 @@ void gfx_fb_restore(int x, int y, int w, int h)
             fb[yy * gw + x + i] = back[yy * gw + x + i];
     }
 }
+
+/* 后台缓冲按 alpha 混合写一个像素 (PNG 渲染用). a=0 跳过, a=255 直接覆盖. */
+void gfx_pixel_a(int x, int y, u32 rgb, u8 a)
+{
+    if (!gfx_ok || (unsigned)x >= (unsigned)gw || (unsigned)y >= (unsigned)gh)
+        return;
+    if (a == 0)
+        return;
+    u32 *p = &back[y * gw + x];
+    if (a == 255) {
+        *p = rgb & 0xFFFFFFu;
+        return;
+    }
+    u32 bg = *p, ia = 255u - a;
+    u32 r = (((bg >> 16) & 255u) * ia + ((rgb >> 16) & 255u) * a) / 255u;
+    u32 g = (((bg >> 8) & 255u) * ia + ((rgb >> 8) & 255u) * a) / 255u;
+    u32 b = ((bg & 255u) * ia + (rgb & 255u) * a) / 255u;
+    *p = (r << 16) | (g << 8) | b;
+}

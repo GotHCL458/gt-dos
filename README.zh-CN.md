@@ -46,8 +46,10 @@ exFAT 文件系统、TCP/IP 网络栈、用户账户与中英双语 Shell。
 - 由 Rust 工具 `rust/mkfont` 生成 `build/font.gtd`（2.75 MB）与 `cpm.gtd`
 
 **系统**
-- OOBE 首次启动向导（语言 → 主机名 → 管理员）
+- OOBE 首次启动向导（语言 → 主机名 → 管理员），图形模式可用时为全屏 GUI 向导
+- 图形化登录页（用户名/口令掩码/错误提示/重试，Ctrl-C 跳过），串口输入保持兼容
 - 带口令的用户账户；`admin` 拥有管理员权限
+- 完整 PNG 渲染：zlib inflate、全部颜色类型/位深、5 种过滤、Adam7 隔行、tRNS/alpha
 - i18n 层，提供完整的中英文文案
 
 **系统调用与程序**
@@ -265,6 +267,16 @@ GUI 绘图与用户画布使用 64–73 号调用：
   `Ctrl+Alt+G` 释放鼠标
 - 需要 VBE 图形模式；仅 VGA 文本回退时 `GUI` 会提示不可用
 
+**图形化登录 / OOBE 与 PNG**
+- 首启向导与登录页在图形模式下为全屏 GUI：居中面板、标题栏、输入框与光标，
+  背景优先使用根目录 `WALLPAPER.PNG`（否则渐变）。串口输出文案与顺序完全不变，
+  自动化测试仍可通过串口完成握手；桌面内 `LOGIN`/`LOGOUT` 仍走终端内登录
+- `PNGINFO <文件.png>` 打印宽高/位深/颜色类型/隔行
+- `SHOW <文件.png>` 全屏看图（任意键返回）：完整解码 RGBA/RGB/灰度/灰度+alpha/
+  调色板（含 tRNS）、1/2/4/8/16 位、5 种行过滤与 Adam7，按屏幕整数倍最近邻放大居中
+- 构建期用纯 Python 生成一组测试 PNG（`SAMPLE/RGB8/PAL8/GRAY/GA/RGB16/PAL1/ADAM7`）
+  与 `WALLPAPER.PNG`，随镜像写入 C: 根目录
+
 **富文本与编辑器**
 - `CAT [-n] <文件...>` 依次显示多个文件；`-n` 连续编号
 - `RICH <文件.md>` 渲染 Markdown：ATX/Setext 标题、粗体/斜体/粗斜体/删除线、
@@ -347,7 +359,7 @@ python build.py clean      # 清理 build 目录
 qemu-system-x86_64 -hda gt-dos-hd.img -boot c
 ```
 
-首次启动会进入 OOBE 向导，依次询问语言、主机名与管理员名。
+首次启动会进入 OOBE 向导，依次询问语言、主机名与管理员名（图形模式下为 GUI 界面）。
 输入为空会重新询问；`Ctrl-C` 则以默认值跳过当前项。
 
 ## 磁盘布局
@@ -461,6 +473,7 @@ tools/
   test_gui.py        桌面/控件/鼠标/拖动/缩放回归 (截图像素校验)
   test_gui_lib.py    C GUI 库单元与边界测试 (裁剪、零/负尺寸、百分比钳制、
                      NULL 参数、重复 begin/end)
+  test_png.py        GUI 登录/OOBE + PNG 像素回归 (RGBA/调色板/16 位/Adam7)
   test_v03.py        端到端测试: OOBE, 登录, 文件命令
   test_v04.py        回归测试: 单盘 C:, GT-DOS 目录, 属性, 系统保护
   test_syscall.py    INT 0x21 门与 RUN 程序执行测试
@@ -487,7 +500,7 @@ build.py             构建脚本与镜像组装
 
 ## 说明与限制
 
-- 内核目前为 601 扇区（307,568 字节，含 48 字节 `GTK1` 尾部），构建上限 640 扇区
+- 内核目前为 625 扇区（319,856 字节，含 48 字节 `GTK1` 尾部），构建上限 640 扇区
   （320KB），加载区间为 `0x10000` 到 `0x60000`；链接脚本同时断言
   `.bss <= 0xA0000` 与 `.highbss <= LIB_BASE`。
 - GDT 在低端内存（0x6800）由入口代码构造，而非放在 `.data`：CPU 装载段寄存器
