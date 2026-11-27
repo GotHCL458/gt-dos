@@ -28,6 +28,7 @@ static int vp_pw, vp_ph;               /* 视口像素尺寸 */
 static int vp_cols = VGA_COLS;         /* 视口文本列数 */
 static int vp_rows = TXT_ROWS;         /* 视口文本行数 */
 static bool disp_hold;                 /* 暂停屏幕绘制 (用户 GUI 画布占用时) */
+static bool defer_flip;                /* 暂停局部提交 (GUI 整屏重绘) */
 
 static u16 status_buf_cp[COLS_MAX] __attribute__((section(".highbss")));
 static u8   status_buf_attr[COLS_MAX] __attribute__((section(".highbss")));
@@ -256,10 +257,12 @@ static void render_gfx(void)
         }
     }
     gfx_draw_cursor(true);
-    if (gui_mode)
-        gfx_flip_rect(vp_x - 2, vp_y - 2, vp_pw + 4, vp_ph + 4);
-    else
-        gfx_flip();
+    if (!defer_flip) {
+        if (gui_mode)
+            gfx_flip_rect(vp_x - 2, vp_y - 2, vp_pw + 4, vp_ph + 4);
+        else
+            gfx_flip();
+    }
 }
 
 /* 单字符追加到当前行 (图形模式局部刷新, 不整屏重绘) */
@@ -546,6 +549,7 @@ void vga_init(void)
     cursor_vis = true;
     gui_mode = false;
     disp_hold = false;
+    defer_flip = false;
     vp_x = vp_y = 0;
     vp_pw = vp_ph = 0;
     vp_cols = VGA_COLS;
@@ -581,6 +585,8 @@ void vga_hold_display(bool on)
     if (!on)
         render();
 }
+
+void vga_defer_flip(bool on) { defer_flip = on; }
 
 /* ------------------------------------------------ GUI 终端窗口视口 */
 bool vga_gui_mode(void) { return gui_mode; }

@@ -167,9 +167,52 @@ static const struct entry table[] = {
       "滚动: 鼠标滚轮 / Ctrl+上/下 / PgUp/PgDn。\n"
       "按键: Ctrl+C 取消, NumLock 小键盘, CapsLock。\n" },
 
+    /* ---- GUI 桌面 / 应用 ---- */
+    { "gui.desktop",      "GT-DOS Desktop", "GT-DOS 桌面" },
+    { "gui.hint",         "drag title bar | click to capture mouse",
+      "拖动标题栏 | 点击捕获鼠标" },
+    { "gui.term",         "Terminal", "终端" },
+    { "gui.files",        "Files", "文件" },
+    { "gui.sys",          "System", "系统" },
+    { "gui.start",        "Start", "开始" },
+    { "gui.text",         "TEXT", "文本" },
+    { "gui.terminal",     "GT-DOS Terminal", "GT-DOS 终端" },
+    { "gui.menu.terminal","Terminal", "终端" },
+    { "gui.menu.theme",   "Theme", "主题" },
+    { "gui.menu.about",   "About", "关于" },
+    { "gui.menu.settings","Settings", "设置" },
+    { "gui.menu.widgets", "Widgets", "控件" },
+    { "gui.menu.exit",    "Exit GUI", "退出图形界面" },
+    { "gui.about_title",  "About GT-DOS", "关于 GT-DOS" },
+    { "gui.ok",           "OK", "确定" },
+    { "gui.settings_title","Settings", "设置" },
+    { "gui.theme",        "Theme:", "主题:" },
+    { "gui.blue",         "Blue", "蓝" },
+    { "gui.green",        "Green", "绿" },
+    { "gui.purple",       "Purple", "紫" },
+    { "gui.icons",        "Desktop icons", "桌面图标" },
+    { "gui.clock24",      "24-hour clock", "24 小时制" },
+    { "gui.brightness",   "Brightness", "亮度" },
+    { "gui.close",        "Close", "关闭" },
+    { "gui.widgets_title","Widgets", "控件演示" },
+    { "gui.progress",     "Progress", "进度" },
+    { "gui.taskbar_clock","Taskbar clock", "任务栏时钟" },
+    { "gui.lang",         "Language", "语言" },
+    { "gui.about_l1",     "GT-DOS 0.10  (x86-64 kernel)",
+      "GT-DOS 0.10  (x86-64 内核)" },
+    { "gui.about_l2",     "Linux-style desktop: panel, icons, window",
+      "Linux 风格桌面: 面板 / 图标 / 窗口" },
+    { "gui.about_l3",     "Mouse: PS/2, captured on hover (Ctrl+Alt+G)",
+      "鼠标: PS/2, 移入捕获 (Ctrl+Alt+G)" },
+    { "gui.about_l4",     "Drag title bar to move, double-click to maximize",
+      "拖动标题栏移动, 双击最大化" },
+    { "gui.about_l5",     "Panel -> Start / Theme / About / Settings / Widgets",
+      "面板 -> 开始 / 主题 / 关于 / 设置 / 控件" },
+    { "gui.about_l6",     "Click TEXT or the window close button to exit GUI",
+      "点击 TEXT 或窗口关闭按钮退出图形界面" },
+
     { 0, 0, 0 }
 };
-
 static int cur_lang = 0;
 
 void i18n_set_lang(int lang) { cur_lang = lang ? 1 : 0; }

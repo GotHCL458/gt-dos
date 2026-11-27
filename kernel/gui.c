@@ -16,16 +16,16 @@
 /* 配色 */
 static const u32 wall_top[3] = { 0x101a30, 0x14251a, 0x2a1424 };
 static const u32 wall_bot[3] = { 0x1d3a55, 0x2f5a38, 0x5a2f48 };
-#define C_FRAME     0x2a3446
-#define C_FRAME_LT  0x9aa8c0
-#define C_FRAME_DK  0x0c1220
-#define C_TITLE     0x1f4e8a
-#define C_TITLE2    0x2a6ab0
+#define C_FRAME     0x23262b
+#define C_FRAME_LT  0x3a3f46
+#define C_FRAME_DK  0x0e1013
+#define C_TITLE     0x2a2e36
+#define C_TITLE2    0x32363f
 #define C_CLIENT    0x000000
-#define C_TASK      0x141c2a
-#define C_TASK_LT   0x3c5a80
-#define C_TEXT      0xe8f0ff
-#define C_ACCENT    0x66ccff
+#define C_TASK      0x1b1e24
+#define C_TASK_LT   0x3daee9
+#define C_TEXT      0xeaecef
+#define C_ACCENT    0x3daee9
 
 static bool active;
 static int WX, WY, WW, WH;              /* 窗口外框 */
@@ -60,7 +60,8 @@ static int norm_x, norm_y, norm_w, norm_h;
 static int MB_X, MB_Y, MB_W, MB_H;      /* 开始按钮 */
 static int TK_X, TK_Y, TK_W, TK_H;      /* 任务栏窗口按钮 */
 static int MN_X, MN_Y, MN_W, MN_H, MI_H;/* 开始菜单及项高 */
-static int MX_X, MX_Y, MX_W, MX_H;      /* 最大化按钮 */
+static int MX_X, MX_Y, MX_W, MX_H;      /* 最大化/还原按钮 */
+static int MINB_X, MINB_Y, MINB_W, MINB_H;  /* 最小化按钮 */
 static int AB_X, AB_Y, AB_W, AB_H;      /* 关于对话框 */
 static int AB_OK_X, AB_OK_Y, AB_OK_W, AB_OK_H;
 static int SD_X, SD_Y, SD_W, SD_H;      /* 设置对话框 */
@@ -81,6 +82,15 @@ static int list_sel;                    /* 列表选中项 */
 static int wdg_progress;                /* 演示进度 0..100 */
 static u32 wdg_last;                    /* 上次进度刷新 tick */
 static bool app_canvas;                 /* 用户程序占用全屏画布 */
+static bool minimized;                  /* 窗口已最小化 (控制台暂停绘制) */
+/* 窗口动画: 1=max 2=unmax 3=minimize 4=unminimize */
+static bool anim_active;
+static int  anim_kind;
+static int  anim_last_t;
+static u32  anim_t0;
+static int  ax0, ay0, aw0, ah0, ax1, ay1, aw1, ah1;
+static bool in_redraw;
+#define ANIM_MS 150
 static int ICON_X, ICON_Y, ICON_W, ICON_H, ICON_STEP;  /* 桌面图标 */
 static int icon_sel = -1;               /* 最近点击的图标 */
 
@@ -290,31 +300,31 @@ static void draw_wallpaper(void)
         gfx_fill(0, y, gfx_w(), 4, color_scale(c, bright));
     }
     int ch = gfx_cell_h();
-    int tw = gfx_text_w("GT-DOS Desktop");
-    gfx_text((gfx_w() - tw) / 2, 2 * ch, "GT-DOS Desktop", 0xdfefff);
-    gfx_text((gfx_w() - gfx_text_w("drag title bar | click to capture mouse")) / 2,
-             3 * ch, "drag title bar | click to capture mouse", 0x8fb6d8);
-    /* 左侧桌面图标 (可点击; 设置里可以隐藏) */
+    int tw = gfx_text_w(L("gui.desktop"));
+    gfx_text((gfx_w() - tw) / 2, 2 * ch, L("gui.desktop"), 0xdfefff);
+    tw = gfx_text_w(L("gui.hint"));
+    gfx_text((gfx_w() - tw) / 2, 3 * ch, L("gui.hint"), 0x8fb6d8);
+    /* 左侧桌面图标 (无背景填充; 使用 SVG->ICO 高质量图标) */
     if (!show_icons)
         return;
-    const char *names[3] = { "TERM", "FILES", "SYS" };
-    u32 cols[3] = { 0x2f6f9f, 0x3f8f5f, 0x8f6f2f };
+    static const char *icos[3] = { "TERM.ICO", "FILES.ICO", "SYS.ICO" };
+    static const char *keys[3] = { "gui.term", "gui.files", "gui.sys" };
     for (int i = 0; i < 3; i++) {
         int y = ICON_Y + i * ICON_STEP;
-        gfx_fill(ICON_X + 3, y + 3, ICON_W, ICON_H, 0x080c14);
-        gfx_fill(ICON_X, y, ICON_W, ICON_H, cols[i]);
-        gfx_bevel(ICON_X, y, ICON_W, ICON_H, 0xffffff, 0x202020);
-        if (i == 0)
-            draw_icon_term(ICON_X, y);
-        else if (i == 1)
-            draw_icon_files(ICON_X, y);
-        else
-            draw_icon_sys(ICON_X, y);
+        if (!ico_draw_file_at(icos[i], ICON_X, y, ICON_W, ICON_H)) {
+            if (i == 0)
+                draw_icon_term(ICON_X, y);
+            else if (i == 1)
+                draw_icon_files(ICON_X, y);
+            else
+                draw_icon_sys(ICON_X, y);
+        }
         if (icon_sel == i)
             gfx_bevel(ICON_X - 3, y - 3, ICON_W + 6, ICON_H + 6,
                       C_ACCENT, C_ACCENT);
-        int lw = gfx_text_w(names[i]);
-        gfx_text(ICON_X + (ICON_W - lw) / 2, y + ICON_H + 2, names[i],
+        const char *nm = L(keys[i]);
+        int lw = gfx_text_w(nm);
+        gfx_text(ICON_X + (ICON_W - lw) / 2, y + ICON_H + 2, nm,
                  0xd8e8ff);
     }
 }
@@ -347,7 +357,8 @@ static void draw_clock(void)
     int cw = gfx_cell_w(), ch = gfx_cell_h();
     gfx_fill(CK_X, CK_Y, 12 * cw, ch, C_TASK);
     gfx_text(CK_X, CK_Y, b, 0xcfe4ff);
-    gfx_flip_rect(CK_X, CK_Y, 12 * cw, ch);
+    if (!in_redraw)
+        gfx_flip_rect(CK_X, CK_Y, 12 * cw, ch);
 }
 
 static void draw_button(int x, int y, int w, int h, const char *label,
@@ -393,28 +404,62 @@ static void draw_toggle(int x, int y, int w, int h, bool on)
     gfx_bevel(kx, y + 2, k, k, 0xffffff, 0x606870);
 }
 
+/* Linux 风格窗口按钮图标: 0=最小化 1=最大化 2=还原 3=关闭 */
+static void draw_win_glyph(int x, int y, int sz, int kind)
+{
+    int m = sz / 4;
+    if (kind == 0) {
+        gfx_fill(x + m, y + sz / 2 - 1, sz - 2 * m, 2, C_TEXT);
+    } else if (kind == 1) {
+        gfx_frame(x + m, y + m, sz - 2 * m, sz - 2 * m, C_TEXT);
+    } else if (kind == 2) {
+        gfx_frame(x + m, y + m + 3, sz - 2 * m - 3, sz - 2 * m - 3, C_TEXT);
+        gfx_frame(x + m + 3, y + m, sz - 2 * m - 3, sz - 2 * m - 3, C_TEXT);
+    } else {
+        for (int i = 0; i < sz - 2 * m; i++) {
+            gfx_fill(x + m + i, y + m + i, 2, 2, C_TEXT);
+            gfx_fill(x + sz - m - 1 - i, y + m + i, 2, 2, C_TEXT);
+        }
+    }
+}
+
+static void draw_win_button(int x, int y, int w, int h, int kind, u32 bg)
+{
+    gfx_fill(x, y, w, h, bg);
+    gfx_bevel(x, y, w, h, 0x4a5058, 0x15181c);
+    draw_win_glyph(x, y, (w < h ? w : h), kind);
+}
+
 /* ------------------------------------------------------- 浮层: 菜单/对话框 */
 /* 开始菜单: 6 个可点项 (Terminal / Theme / About / Settings / Widgets / Exit) */
 static void draw_menu(void)
 {
     int ch = gfx_cell_h();
-    static const char *items[6] = {
-        "Terminal", "Theme", "About", "Settings", "Widgets", "Exit GUI"
+    static const char *keys[6] = {
+        "gui.menu.terminal", "gui.menu.theme", "gui.menu.about",
+        "gui.menu.settings", "gui.menu.widgets", "gui.menu.exit"
     };
-    gfx_fill(MN_X, MN_Y, MN_W, MN_H, 0x1b2434);
-    gfx_bevel(MN_X, MN_Y, MN_W, MN_H, 0xbfd0e8, 0x0c1220);
-    u32 icol[6] = { 0x66ccff, 0x7fe0a0, 0x9fb3ff,
+    static const char *icos[6] = {
+        "TERM.ICO", "WIDGETS.ICO", "ABOUT.ICO",
+        "SETTINGS.ICO", "WIDGETS.ICO", "SYS.ICO"
+    };
+    u32 icol[6] = { 0x3daee9, 0x7fe0a0, 0x9fb3ff,
                     0xffc060, 0xc090ff, 0xff9090 };
+    gfx_fill(MN_X, MN_Y, MN_W, MN_H, 0x23262b);
+    gfx_bevel(MN_X, MN_Y, MN_W, MN_H, 0x4a5058, 0x0e1013);
+    gfx_fill(MN_X + 2, MN_Y + 2, MN_W - 4, 2, C_ACCENT);
     for (int i = 0; i < 6; i++) {
         int y = MN_Y + 4 + i * MI_H;
         if (i == 5)
-            gfx_fill(MN_X + 6, y - 2, MN_W - 12, 1, 0x3c5a80);
+            gfx_fill(MN_X + 6, y - 2, MN_W - 12, 1, 0x4a5058);
         bool hot = i == menu_hot;
         gfx_fill(MN_X + 2, y + 1, MN_W - 4, MI_H - 2,
-                 hot ? 0x2a4a70 : 0x223a58);
-        gfx_fill(MN_X + 8, y + (MI_H - 4) / 2, 4, 4, icol[i]);
-        gfx_text(MN_X + 18, y + (MI_H - ch) / 2, items[i],
-                 i == 5 ? 0xff9a9a : 0xdce9ff);
+                 hot ? C_ACCENT : 0x2b3038);
+        if (!ico_draw_file_at(icos[i], MN_X + 8, y + (MI_H - ch) / 2,
+                              ch, ch))
+            gfx_fill(MN_X + 8, y + (MI_H - 4) / 2, 4, 4, icol[i]);
+        gfx_text(MN_X + 12 + ch, y + (MI_H - ch) / 2, L(keys[i]),
+                 hot ? 0x101418 : (i == 5 ? 0xff9a9a : C_TEXT));
     }
 }
 
@@ -434,25 +479,26 @@ static int menu_pick(int x, int y)
 static void draw_about(void)
 {
     int ch = gfx_cell_h();
-    gfx_fill(AB_X, AB_Y, AB_W, AB_H, 0x1b2434);
-    gfx_bevel(AB_X, AB_Y, AB_W, AB_H, 0xbfd0e8, 0x0c1220);
+    gfx_fill(AB_X, AB_Y, AB_W, AB_H, 0x23262b);
+    gfx_bevel(AB_X, AB_Y, AB_W, AB_H, 0x4a5058, 0x0e1013);
     gfx_fill(AB_X + 2, AB_Y + 2, AB_W - 4, TITLE_H - 2, C_TITLE);
-    gfx_text(AB_X + 10, AB_Y + (TITLE_H - ch) / 2, "About GT-DOS", C_TEXT);
+    gfx_fill(AB_X + 2, AB_Y + 2, AB_W - 4, 2, C_ACCENT);
+    if (!ico_draw_file_at("ABOUT.ICO", AB_X + 8,
+                          AB_Y + (TITLE_H - ch) / 2, ch, ch))
+        draw_app_glyph(AB_X + 8, AB_Y + (TITLE_H - ch) / 2, ch);
+    gfx_text(AB_X + 12 + ch, AB_Y + (TITLE_H - ch) / 2,
+             L("gui.about_title"), C_TEXT);
 
     int x = AB_X + 12;
     int y = AB_Y + TITLE_H + 8;
-    const char *lines[6] = {
-        GT_VERSION "  (x86-64 kernel)",
-        "GUI desktop demo: wallpaper, icons, window",
-        "Mouse: PS/2, captured on hover (Ctrl+Alt+G)",
-        "Drag title bar to move, M to maximize",
-        "Start menu -> Theme / About / Settings",
-        "Click TEXT or the title-bar x to exit GUI"
+    static const char *keys[6] = {
+        "gui.about_l1", "gui.about_l2", "gui.about_l3",
+        "gui.about_l4", "gui.about_l5", "gui.about_l6"
     };
     for (int i = 0; i < 6 && y + ch <= AB_OK_Y; i++, y += ch + 2)
-        gfx_text(x, y, lines[i], 0xcfe0f5);
+        gfx_text(x, y, L(keys[i]), 0xcfe0f5);
 
-    draw_button(AB_OK_X, AB_OK_Y, AB_OK_W, AB_OK_H, "OK", 0x2f6f9f);
+    draw_button(AB_OK_X, AB_OK_Y, AB_OK_W, AB_OK_H, L("gui.ok"), 0x3a3f46);
 }
 
 /* 复选框: 方框 + 勾 + 右侧文字 */
@@ -489,31 +535,38 @@ static void draw_slider(void)
 static void draw_settings(void)
 {
     int ch = gfx_cell_h();
-    static const char *names[3] = { "Blue", "Green", "Purple" };
+    static const char *keys[3] = { "gui.blue", "gui.green", "gui.purple" };
 
-    gfx_fill(SD_X, SD_Y, SD_W, SD_H, 0x1b2434);
-    gfx_bevel(SD_X, SD_Y, SD_W, SD_H, 0xbfd0e8, 0x0c1220);
+    gfx_fill(SD_X, SD_Y, SD_W, SD_H, 0x23262b);
+    gfx_bevel(SD_X, SD_Y, SD_W, SD_H, 0x4a5058, 0x0e1013);
     gfx_fill(SD_X + 2, SD_Y + 2, SD_W - 4, TITLE_H - 2, C_TITLE);
-    gfx_text(SD_X + 10, SD_Y + (TITLE_H - ch) / 2, "Settings", C_TEXT);
+    gfx_fill(SD_X + 2, SD_Y + 2, SD_W - 4, 2, C_ACCENT);
+    if (!ico_draw_file_at("SETTINGS.ICO", SD_X + 8,
+                          SD_Y + (TITLE_H - ch) / 2, ch, ch))
+        draw_app_glyph(SD_X + 8, SD_Y + (TITLE_H - ch) / 2, ch);
+    gfx_text(SD_X + 12 + ch, SD_Y + (TITLE_H - ch) / 2,
+             L("gui.settings_title"), C_TEXT);
 
     /* 主题: < 名称 > */
-    draw_button(SD_PREV_X, SD_PREV_Y, SD_BTN_W, SD_BTN_H, "<", 0x2f5a8a);
-    draw_button(SD_NEXT_X, SD_PREV_Y, SD_BTN_W, SD_BTN_H, ">", 0x2f5a8a);
+    draw_button(SD_PREV_X, SD_PREV_Y, SD_BTN_W, SD_BTN_H, "<", 0x3a3f46);
+    draw_button(SD_NEXT_X, SD_PREV_Y, SD_BTN_W, SD_BTN_H, ">", 0x3a3f46);
     int lx = SD_PREV_X + SD_BTN_W + 12;
     int ly = SD_PREV_Y + (SD_BTN_H - ch) / 2;
-    gfx_text(lx, ly, "Theme:", 0x8fa8c8);
-    gfx_text(lx + 8 * gfx_cell_w(), ly, names[theme % 3], 0xdce9ff);
+    gfx_text(lx, ly, L("gui.theme"), 0x8fa8c8);
+    gfx_text(lx + gfx_text_w(L("gui.theme")) + 8, ly, L(keys[theme % 3]),
+             0xdce9ff);
 
     /* 复选框 */
-    draw_check(SD_C1_X, SD_C1_Y, show_icons, "Desktop icons");
-    draw_check(SD_C2_X, SD_C2_Y, clock24, "24-hour clock");
+    draw_check(SD_C1_X, SD_C1_Y, show_icons, L("gui.icons"));
+    draw_check(SD_C2_X, SD_C2_Y, clock24, L("gui.clock24"));
 
     /* 亮度滑块 */
-    gfx_text(SD_X + 12, SD_SL_Y + (SD_SL_H - ch) / 2, "Brightness", 0x8fa8c8);
+    gfx_text(SD_X + 12, SD_SL_Y + (SD_SL_H - ch) / 2, L("gui.brightness"),
+             0x8fa8c8);
     draw_slider();
 
-    draw_button(SD_CLOSE_X, SD_CLOSE_Y, SD_CLOSE_W, SD_CLOSE_H, "Close",
-                0x2f6f9f);
+    draw_button(SD_CLOSE_X, SD_CLOSE_Y, SD_CLOSE_W, SD_CLOSE_H,
+                L("gui.close"), 0x3a3f46);
 }
 
 /* 单选按钮: 方框 + 选中时的中心方块 */
@@ -531,37 +584,42 @@ static void draw_radio(int x, int y, int sz, bool on, const char *label)
 static void draw_widgets(void)
 {
     int ch = gfx_cell_h();
-    static const char *rlab[3] = { "Blue", "Green", "Purple" };
+    static const char *rlab[3] = { "gui.blue", "gui.green", "gui.purple" };
     static const char *items[4] = { "Alpha", "Beta", "Gamma", "Delta" };
 
-    gfx_fill(WD_X, WD_Y, WD_W, WD_H, 0x1b2434);
-    gfx_bevel(WD_X, WD_Y, WD_W, WD_H, 0xbfd0e8, 0x0c1220);
+    gfx_fill(WD_X, WD_Y, WD_W, WD_H, 0x23262b);
+    gfx_bevel(WD_X, WD_Y, WD_W, WD_H, 0x4a5058, 0x0e1013);
     gfx_fill(WD_X + 2, WD_Y + 2, WD_W - 4, TITLE_H - 2, C_TITLE);
-    gfx_text(WD_X + 10, WD_Y + (TITLE_H - ch) / 2, "Widgets", C_TEXT);
+    gfx_fill(WD_X + 2, WD_Y + 2, WD_W - 4, 2, C_ACCENT);
+    if (!ico_draw_file_at("WIDGETS.ICO", WD_X + 8,
+                          WD_Y + (TITLE_H - ch) / 2, ch, ch))
+        draw_app_glyph(WD_X + 8, WD_Y + (TITLE_H - ch) / 2, ch);
+    gfx_text(WD_X + 12 + ch, WD_Y + (TITLE_H - ch) / 2,
+             L("gui.widgets_title"), C_TEXT);
 
     for (int i = 0; i < 3; i++)
-        draw_radio(WR1_X + i * WR_STEP, WR_Y, WR_SZ, theme == i, rlab[i]);
+        draw_radio(WR1_X + i * WR_STEP, WR_Y, WR_SZ, theme == i, L(rlab[i]));
 
-    gfx_text(WD_X + 12, WP_LAB_Y, "Progress", 0x8fa8c8);
-    gfx_bar(WP_X, WP_Y, WP_W, WP_H, wdg_progress, 0x4f9fdf);
+    gfx_text(WD_X + 12, WP_LAB_Y, L("gui.progress"), 0x8fa8c8);
+    gfx_bar(WP_X, WP_Y, WP_W, WP_H, wdg_progress, C_ACCENT);
 
     /* 开关: 任务栏时钟 */
-    gfx_text(WD_X + 12, WT_ROW_Y + 2, "Taskbar clock",
+    gfx_text(WD_X + 12, WT_ROW_Y + 2, L("gui.taskbar_clock"),
              show_clock ? 0xdce9ff : 0x8fa8c8);
     draw_toggle(WT_X, WT_Y, WT_W, WT_H, show_clock);
 
-    gfx_fill(WL_X, WL_Y, WL_W, WL_IH * 4, 0x0e1622);
-    gfx_bevel(WL_X, WL_Y, WL_W, WL_IH * 4, 0xbfd0e8, 0x101820);
+    gfx_fill(WL_X, WL_Y, WL_W, WL_IH * 4, 0x15181c);
+    gfx_bevel(WL_X, WL_Y, WL_W, WL_IH * 4, 0x4a5058, 0x0e1013);
     for (int i = 0; i < 4; i++) {
         int iy = WL_Y + i * WL_IH;
         bool on = i == list_sel;
         if (on)
-            gfx_fill(WL_X + 2, iy + 1, WL_W - 4, WL_IH - 2, 0x2a4a70);
+            gfx_fill(WL_X + 2, iy + 1, WL_W - 4, WL_IH - 2, 0x3a3f46);
         gfx_text(WL_X + 8, iy + (WL_IH - ch) / 2, items[i],
-                 on ? 0xdce9ff : 0x9fb3cc);
+                 on ? C_TEXT : 0x9fb3cc);
     }
 
-    draw_button(WC_X, WC_Y, WC_W, WC_H, "Close", 0x2f6f9f);
+    draw_button(WC_X, WC_Y, WC_W, WC_H, L("gui.close"), 0x3a3f46);
 }
 
 /* 浮层绘制 (菜单/对话框): 画在后台缓冲, 随后 gfx_flip 一并提交.
@@ -578,22 +636,97 @@ static void draw_overlays(void)
         draw_widgets();
 }
 
-/* 最大化/还原 (保存并恢复窗口位置与尺寸) */
+/* 最大化/还原 (带动画; 保存并恢复窗口位置与尺寸) */
+static int ilerp(int a, int b, int t) { return a + (b - a) * t / 100; }
+
+static void anim_begin(int kind, int x1, int y1, int w1, int h1)
+{
+    anim_kind = kind;
+    ax0 = WX; ay0 = WY; aw0 = WW; ah0 = WH;
+    ax1 = x1; ay1 = y1; aw1 = w1; ah1 = h1;
+    anim_t0 = timer_uptime_ms();
+    anim_last_t = -1;
+    anim_active = true;
+}
+
+static int  min_x0, min_y0, min_w0, min_h0;
+static bool min_was_max;
+
 static void toggle_max(void)
 {
+    int tx, ty, tw, th;
     if (!maximized) {
         norm_x = WX; norm_y = WY; norm_w = WW; norm_h = WH;
-        WX = 0;
-        WY = 0;
-        WW = gfx_w();
-        WH = gfx_h() - TASK_H;
+        tx = 0; ty = 0; tw = gfx_w(); th = gfx_h() - TASK_H;
         maximized = true;
+        anim_begin(1, tx, ty, tw, th);
     } else {
-        WX = norm_x; WY = norm_y;
-        WW = norm_w; WH = norm_h;
+        tx = norm_x; ty = norm_y; tw = norm_w; th = norm_h;
         maximized = false;
+        anim_begin(2, tx, ty, tw, th);
     }
+}
+
+static void start_minimize(void)
+{
+    if (minimized || anim_active)
+        return;
+    min_x0 = WX; min_y0 = WY; min_w0 = WW; min_h0 = WH;
+    min_was_max = maximized;
+    anim_begin(3, TK_X + 8, TK_Y + 6, 40, 30);
+}
+
+static void start_unminimize(void)
+{
+    if (!minimized || anim_active)
+        return;
+    minimized = false;
+    vga_hold_display(true);               /* 动画期间客户区留空 */
+    WX = TK_X + 8;
+    WY = TK_Y + 6;
+    WW = 40;
+    WH = 30;
+    int tx, ty, tw, th;
+    if (min_was_max) {
+        tx = 0; ty = 0; tw = gfx_w(); th = gfx_h() - TASK_H;
+    } else {
+        tx = min_x0; ty = min_y0; tw = min_w0; th = min_h0;
+    }
+    anim_begin(4, tx, ty, tw, th);
+}
+
+static void anim_finish(void)
+{
+    WX = ax1; WY = ay1; WW = aw1; WH = ah1;
+    if (anim_kind == 3) {
+        minimized = true;
+        vga_hold_display(true);
+    } else if (anim_kind == 4) {
+        minimized = false;
+    }
+    anim_kind = 0;
     redraw_desktop();
+    if (!minimized)
+        vga_hold_display(false);
+}
+
+static void anim_step(void)
+{
+    u32 el = timer_uptime_ms() - anim_t0;
+    int t = (int)(el * 100u / ANIM_MS);
+    if (t > 100) t = 100;
+    if (t == anim_last_t)
+        return;
+    anim_last_t = t;
+    WX = ilerp(ax0, ax1, t);
+    WY = ilerp(ay0, ay1, t);
+    WW = ilerp(aw0, aw1, t);
+    WH = ilerp(ah0, ah1, t);
+    redraw_desktop();
+    if (t >= 100) {
+        anim_active = false;
+        anim_finish();
+    }
 }
 
 /* 按当前 WX/WY 计算所有派生矩形; WX/WY<0 时居中, WW/WH<=0 时按 3/4 屏 */
@@ -613,10 +746,10 @@ static void layout(void)
     CL_W = WW - 12;
     CL_H = WH - TITLE_H - 6;
 
-    BT_W = TITLE_H - 10;
+    BT_W = TITLE_H - 8;
     BT_H = BT_W;
-    BT_X = WX + WW - BT_W - 6;
-    BT_Y = WY + 5;
+    BT_X = WX + WW - BT_W - 8;
+    BT_Y = WY + (TITLE_H - BT_H) / 2;
 
     /* 任务栏 TEXT 按钮贴住右下角 (更容易点中, 也便于自动化测试) */
     EX_W = 5 * cw + 12;
@@ -643,8 +776,12 @@ static void layout(void)
     MN_Y = gh - TASK_H - MN_H;
     MX_W = BT_W;
     MX_H = BT_H;
-    MX_X = BT_X - MX_W - 6;
+    MX_X = BT_X - MX_W - 4;
     MX_Y = BT_Y;
+    MINB_W = BT_W;
+    MINB_H = BT_H;
+    MINB_X = MX_X - MINB_W - 4;
+    MINB_Y = BT_Y;
 
     AB_W = 46 * cw;
     if (AB_W > gw - 40) AB_W = gw - 40;
@@ -735,68 +872,84 @@ static void draw_desktop(void)
     layout();
     draw_wallpaper();
 
-    /* 窗口阴影/边框/标题栏 */
-    gfx_fill(WX + 10, WY + 10, WW, WH, 0x080c14);
-    gfx_fill(WX, WY, WW, WH, C_FRAME);
-    gfx_bevel(WX, WY, WW, WH, C_FRAME_LT, C_FRAME_DK);
-    gfx_fill(WX + 2, WY + 2, WW - 4, TITLE_H - 2, C_TITLE);
-    gfx_fill(WX + 2, WY + 2, WW - 4, (TITLE_H - 2) / 2, C_TITLE2);
-    gfx_fill(WX + 2, WY + 2, WW - 4, 1, 0xdfefff);
-    gfx_text(WX + 10, WY + (TITLE_H - ch) / 2, "GT-DOS Terminal", C_TEXT);
-    gfx_fill(WX + 2, WY + TITLE_H - 3, WW - 4, 1, 0x4f9fdf);
-    draw_button(MX_X, MX_Y, MX_W, MX_H, maximized ? "R" : "M", 0x2f5a8a);
-    draw_button(BT_X, BT_Y, BT_W, BT_H, "x", 0x8a2f2f);
+    if (!minimized) {
+        /* 窗口阴影/边框/标题栏 (Linux 风格: 居中标题 + 右侧图标按钮) */
+        gfx_fill(WX + 10, WY + 10, WW, WH, 0x080c14);
+        gfx_fill(WX, WY, WW, WH, C_FRAME);
+        gfx_bevel(WX, WY, WW, WH, C_FRAME_LT, C_FRAME_DK);
+        gfx_fill(WX + 2, WY + 2, WW - 4, TITLE_H - 2, C_TITLE);
+        gfx_fill(WX + 2, WY + 2, WW - 4, 2, C_TITLE2);
+        int tw = gfx_text_w(L("gui.terminal"));
+        int tx = WX + (WW - tw) / 2;
+        if (!ico_draw_file_at("TERM.ICO", tx - ch - 4,
+                              WY + (TITLE_H - ch) / 2, ch, ch))
+            draw_app_glyph(tx - ch - 4, WY + (TITLE_H - ch) / 2, ch);
+        gfx_text(tx, WY + (TITLE_H - ch) / 2, L("gui.terminal"), C_TEXT);
 
-    /* 客户区 (控制台视口) */
-    gfx_fill(CL_X - 2, CL_Y - 2, CL_W + 4, CL_H + 4, C_CLIENT);
+        draw_win_button(MINB_X, MINB_Y, MINB_W, MINB_H, 0, 0x3a3f46);
+        draw_win_button(MX_X, MX_Y, MX_W, MX_H, maximized ? 2 : 1, 0x3a3f46);
+        draw_win_button(BT_X, BT_Y, BT_W, BT_H, 3, 0x5a2a2e);
+        gfx_fill(WX + 2, WY + TITLE_H - 1, WW - 4, 1, C_ACCENT);
 
-    /* 右下角缩放握把 (最大化时隐藏) */
-    if (!maximized) {
-        for (int i = 0; i < 3; i++) {
-            int d = 5 + i * 4;
-            gfx_fill(WX + WW - d - 2, WY + WH - 6, 2, 4, 0x9aa8c0);
-            gfx_fill(WX + WW - 6, WY + WH - d - 2, 4, 2, 0x9aa8c0);
+        /* 客户区 (控制台视口) */
+        gfx_fill(CL_X - 2, CL_Y - 2, CL_W + 4, CL_H + 4, C_CLIENT);
+
+        /* 右下角缩放握把 (最大化时隐藏) */
+        if (!maximized) {
+            for (int i = 0; i < 3; i++) {
+                int d = 5 + i * 4;
+                gfx_fill(WX + WW - d - 2, WY + WH - 6, 2, 4, 0x9aa8c0);
+                gfx_fill(WX + WW - 6, WY + WH - d - 2, 4, 2, 0x9aa8c0);
+            }
         }
     }
 
-    /* 任务栏: 渐变底 + 顶部高光 */
+    /* 面板 (Linux 风格底部栏): 深色 + 顶部强调线 */
     int ty0 = gh - TASK_H;
-    gfx_fill(0, ty0, gw, TASK_H, 0x141c2a);
-    gfx_fill(0, ty0, gw, TASK_H / 2, 0x1b2740);
-    gfx_fill(0, ty0, gw, 2, 0x3c5a80);
+    gfx_fill(0, ty0, gw, TASK_H, C_TASK);
+    gfx_fill(0, ty0, gw, TASK_H / 2, 0x23262e);
+    gfx_fill(0, ty0, gw, 2, C_TASK_LT);
 
-    /* 开始按钮: 四色 logo + Start */
-    gfx_fill(MB_X, MB_Y, MB_W, MB_H, 0x22344f);
-    gfx_bevel(MB_X, MB_Y, MB_W, MB_H, 0xbfd0e8, 0x101820);
+    /* 开始按钮: 应用网格图标 + Start */
+    gfx_fill(MB_X, MB_Y + 3, MB_W, MB_H - 6, 0x2b3038);
+    gfx_bevel(MB_X, MB_Y + 3, MB_W, MB_H - 6, 0x4a5058, 0x101418);
     {
-        int sq = ch / 4;
-        if (sq < 3) sq = 3;
-        int gap = 2;
-        int lx = MB_X + 8;
-        int ly = MB_Y + (TASK_H - (sq * 2 + gap)) / 2;
-        u32 lc[4] = { 0x66ccff, 0x7fe0a0, 0xffc060, 0xc090ff };
-        gfx_fill(lx, ly, sq, sq, lc[0]);
-        gfx_fill(lx + sq + gap, ly, sq, sq, lc[1]);
-        gfx_fill(lx, ly + sq + gap, sq, sq, lc[2]);
-        gfx_fill(lx + sq + gap, ly + sq + gap, sq, sq, lc[3]);
-        gfx_text(lx + 2 * sq + gap + 6, MB_Y + (TASK_H - ch) / 2,
-                 "Start", C_TEXT);
+        int isz = TASK_H - 8;
+        if (!ico_draw_file_at("START.ICO", MB_X + 5, MB_Y + 4, isz, isz)) {
+            int sq = ch / 4;
+            if (sq < 3) sq = 3;
+            int gap = 2;
+            int lx = MB_X + 8;
+            int ly = MB_Y + (TASK_H - (sq * 2 + gap)) / 2;
+            u32 lc[4] = { 0x3daee9, 0x7fe0a0, 0xffc060, 0xc090ff };
+            gfx_fill(lx, ly, sq, sq, lc[0]);
+            gfx_fill(lx + sq + gap, ly, sq, sq, lc[1]);
+            gfx_fill(lx, ly + sq + gap, sq, sq, lc[2]);
+            gfx_fill(lx + sq + gap, ly + sq + gap, sq, sq, lc[3]);
+        }
+        gfx_text(MB_X + isz + 10, MB_Y + (TASK_H - ch) / 2,
+                 L("gui.start"), C_TEXT);
     }
 
-    /* 任务栏窗口按钮 (活动窗口, 点击切换最大化) */
-    gfx_fill(TK_X, TK_Y, TK_W, TK_H, 0x2a4a70);
-    gfx_bevel(TK_X, TK_Y, TK_W, TK_H, 0x9fc0e8, 0x0c1220);
+    /* 面板窗口按钮 (活动窗口; 点击最小化/还原) */
+    gfx_fill(TK_X, TK_Y + 3, TK_W, TK_H - 6,
+             minimized ? 0x2b3038 : 0x3a3f46);
+    gfx_bevel(TK_X, TK_Y + 3, TK_W, TK_H - 6, 0x4a5058, 0x101418);
+    if (!minimized)
+        gfx_fill(TK_X, TK_Y + TASK_H - 4, TK_W, 2, C_ACCENT);
     {
         int isz = ch;
-        if (isz > TK_H - 4) isz = TK_H - 4;
-        draw_app_glyph(TK_X + 5, TK_Y + (TASK_H - isz) / 2, isz);
-        gfx_text(TK_X + 7 + isz, TK_Y + (TASK_H - ch) / 2,
-                 "Terminal", 0xdce9ff);
+        if (isz > TK_H - 6) isz = TK_H - 6;
+        if (!ico_draw_file_at("TERM.ICO", TK_X + 6,
+                              TK_Y + (TASK_H - isz) / 2, isz, isz))
+            draw_app_glyph(TK_X + 6, TK_Y + (TASK_H - isz) / 2, isz);
+        gfx_text(TK_X + 10 + isz, TK_Y + (TASK_H - ch) / 2,
+                 L("gui.menu.terminal"), minimized ? 0x9fb3cc : C_TEXT);
     }
 
     /* 时钟分隔线 + TEXT 按钮 */
-    gfx_fill(CK_X - 8, ty0 + 4, 1, TASK_H - 8, 0x3c5a80);
-    draw_button(EX_X, EX_Y, EX_W, EX_H, "TEXT", 0x2a3a4e);
+    gfx_fill(CK_X - 8, ty0 + 4, 1, TASK_H - 8, 0x4a5058);
+    draw_button(EX_X, EX_Y, EX_W, EX_H, L("gui.text"), 0x2b3038);
     clock_sec = 0xFFFFFFFFu;
     draw_clock();
 }
@@ -809,9 +962,14 @@ static void redraw_desktop(void)
         gfx_fb_restore(cur_x - 1, cur_y - 1, cs_w + 2, cs_h + 2);
         cur_x = cur_y = -1;
     }
+    in_redraw = true;
+    vga_defer_flip(true);                 /* 避免中途局部提交 -> 闪烁 */
     draw_desktop();
-    vga_gui_viewport(CL_X, CL_Y, CL_W, CL_H);
+    if (!minimized)
+        vga_gui_viewport(CL_X, CL_Y, CL_W, CL_H);
     draw_overlays();
+    vga_defer_flip(false);
+    in_redraw = false;
     gfx_flip();
     gfx_poked = false;
     cursor_show(mouse_x(), mouse_y());
@@ -819,6 +977,12 @@ static void redraw_desktop(void)
 
 /* --------------------------------------------------------------- 接口 */
 bool gui_active(void) { return active; }
+
+void gui_redraw(void)
+{
+    if (active && !app_canvas)
+        redraw_desktop();
+}
 
 bool gui_enter(void)
 {
@@ -843,6 +1007,9 @@ bool gui_enter(void)
     slider_drag = false;
     resizing = false;
     app_canvas = false;
+    minimized = false;
+    anim_active = false;
+    anim_kind = 0;
     vga_hold_display(false);
     list_sel = 0;
     wdg_progress = 0;
@@ -851,8 +1018,20 @@ bool gui_enter(void)
     clock24 = true;
     bright = 100;
     gfx_poked = false;
+    {
+        static const char *icos[7] = {
+            "TERM.ICO", "FILES.ICO", "SYS.ICO", "SETTINGS.ICO",
+            "ABOUT.ICO", "WIDGETS.ICO", "START.ICO"
+        };
+        for (int i = 0; i < 7; i++)
+            ico_preload(icos[i]);
+    }
+    in_redraw = true;
+    vga_defer_flip(true);
     draw_desktop();
     vga_gui_viewport(CL_X, CL_Y, CL_W, CL_H);
+    vga_defer_flip(false);
+    in_redraw = false;
     gfx_flip();
     active = true;
     last_btn = mouse_buttons();
@@ -878,6 +1057,9 @@ void gui_leave(void)
     slider_drag = false;
     resizing = false;
     app_canvas = false;
+    minimized = false;
+    anim_active = false;
+    anim_kind = 0;
     vga_hold_display(false);
     if (cur_x >= 0)
         gfx_fb_restore(cur_x - 1, cur_y - 1, cs_w + 2, cs_h + 2);
@@ -956,6 +1138,10 @@ void gui_pump(void)
         return;
     if (app_canvas)
         return;                     /* 用户程序接管屏幕, 桌面不处理输入 */
+    if (anim_active) {              /* 动画进行中: 只推进动画 */
+        anim_step();
+        return;
+    }
 
     int btn = mouse_buttons();
     int x = mouse_x(), y = mouse_y();
@@ -1059,24 +1245,32 @@ void gui_pump(void)
             menu_open = true;                     /* 打开开始菜单 */
             menu_hot = -1;
             redraw_desktop();
-        } else if (inside(x, y, BT_X, BT_Y, BT_W, BT_H) ||
-                   inside(x, y, EX_X, EX_Y, EX_W, EX_H)) {
-            gui_leave();                          /* 关闭按钮 / TEXT */
+        } else if (inside(x, y, EX_X, EX_Y, EX_W, EX_H)) {
+            gui_leave();                          /* TEXT: 返回纯文本 */
+            return;
+        } else if (!minimized && inside(x, y, BT_X, BT_Y, BT_W, BT_H)) {
+            gui_leave();                          /* 窗口关闭按钮 */
             return;
         } else if (inside(x, y, TK_X, TK_Y, TK_W, TK_H)) {
-            toggle_max();                         /* 任务栏窗口按钮 */
-        } else if (inside(x, y, MX_X, MX_Y, MX_W, MX_H)) {
+            if (minimized)
+                start_unminimize();               /* 面板按钮: 还原 */
+            else
+                toggle_max();                     /* 或最大化 */
+        } else if (!minimized && inside(x, y, MINB_X, MINB_Y, MINB_W, MINB_H)) {
+            start_minimize();                     /* 最小化 */
+        } else if (!minimized && inside(x, y, MX_X, MX_Y, MX_W, MX_H)) {
             toggle_max();                         /* 最大化 / 还原 */
         } else if (icon_hit(x, y) >= 0) {
             icon_sel = icon_hit(x, y);            /* 桌面图标: 高亮反馈 */
             redraw_desktop();
-        } else if (!maximized && inside(x, y, GX, GY, GWH, GWH)) {
+        } else if (!minimized && !maximized &&
+                   inside(x, y, GX, GY, GWH, GWH)) {
             resizing = true;                      /* 右下角缩放握把 */
             resize_base_w = WW;
             resize_base_h = WH;
             resize_px = x;
             resize_py = y;
-        } else if (inside(x, y, WX, WY, WW, TITLE_H)) {
+        } else if (!minimized && inside(x, y, WX, WY, WW, TITLE_H)) {
             dragging = true;
             drag_dx = x - WX;
             drag_dy = y - WY;

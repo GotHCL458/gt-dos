@@ -22,6 +22,7 @@ GT-DOS 构建脚本
 
 import hashlib
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -635,6 +636,287 @@ def build_png_assets():
     return out
 
 
+# ------------------------------------------------- SVG -> ICO 系统图标
+# 图标以 SVG 描述 (纯填充图形), 构建期用 PIL 4x 超采样光栅化为 128x128 RGBA,
+# 再封装成 32bpp BMP 的 ICO. 内核 ico.c 加载并缓存, 桌面/面板/菜单使用.
+# PIL 不可用时返回空字典, 内核回退到内置矢量图标.
+
+ICON_SVGS = {
+    "TERM": """<svg viewBox="0 0 128 128">
+  <rect x="14" y="20" width="100" height="88" fill="#0f1720"/>
+  <rect x="14" y="20" width="100" height="22" fill="#2f6f9f"/>
+  <circle cx="28" cy="31" r="4" fill="#e05a5a"/>
+  <circle cx="42" cy="31" r="4" fill="#e0c05a"/>
+  <circle cx="56" cy="31" r="4" fill="#5ae08a"/>
+  <path d="M32 58 L54 74 L32 90" fill="#7fe0a0"/>
+  <rect x="62" y="84" width="34" height="8" fill="#7fe0a0"/>
+</svg>""",
+    "FILES": """<svg viewBox="0 0 128 128">
+  <rect x="16" y="28" width="52" height="22" fill="#c9a227"/>
+  <rect x="16" y="44" width="96" height="64" fill="#e6c34a"/>
+  <rect x="16" y="44" width="96" height="8" fill="#f3d873"/>
+  <rect x="30" y="66" width="68" height="6" fill="#a8861d"/>
+  <rect x="30" y="80" width="52" height="6" fill="#a8861d"/>
+</svg>""",
+    "SYS": """<svg viewBox="0 0 128 128">
+  <rect x="30" y="30" width="68" height="68" fill="#2f7f7f"/>
+  <rect x="44" y="44" width="40" height="40" fill="#102028"/>
+  <rect x="52" y="52" width="24" height="24" fill="#5fc0c0"/>
+  <rect x="38" y="20" width="6" height="10" fill="#c0e0e0"/>
+  <rect x="60" y="20" width="6" height="10" fill="#c0e0e0"/>
+  <rect x="84" y="20" width="6" height="10" fill="#c0e0e0"/>
+  <rect x="38" y="98" width="6" height="10" fill="#c0e0e0"/>
+  <rect x="60" y="98" width="6" height="10" fill="#c0e0e0"/>
+  <rect x="84" y="98" width="6" height="10" fill="#c0e0e0"/>
+  <rect x="20" y="38" width="10" height="6" fill="#c0e0e0"/>
+  <rect x="20" y="60" width="10" height="6" fill="#c0e0e0"/>
+  <rect x="20" y="84" width="10" height="6" fill="#c0e0e0"/>
+  <rect x="98" y="38" width="10" height="6" fill="#c0e0e0"/>
+  <rect x="98" y="60" width="10" height="6" fill="#c0e0e0"/>
+  <rect x="98" y="84" width="10" height="6" fill="#c0e0e0"/>
+</svg>""",
+    "SETTINGS": """<svg viewBox="0 0 128 128">
+  <rect x="16" y="34" width="96" height="8" fill="#3daee9"/>
+  <circle cx="46" cy="38" r="11" fill="#eff0f1"/>
+  <rect x="16" y="62" width="96" height="8" fill="#3daee9"/>
+  <circle cx="82" cy="66" r="11" fill="#eff0f1"/>
+  <rect x="16" y="90" width="96" height="8" fill="#3daee9"/>
+  <circle cx="58" cy="94" r="11" fill="#eff0f1"/>
+</svg>""",
+    "ABOUT": """<svg viewBox="0 0 128 128">
+  <circle cx="64" cy="64" r="46" fill="#3daee9"/>
+  <rect x="58" y="54" width="12" height="42" fill="#ffffff"/>
+  <circle cx="64" cy="40" r="8" fill="#ffffff"/>
+</svg>""",
+    "WIDGETS": """<svg viewBox="0 0 128 128">
+  <rect x="22" y="22" width="38" height="38" fill="#3daee9"/>
+  <rect x="68" y="22" width="38" height="38" fill="#7fe0a0"/>
+  <rect x="22" y="68" width="38" height="38" fill="#ffc060"/>
+  <rect x="68" y="68" width="38" height="38" fill="#c090ff"/>
+</svg>""",
+    "START": """<svg viewBox="0 0 128 128">
+  <rect x="12" y="12" width="104" height="104" fill="#1b2430"/>
+  <circle cx="40" cy="40" r="9" fill="#3daee9"/>
+  <circle cx="64" cy="40" r="9" fill="#7fe0a0"/>
+  <circle cx="88" cy="40" r="9" fill="#ffc060"/>
+  <circle cx="40" cy="64" r="9" fill="#7fe0a0"/>
+  <circle cx="64" cy="64" r="9" fill="#ffc060"/>
+  <circle cx="88" cy="64" r="9" fill="#c090ff"/>
+  <circle cx="40" cy="88" r="9" fill="#ffc060"/>
+  <circle cx="64" cy="88" r="9" fill="#c090ff"/>
+  <circle cx="88" cy="88" r="9" fill="#3daee9"/>
+</svg>""",
+}
+
+
+def _svg_attrs(s):
+    d = {}
+    for m in re.finditer(r'([\w:-]+)\s*=\s*"([^"]*)"', s):
+        d[m.group(1)] = m.group(2)
+    return d
+
+
+def _svg_color(v, default=(0, 0, 0, 255)):
+    if not v:
+        return default
+    v = v.strip().lower()
+    names = {"black": (0, 0, 0), "white": (255, 255, 255), "red": (255, 0, 0),
+             "green": (0, 128, 0), "lime": (0, 255, 0), "blue": (0, 0, 255),
+             "yellow": (255, 255, 0), "orange": (255, 165, 0),
+             "gray": (128, 128, 128), "grey": (128, 128, 128),
+             "purple": (128, 0, 128), "cyan": (0, 255, 255)}
+    if v in names:
+        return names[v] + (255,)
+    if v.startswith("#"):
+        h = v[1:]
+        try:
+            if len(h) == 3:
+                return (int(h[0] * 2, 16), int(h[1] * 2, 16),
+                        int(h[2] * 2, 16), 255)
+            if len(h) == 6:
+                return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), 255)
+            if len(h) == 8:
+                return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16),
+                        int(h[6:8], 16))
+        except ValueError:
+            pass
+    return default
+
+
+def _svg_path_polys(d):
+    toks = re.findall(r'[MLHVQCZmlhvqcz]|-?\d*\.?\d+', d)
+    i = 0
+    cmd = None
+    cx = cy = sx = sy = 0.0
+    pts = []
+    polys = []
+
+    def num():
+        nonlocal i
+        v = float(toks[i])
+        i += 1
+        return v
+
+    while i < len(toks):
+        t = toks[i]
+        if t.isalpha():
+            cmd = t
+            i += 1
+            if cmd in "Zz":
+                if len(pts) > 2:
+                    polys.append(pts)
+                pts = []
+                cx, cy = sx, sy
+            continue
+        if cmd is None:
+            i += 1
+            continue
+        if cmd in "Mm":
+            x = num(); y = num()
+            if cmd == "m":
+                x += cx; y += cy
+            if len(pts) > 2:
+                polys.append(pts)
+            pts = [(x, y)]
+            cx, cy = sx, sy = x, y
+            cmd = "L" if cmd == "M" else "l"
+        elif cmd in "Ll":
+            x = num(); y = num()
+            if cmd == "l":
+                x += cx; y += cy
+            pts.append((x, y)); cx, cy = x, y
+        elif cmd in "Hh":
+            x = num()
+            if cmd == "h":
+                x += cx
+            cx = x; pts.append((cx, cy))
+        elif cmd in "Vv":
+            y = num()
+            if cmd == "v":
+                y += cy
+            cy = y; pts.append((cx, cy))
+        elif cmd in "Qq":
+            x1 = num(); y1 = num(); x = num(); y = num()
+            if cmd == "q":
+                x1 += cx; y1 += cy; x += cx; y += cy
+            for k in range(1, 17):
+                tt = k / 16.0; u = 1 - tt
+                pts.append((u * u * cx + 2 * u * tt * x1 + tt * tt * x,
+                            u * u * cy + 2 * u * tt * y1 + tt * tt * y))
+            cx, cy = x, y
+        elif cmd in "Cc":
+            x1 = num(); y1 = num(); x2 = num(); y2 = num()
+            x = num(); y = num()
+            if cmd == "c":
+                x1 += cx; y1 += cy; x2 += cx; y2 += cy; x += cx; y += cy
+            for k in range(1, 17):
+                tt = k / 16.0; u = 1 - tt
+                pts.append((u ** 3 * cx + 3 * u * u * tt * x1 +
+                            3 * u * tt * tt * x2 + tt ** 3 * x,
+                            u ** 3 * cy + 3 * u * u * tt * y1 +
+                            3 * u * tt * tt * y2 + tt ** 3 * y))
+            cx, cy = x, y
+        else:
+            i += 1
+    if len(pts) > 2:
+        polys.append(pts)
+    return polys
+
+
+def _svg_render(svg, size=128, ss=4):
+    from PIL import Image, ImageDraw
+    vb = re.search(r'viewBox\s*=\s*"([^"]*)"', svg)
+    if vb:
+        nums = [float(x) for x in re.findall(r'-?\d*\.?\d+', vb.group(1))]
+        minx, miny, vw, vh = (nums + [0, 0, 128, 128])[:4]
+    else:
+        minx = miny = 0.0
+        vw = vh = 128.0
+    if vw <= 0 or vh <= 0:
+        vw = vh = 128.0
+    W = size * ss
+    sc = min(W / vw, W / vh)
+    ox = (W - vw * sc) / 2.0 - minx * sc
+    oy = (W - vh * sc) / 2.0 - miny * sc
+
+    def mx(x):
+        return ox + x * sc
+
+    def my(y):
+        return oy + y * sc
+
+    base = Image.new("RGBA", (W, W), (0, 0, 0, 0))
+    for m in re.finditer(r'<(rect|circle|ellipse|path)\b([^>]*)>', svg):
+        kind = m.group(1)
+        a = _svg_attrs(m.group(2))
+        col = _svg_color(a.get("fill"))
+        op = float(a.get("opacity", "1") or 1)
+        fop = float(a.get("fill-opacity", "1") or 1)
+        alpha = max(0, min(255, int(col[3] * op * fop)))
+        if alpha == 0:
+            continue
+        layer = Image.new("RGBA", (W, W), (0, 0, 0, 0))
+        dr = ImageDraw.Draw(layer)
+        fill = (col[0], col[1], col[2], alpha)
+        if kind == "rect":
+            x = float(a.get("x", 0)); y = float(a.get("y", 0))
+            w = float(a.get("width", 0)); h = float(a.get("height", 0))
+            if w > 0 and h > 0:
+                dr.rectangle([mx(x), my(y), mx(x + w) - 1, my(y + h) - 1],
+                             fill=fill)
+        elif kind in ("circle", "ellipse"):
+            cx = float(a.get("cx", 0)); cy = float(a.get("cy", 0))
+            if kind == "circle":
+                rx = ry = float(a.get("r", 0))
+            else:
+                rx = float(a.get("rx", 0)); ry = float(a.get("ry", 0))
+            if rx > 0 and ry > 0:
+                dr.ellipse([mx(cx - rx), my(cy - ry),
+                            mx(cx + rx) - 1, my(cy + ry) - 1], fill=fill)
+        elif kind == "path":
+            for poly in _svg_path_polys(a.get("d", "")):
+                dr.polygon([(mx(px), my(py)) for px, py in poly], fill=fill)
+        base = Image.alpha_composite(base, layer)
+    return base.resize((size, size), Image.LANCZOS)
+
+
+def _rgba_to_ico(img):
+    """RGBA PIL 图像 -> 32bpp BMP 单条目 ICO (内核直接支持)."""
+    w, h = img.size
+    rgba = img.tobytes()
+    xor = bytearray()
+    for y in range(h - 1, -1, -1):
+        row = rgba[y * w * 4:(y + 1) * w * 4]
+        for x in range(w):
+            r, g, b, a = row[x * 4:x * 4 + 4]
+            xor += bytes((b, g, r, a))
+    maskrow = ((w + 31) // 32) * 4
+    mask = bytes(maskrow * h)
+    dib = (struct.pack("<IiiHHIIiiII", 40, w, h * 2, 1, 32, 0,
+                       len(xor) + len(mask), 0, 0, 0, 0) + bytes(xor) + mask)
+    icondir = struct.pack("<HHH", 0, 1, 1)
+    entry = struct.pack("<BBBBHHII", w if w < 256 else 0, h if h < 256 else 0,
+                        0, 0, 1, 32, len(dib), 6 + 16)
+    return icondir + entry + dib
+
+
+def build_icon_assets():
+    """SVG 图标 -> 高质量 ICO; 同时带一份 SVG 源文件供 SHOW 查看."""
+    out = {}
+    try:
+        from PIL import Image  # noqa: F401
+    except Exception:
+        return out
+    for name, svg in ICON_SVGS.items():
+        try:
+            img = _svg_render(svg, 64, 4)
+            out[name + ".ICO"] = _rgba_to_ico(img)
+            out[name + ".SVG"] = svg.encode("utf-8")
+        except Exception:
+            continue
+    return out
+
+
 
 # ------------------------------------------------------- 构建期 exFAT 工具 (Rust)
 # 卷格式化、系统文件加密、目录项与厂商扩展全部由 rust/gtmkfs 完成;
@@ -822,6 +1104,7 @@ def build():
     cpm = open(os.path.join(BUILD, "cpm.gtd"), "rb").read()
     assets = build_demo_assets()
     assets.update(build_png_assets())
+    assets.update(build_icon_assets())
     services = {"NETSVC.GTP": build_asm_asset("svc_net.asm", "svc_net.gtp")}
     print("==> 组装单硬盘镜像 (MBR + C: exFAT + 隐藏启动分区)")
     hd = make_hd_image(mbr, boot2, kernel, font, cpm, assets, services,

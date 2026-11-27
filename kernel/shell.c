@@ -593,6 +593,90 @@ static void cmd_config(int argc, char **argv)
     }
 }
 
+/* LANG EN|ZH: 切换界面语言 (GUI 立即重绘) */
+static void cmd_lang(int argc, char **argv)
+{
+    if (argc < 2) {
+        kprintf("Language: %s  (LANG EN|ZH)\n",
+                i18n_lang() ? "zh-CN" : "en-US");
+        return;
+    }
+    int zh;
+    if (!strcasecmp(argv[1], "zh") || !strcasecmp(argv[1], "cn") ||
+        !strcasecmp(argv[1], "chinese"))
+        zh = 1;
+    else if (!strcasecmp(argv[1], "en") || !strcasecmp(argv[1], "english"))
+        zh = 0;
+    else {
+        err("Usage: LANG EN|ZH\n");
+        return;
+    }
+    i18n_set_lang(zh);
+    gcfg.lang = (char)zh;
+    cfg_save();
+    ok("Language: %s\n", zh ? "中文" : "English");
+    tui_status_refresh();
+    if (gui_active())
+        gui_redraw();
+}
+
+/* uname: 类 Unix 系统标识 */
+static void cmd_uname(int argc, char **argv)
+{
+    if (argc > 1 && argv[1][0] == '-' &&
+        (argv[1][1] == 'a' || argv[1][1] == 'A'))
+        kprintf("GT-DOS 0.10 GT-DOS x86_64 GNU/Linux-like\n");
+    else
+        kprintf("GT-DOS\n");
+}
+
+/* free: 内存概况 (QEMU 默认 32MB) */
+static void cmd_free(void)
+{
+    gt_color(C_LCYAN);
+    kprintf("              total        used        free\n");
+    gt_color_reset();
+    kprintf("Mem:          32768K         n/a         n/a\n");
+    kprintf("Swap:             0K           0K           0K\n");
+    kprintf("Uptime: %u s\n", timer_uptime_ms() / 1000u);
+}
+
+/* neofetch: Linux 风格系统信息卡片 */
+static void cmd_neofetch(void)
+{
+    char ip[20];
+    net_ip_str(net_ip(), ip);
+    u32 up = timer_uptime_ms() / 1000u;
+    gt_color(C_LCYAN);
+    kprintf("   .--.        ");
+    gt_color_reset();
+    kprintf("%s@%s\n", user_name(), gcfg.hostname);
+    gt_color(C_LCYAN);
+    kprintf("  |o_o |       ");
+    gt_color_reset();
+    kprintf("----------\n");
+    gt_color(C_LCYAN);
+    kprintf("  |:_/ |       ");
+    gt_color_reset();
+    kprintf("OS: GT-DOS 0.10 (x86-64)\n");
+    gt_color(C_LCYAN);
+    kprintf(" //   \\ \\      ");
+    gt_color_reset();
+    kprintf("Kernel: GTK1\n");
+    gt_color(C_LCYAN);
+    kprintf("(|     | )     ");
+    gt_color_reset();
+    kprintf("Uptime: %u s\n", up);
+    gt_color(C_LCYAN);
+    kprintf("/'\\_   _/`\\    ");
+    gt_color_reset();
+    kprintf("Shell: gtsh\n");
+    gt_color(C_LCYAN);
+    kprintf("\\___)=(___/    ");
+    gt_color_reset();
+    kprintf("IP: %s\n", ip);
+}
+
 static void cmd_oobe(void)
 {
     if (!need_admin()) return;
@@ -1949,8 +2033,17 @@ static void execute(char *line)
         cmd_help();
     } else if (!strncasecmp(cmd, "ver", 8)) {
         cmd_ver();
-    } else if (!strncasecmp(cmd, "cls", 8)) {
+    } else if (!strncasecmp(cmd, "cls", 8) ||
+               !strncasecmp(cmd, "clear", 8)) {
         console_clear();
+    } else if (!strcasecmp(cmd, "lang")) {
+        cmd_lang(argc, argv);
+    } else if (!strcasecmp(cmd, "uname")) {
+        cmd_uname(argc, argv);
+    } else if (!strcasecmp(cmd, "free")) {
+        cmd_free();
+    } else if (!strcasecmp(cmd, "neofetch") || !strcasecmp(cmd, "fetch")) {
+        cmd_neofetch();
     } else if (!strncasecmp(cmd, "echo", 8)) {
         for (int i = 1; i < argc; i++)
             kprintf("%s%s", argv[i], i + 1 < argc ? " " : "");

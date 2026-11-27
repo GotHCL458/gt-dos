@@ -273,12 +273,13 @@ GUI drawing and the user GUI canvas use calls 64–73:
   (`gui_default=1` in `GTOS.CFG`); `CONFIG GUI OFF` disables it, and
   `DESKTOP` / `GUI` re-enters on demand; `TEXTMODE`, the bottom-right `TEXT`
   button or the title-bar `x` returns to plain text (documented in help)
-- The desktop is drawn above the graphics console: gradient wallpaper, rendered
-  desktop icons with drop shadows (`TERM` = mini terminal, `FILES` = folder,
-  `SYS` = chip), a centred terminal window (title bar with highlight/accent lines,
-  `M` maximize/`R` restore, close button) and a gradient taskbar with a four-colour
-  `Start` logo, an active-window `Terminal` button (click toggles maximize),
-  a running clock and the `TEXT` button
+- Linux-style desktop: gradient wallpaper, high-quality SVG→ICO desktop icons
+  without background plates (`TERM`/`FILES`/`SYS`), a centred terminal window and a
+  bottom panel. The title is centred and the right side has minimise (—), maximise (□)
+  and close (×) icon buttons; a minimised window is restored from the panel button,
+  and maximise/minimise/restore animate over 150 ms
+- Panel: an app-grid `START` icon + `Start`, an active-window `Terminal` button
+  (click toggles minimise/restore), a running clock and the `TEXT` button
 - Start menu (click the `Start` button): `Terminal` closes the menu, `Theme`
   cycles three wallpaper palettes, `About` opens a modal dialog, `Settings`
   opens the control panel, `Widgets` opens the control demo and `Exit GUI`
@@ -308,6 +309,8 @@ GUI drawing and the user GUI canvas use calls 64–73:
 - `python build.py run` uses `gtk,grab-on-hover=on,show-cursor=off`: the mouse
   is captured on hover and the host pointer hidden, avoiding double-cursor
   flicker and pointer escape at the window edges; `Ctrl+Alt+G` releases it
+- `LANG EN|ZH` switches the interface language immediately (GUI redraws); `neofetch`,
+  `uname -a` and `free` provide Linux-style system information
 - Requires VBE graphics; if only the VGA text fallback is available, `GUI`
   reports that the desktop is unavailable
 
@@ -574,7 +577,7 @@ live in stack slots, no register allocation).
 
 ## Notes and Limitations
 
-- The kernel currently fits in 649 sectors (332,144 bytes including the 48-byte `GTK1`
+- The kernel currently fits in 665 sectors (340,336 bytes including the 48-byte `GTK1`
   trailer); the build cap is 736 sectors (368 KB), loaded between `0x10000` and `0x6A000`.
   The linker also asserts `.bss <= 0xA0000` and `.highbss <= LIB_BASE`.
 - The GDT is built in low memory (0x6800) rather than `.data`: loading a segment register

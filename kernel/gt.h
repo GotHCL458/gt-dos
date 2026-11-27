@@ -166,6 +166,8 @@ bool png_draw_file_fit(const char *path);                     /* 居中/放大�
 
 /* ------------------------------------------------------- ICO / SVG 渲染 */
 bool ico_draw_file_fit(const char *path);   /* Windows 图标 (BMP/PNG 条目) */
+bool ico_draw_file_at(const char *path, int x, int y, int w, int h);
+bool ico_preload(const char *path);          /* 预加载到内存缓存 */
 bool svg_draw_file_fit(const char *path);   /* SVG 子集 (矢量图形) */
 
 /* --------------------------------------------------- 基础 GUI (gui.c) */
@@ -173,6 +175,7 @@ bool gui_active(void);
 bool gui_enter(void);                 /* 进入桌面 (需图形模式) */
 void gui_leave(void);                 /* 返回纯文本控制台 */
 void gui_pump(void);                  /* 输入空闲时处理鼠标/时钟 */
+void gui_redraw(void);                /* 语言/主题切换后重绘桌面 */
 void gui_cursor_refresh(void);        /* 控制台提交后立即重画指针 */
 bool gui_canvas_begin(void);          /* 用户程序接管全屏画布 (需桌面) */
 void gui_canvas_end(void);            /* 恢复桌面 */
@@ -192,6 +195,8 @@ void vga_refresh(void);
 /* 暂停/恢复控制台绘制: 用户程序占用 GUI 画布时仍可 printf (只更新历史与串口),
    不会把文字画到程序画布上 */
 void vga_hold_display(bool on);
+/* 暂停/恢复控制台内部的局部提交 (GUI 整屏重绘时避免中途闪烁) */
+void vga_defer_flip(bool on);
 
 /* ---------------------------------------------------------------- GUI */
 void vga_enter_gfx(void);            /* 控制台切到图形文本后端 */

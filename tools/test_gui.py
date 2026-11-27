@@ -128,8 +128,8 @@ check("screendump", img1 is not None)
 if img1:
     w, h, _ = img1
     print(f"       screen {w}x{h}")
-    check("window title drawn", color_count(img1, (0x1f, 0x4e, 0x8a)) > 500)
-    check("taskbar drawn", color_count(img1, (0x14, 0x1c, 0x2a)) > 500)
+    check("window title drawn", color_count(img1, (0x2a, 0x2e, 0x36)) > 500)
+    check("taskbar drawn", color_count(img1, (0x1b, 0x1e, 0x24)) > 500)
 
 # 键盘仍可用: 在桌面里执行命令
 vm.buf = ""
@@ -162,7 +162,7 @@ if img1:
         def px(p, x, y):
             i = (y * w + x) * 3
             return (p[i], p[i + 1], p[i + 2])
-        titles = {(0x2a, 0x6a, 0xb0), (0x1f, 0x4e, 0x8a)}
+        titles = {(0x2a, 0x2e, 0x36), (0x32, 0x36, 0x3f)}
         old = px(p3, tx, ty)
         new = px(p3, tx + gdx + 40, ty + gdy)   # 避开指针本身
         print(f"       drag old={old} new={new}")
@@ -219,14 +219,18 @@ goto(44, 755); click(); time.sleep(0.3)
 img_menu = vm.shot(os.path.join(SRC, "gui_menu.ppm"))
 check("screendump menu", img_menu is not None)
 if img_menu:
-    check("start menu drawn", color_count(img_menu, (0x22, 0x3a, 0x58)) > 200)
+    check("start menu drawn", color_count(img_menu, (0x2b, 0x30, 0x38)) > 5000)
 
 # 悬停高亮: 移到 Theme 项 (6 项菜单的), 该项背景应变亮
 goto(68, 630); time.sleep(0.3)
 img_hover = vm.shot(os.path.join(SRC, "gui_menu_hover.ppm"))
 check("screendump menu hover", img_hover is not None)
 if img_hover:
-    check("menu hover highlight", color_count(img_hover, (0x2a, 0x4a, 0x70)) > 500)
+    _, _, ph = img_hover
+    c = (ph[(626 * 1024 + 110) * 3], ph[(626 * 1024 + 110) * 3 + 1],
+         ph[(626 * 1024 + 110) * 3 + 2])
+    print(f"       hover pixel {c}")
+    check("menu hover highlight", c == (0x3d, 0xae, 0xe9), f"pixel={c}")
 
 # Theme: 换壁纸配色 (菜单关闭 + 壁纸颜色变化)
 theme_before = None
@@ -255,7 +259,7 @@ if img_about:
     c = (pa[(300 * 1024 + 680) * 3], pa[(300 * 1024 + 680) * 3 + 1],
          pa[(300 * 1024 + 680) * 3 + 2])
     print(f"       about title pixel {c}")
-    check("about dialog drawn", c == (0x1f, 0x4e, 0x8a))
+    check("about dialog drawn", c == (0x2a, 0x2e, 0x36))
     # 控制台输出会重绘视口, 浮层必须仍在最上层
     vm.buf = ""
     vm.cmd("ver", 1000)
@@ -265,7 +269,7 @@ if img_about:
         _, _, pb = img_about2
         c2 = (pb[(300 * 1024 + 680) * 3], pb[(300 * 1024 + 680) * 3 + 1],
               pb[(300 * 1024 + 680) * 3 + 2])
-        check("about stays above console output", c2 == (0x1f, 0x4e, 0x8a),
+        check("about stays above console output", c2 == (0x2a, 0x2e, 0x36),
               f"pixel={c2}")
 goto(660, 456); click(); time.sleep(0.2)
 
@@ -280,12 +284,12 @@ if img_set:
     c = (ps[(298 * 1024 + 668) * 3], ps[(298 * 1024 + 668) * 3 + 1],
          ps[(298 * 1024 + 668) * 3 + 2])
     print(f"       settings title pixel {c}")
-    check("settings dialog drawn", c == (0x1f, 0x4e, 0x8a))
+    check("settings dialog drawn", c == (0x2a, 0x2e, 0x36))
     wall0 = (ps[(300 * 1024 + 960) * 3], ps[(300 * 1024 + 960) * 3 + 1],
              ps[(300 * 1024 + 960) * 3 + 2])
     # 终端图标: 图标底板 (蓝) 应被真实图标图形覆盖, 底板边缘仍为蓝色
-    ic = (ps[(84 * 1024 + 18) * 3], ps[(84 * 1024 + 18) * 3 + 1],
-          ps[(84 * 1024 + 18) * 3 + 2])
+    ic = (ps[(96 * 1024 + 40) * 3], ps[(96 * 1024 + 40) * 3 + 1],
+          ps[(96 * 1024 + 40) * 3 + 2])
     check("terminal icon rendered", ic == (0x2f, 0x6f, 0x9f), f"pixel={ic}")
 
 # 主题 ">" 按钮: 壁纸变化
@@ -316,8 +320,8 @@ img_noicon = vm.shot(os.path.join(SRC, "gui_settings_noicon.ppm"))
 check("screendump icons off", img_noicon is not None)
 if img_noicon:
     _, _, pn = img_noicon
-    c = (pn[(84 * 1024 + 18) * 3], pn[(84 * 1024 + 18) * 3 + 1],
-         pn[(84 * 1024 + 18) * 3 + 2])
+    c = (pn[(96 * 1024 + 40) * 3], pn[(96 * 1024 + 40) * 3 + 1],
+         pn[(96 * 1024 + 40) * 3 + 2])
     print(f"       icon pixel after hide {c}")
     check("desktop icons hidden", c != (0x2f, 0x6f, 0x9f))
 
@@ -336,11 +340,11 @@ if img_wd:
     c = (pw[(260 * 1024 + 650) * 3], pw[(260 * 1024 + 650) * 3 + 1],
          pw[(260 * 1024 + 650) * 3 + 2])
     print(f"       widgets title pixel {c}")
-    check("widgets dialog drawn", c == (0x1f, 0x4e, 0x8a))
+    check("widgets dialog drawn", c == (0x2a, 0x2e, 0x36))
     # 进度条已开始填充
     pc = (pw[(332 * 1024 + 368) * 3], pw[(332 * 1024 + 368) * 3 + 1],
           pw[(332 * 1024 + 368) * 3 + 2])
-    check("widgets progress drawn", pc == (0x4f, 0x9f, 0xdf), f"pixel={pc}")
+    check("widgets progress drawn", pc == (0x3d, 0xae, 0xe9), f"pixel={pc}")
     # 时钟开关默认打开 (绿色轨道)
     tc = (pw[(356 * 1024 + 632) * 3], pw[(356 * 1024 + 632) * 3 + 1],
           pw[(356 * 1024 + 632) * 3 + 2])
@@ -368,7 +372,7 @@ if img_wd3:
     c = (pl[(400 * 1024 + 370) * 3], pl[(400 * 1024 + 370) * 3 + 1],
          pl[(400 * 1024 + 370) * 3 + 2])
     print(f"       list selected pixel {c}")
-    check("widgets list selection", c == (0x2a, 0x4a, 0x70))
+    check("widgets list selection", c == (0x3a, 0x3f, 0x46))
     check("taskbar clock visible",
           color_count(img_wd3, (0xcf, 0xe4, 0xff)) > 2)
 
@@ -399,7 +403,7 @@ if img_tb:
     c = (ptb[(8 * 1024 + 10) * 3], ptb[(8 * 1024 + 10) * 3 + 1],
          ptb[(8 * 1024 + 10) * 3 + 2])
     check("taskbar button maximizes",
-          c in {(0x1f, 0x4e, 0x8a), (0x2a, 0x6a, 0xb0)}, f"pixel={c}")
+          c in {(0x2a, 0x2e, 0x36), (0x32, 0x36, 0x3f)}, f"pixel={c}")
 goto(138, 755); click(); time.sleep(0.4)
 
 # 最大化: 标题栏应铺到屏幕左侧 (x=10,y=8)
@@ -411,7 +415,7 @@ if img_max:
     c = (pz[(8 * 1024 + 10) * 3], pz[(8 * 1024 + 10) * 3 + 1],
          pz[(8 * 1024 + 10) * 3 + 2])
     print(f"       maximized title pixel {c}")
-    check("window maximized", c in {(0x1f, 0x4e, 0x8a), (0x2a, 0x6a, 0xb0)})
+    check("window maximized", c in {(0x2a, 0x2e, 0x36), (0x32, 0x36, 0x3f)})
 
 # 还原 (最大化后按钮移到最右侧)
 goto(991, 12); click(); time.sleep(0.4)
@@ -421,7 +425,7 @@ if img_rest:
     _, _, pr = img_rest
     c = (pr[(8 * 1024 + 10) * 3], pr[(8 * 1024 + 10) * 3 + 1],
          pr[(8 * 1024 + 10) * 3 + 2])
-    check("window restored", c not in {(0x1f, 0x4e, 0x8a), (0x2a, 0x6a, 0xb0)})
+    check("window restored", c not in {(0x2a, 0x2e, 0x36), (0x32, 0x36, 0x3f)})
 
 # ---- 缩放握把: 按住右下角拖动放大窗口 ----
 goto(888, 651)
@@ -436,11 +440,52 @@ check("screendump resize", img_rs is not None)
 if img_rs:
     _, _, prs = img_rs
     # 放大后窗口右缘到达 x≈956, (900,95) 应落在标题栏 (右侧按钮之前)
-    c = (prs[(95 * 1024 + 900) * 3], prs[(95 * 1024 + 900) * 3 + 1],
-         prs[(95 * 1024 + 900) * 3 + 2])
+    c = (prs[(85 * 1024 + 900) * 3], prs[(85 * 1024 + 900) * 3 + 1],
+         prs[(85 * 1024 + 900) * 3 + 2])
     print(f"       resized title pixel {c}")
     check("window resized by grip",
-          c in {(0x1f, 0x4e, 0x8a), (0x2a, 0x6a, 0xb0)})
+          c in {(0x2a, 0x2e, 0x36), (0x32, 0x36, 0x3f)})
+
+# ---- 最小化 / 还原 (Linux 风格图标按钮) ----
+goto(900, 95); click(); time.sleep(0.6)
+img_min = vm.shot(os.path.join(SRC, "gui_min.ppm"))
+check("screendump minimize", img_min is not None)
+if img_min:
+    _, _, pm = img_min
+    c = (pm[(8 * 1024 + 10) * 3], pm[(8 * 1024 + 10) * 3 + 1],
+         pm[(8 * 1024 + 10) * 3 + 2])
+    print(f"       minimize title pixel {c}")
+    check("window minimized", c not in {(0x2a, 0x2e, 0x36), (0x32, 0x36, 0x3f)})
+goto(138, 755); click(); time.sleep(0.6)
+img_unmin = vm.shot(os.path.join(SRC, "gui_unmin.ppm"))
+check("screendump unminimize", img_unmin is not None)
+if img_unmin:
+    _, _, pu = img_unmin
+    c = (pu[(85 * 1024 + 900) * 3], pu[(85 * 1024 + 900) * 3 + 1],
+         pu[(85 * 1024 + 900) * 3 + 2])
+    print(f"       unminimize title pixel {c}")
+    check("window restored from minimize",
+          c in {(0x2a, 0x2e, 0x36), (0x32, 0x36, 0x3f)})
+
+# ---- 语言切换与 Linux 风格命令 ----
+vm.buf = ""
+vm.cmd("lang zh", 900)
+check("LANG ZH", vm.expect("Language:", 4000), vm.buf[-200:])
+vm.buf = ""
+vm.cmd("lang", 800)
+check("LANG ZH state", vm.expect("zh-CN", 4000), vm.buf[-200:])
+vm.buf = ""
+vm.cmd("lang en", 900)
+check("LANG EN", vm.expect("Language: English", 4000), vm.buf[-200:])
+vm.buf = ""
+vm.cmd("uname -a", 900)
+check("uname -a", vm.expect("x86_64", 4000), vm.buf[-200:])
+vm.buf = ""
+vm.cmd("neofetch", 1000)
+check("neofetch", vm.expect("Kernel: GTK1", 4000), vm.buf[-200:])
+vm.buf = ""
+vm.cmd("free", 900)
+check("free", vm.expect("Mem:", 4000), vm.buf[-200:])
 
 vm.buf = ""
 vm.cmd("textmode", 1200)

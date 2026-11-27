@@ -249,7 +249,7 @@ if img2:
     c = (p2[(95 * 1024 + 200) * 3], p2[(95 * 1024 + 200) * 3 + 1],
          p2[(95 * 1024 + 200) * 3 + 2])
     check("desktop window restored",
-          c in {(0x1f, 0x4e, 0x8a), (0x2a, 0x6a, 0xb0)}, f"pixel={c}")
+          c in {(0x2a, 0x2e, 0x36), (0x32, 0x36, 0x3f)}, f"pixel={c}")
 
 # 失败路径: 文本模式下 gui_begin 必须失败
 vm.buf = ""
