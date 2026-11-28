@@ -52,6 +52,11 @@ pub struct GtGtlInfo {
     pub image_off: u32,
     pub count: u32,
     pub exports: [GtGtlExport; MAX_EXPORTS],
+    /// 可选内嵌图标: "GTI1" + u16 w + u16 h + RGBA, 紧跟镜像之后.
+    pub icon_off: u32,
+    pub icon_len: u32,
+    pub icon_w: u32,
+    pub icon_h: u32,
 }
 
 /// 解析 .gtl 头部. 返回 0 成功; image_off 为镜像在文件内的起始偏移.
@@ -84,6 +89,10 @@ pub unsafe extern "C" fn gt_gtl_parse(
     info.image_size = image_size;
     info.image_off = image_off;
     info.count = count;
+    info.icon_off = 0;
+    info.icon_len = 0;
+    info.icon_w = 0;
+    info.icon_h = 0;
     for i in 0..MAX_EXPORTS {
         info.exports[i] = GtGtlExport::ZERO;
     }
@@ -98,6 +107,24 @@ pub unsafe extern "C" fn gt_gtl_parse(
         }
         name[k] = 0;
         info.exports[i].rva = rd32(e, 24);
+    }
+
+    // 可选内嵌图标块: 紧跟镜像; 无魔数表示无图标 (向后兼容).
+    let icon_off = image_off as usize + image_size as usize;
+    if len as usize >= icon_off + 8 && &b[icon_off..icon_off + 4] == b"GTI1" {
+        let iw = rd16(b, icon_off + 4) as u32;
+        let ih = rd16(b, icon_off + 6) as u32;
+        if iw == 0 || ih == 0 || iw > 256 || ih > 256 {
+            return -1;
+        }
+        let need = 8usize + (iw as usize) * (ih as usize) * 4;
+        if icon_off + need > len as usize {
+            return -1;
+        }
+        info.icon_off = icon_off as u32;
+        info.icon_len = need as u32;
+        info.icon_w = iw;
+        info.icon_h = ih;
     }
     0
 }
@@ -326,6 +353,32 @@ mod tests {
         assert_eq!(&info.exports[0].name[..3], b"add");
         assert_eq!(info.exports[1].rva, 2);
         // 截断后必须拒绝
+        let rc = unsafe { gt_gtl_parse(f.as_ptr(), (f.len() - 1) as u32, &mut info) };
+        assert_ne!(rc, 0);
+    }
+
+    #[test]
+    fn gtl_icon() {
+        let mut f = build_gtl();
+        let mut info = unsafe { core::mem::zeroed::<GtGtlInfo>() };
+        let rc = unsafe { gt_gtl_parse(f.as_ptr(), f.len() as u32, &mut info) };
+        assert_eq!(rc, 0);
+        assert_eq!(info.icon_len, 0);
+
+        // 追加 2x2 RGBA 图标块
+        let px = [1u8, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255];
+        f.extend_from_slice(b"GTI1");
+        f.extend_from_slice(&2u16.to_le_bytes());
+        f.extend_from_slice(&2u16.to_le_bytes());
+        f.extend_from_slice(&px);
+        let rc = unsafe { gt_gtl_parse(f.as_ptr(), f.len() as u32, &mut info) };
+        assert_eq!(rc, 0);
+        assert_eq!(info.icon_w, 2);
+        assert_eq!(info.icon_h, 2);
+        assert_eq!(info.icon_len, 8 + 16);
+        assert_eq!(info.icon_off as usize, 16 + 28 * 2 + 4);
+
+        // 图标块截断 -> 拒绝
         let rc = unsafe { gt_gtl_parse(f.as_ptr(), (f.len() - 1) as u32, &mut info) };
         assert_ne!(rc, 0);
     }

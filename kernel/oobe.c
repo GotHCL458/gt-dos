@@ -16,8 +16,7 @@ static int ask_line(const char *prompt, char *buf, int max)
             power_reboot();
         if (r == 1)
             return -1;                /* Ctrl-C: 使用默认 / 跳过本步 */
-        if (buf[0])
-            return 0;                 /* 空输入: 重新询问, 不跳步 */
+        return 0;                     /* 空回车 = 采用默认值 */
     }
 }
 
@@ -27,6 +26,8 @@ static int ask_choice(const char *prompt, int min, int max)
     for (;;) {
         if (ask_line(prompt, buf, sizeof(buf)) != 0)
             return -1;
+        if (buf[0] == '\0')
+            return min;               /* 空回车 = 默认选项 */
         int ok = 1;
         for (char *p = buf; *p; p++)
             if (!isdigit_(*p)) ok = 0;
@@ -54,6 +55,7 @@ void oobe_run(void)
     tui_status_refresh();
     tui_frame_open(L("oobe.title"));
     ui_info("%s", L("oobe.welcome"));
+    ui_info("%s", L("oobe.defaults"));
 
     /* ---- 步骤 1: 语言 ---- */
     ui_info("  [1/3] %s\n", L("oobe.lang"));

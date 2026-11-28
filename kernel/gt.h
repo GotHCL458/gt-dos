@@ -168,6 +168,8 @@ bool png_draw_file_fit(const char *path);                     /* 居中/放大�
 bool ico_draw_file_fit(const char *path);   /* Windows 图标 (BMP/PNG 条目) */
 bool ico_draw_file_at(const char *path, int x, int y, int w, int h);
 bool ico_preload(const char *path);          /* 预加载到内存缓存 */
+/* .gtl 共享库内嵌图标 ("GTI1" + u16 w + u16 h + RGBA) 缩放到矩形 */
+bool ico_draw_gtl_icon_at(const char *path, int x, int y, int w, int h);
 bool svg_draw_file_fit(const char *path);   /* SVG 子集 (矢量图形) */
 
 /* --------------------------------------------------- 基础 GUI (gui.c) */
@@ -195,6 +197,8 @@ void vga_refresh(void);
 /* 暂停/恢复控制台绘制: 用户程序占用 GUI 画布时仍可 printf (只更新历史与串口),
    不会把文字画到程序画布上 */
 void vga_hold_display(bool on);
+/* 只切换暂停标志, 不触发重绘 (GUI↔文本切换时避免中间帧) */
+void vga_hold_display_quiet(bool on);
 /* 暂停/恢复控制台内部的局部提交 (GUI 整屏重绘时避免中途闪烁) */
 void vga_defer_flip(bool on);
 
@@ -335,6 +339,9 @@ struct gt_gtl_info {
     u32 image_off;
     u32 count;
     struct gt_gtl_export exports[32];
+    u32 icon_off;                    /* 内嵌图标块偏移 (0=无) */
+    u32 icon_len;                    /* "GTI1"+头+RGBA 总字节 */
+    u32 icon_w, icon_h;
 };
 int gt_gtl_parse(const u8 *buf, u32 len, struct gt_gtl_info *out);
 
@@ -630,6 +637,8 @@ void sched_dump(void);
 #define LIB_MAXLIBS  8
 int  lib_load(const char *path);        /* 返回句柄(>=1) 或 -1 */
 u64  lib_sym(int handle, const char *name);  /* 返回符号地址或 0 */
+/* 取共享库内嵌图标 (RGBA, w*h*4); 无图标返回 false */
+bool lib_icon(int handle, const u8 **rgba, int *w, int *h);
 void lib_reset(void);
 
 /* 中断嵌套状态 (idt.c) */

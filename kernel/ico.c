@@ -418,6 +418,85 @@ bool ico_draw_file_at(const char *path, int x, int y, int w, int h)
     return true;
 }
 
+/* -------------------------------- 共享库 (.gtl) 内嵌图标 ----------------
+ * 文件布局: [GTL1 头 + 导出表][镜像][可选 "GTI1" + u16 w + u16 h + RGBA].
+ * 图标为 RGBA (R,G,B,A), 直接面积平均缩放到目标矩形. */
+bool ico_draw_gtl_icon_at(const char *path, int x, int y, int w, int h)
+{
+    if (!gfx_active() || !path || w <= 0 || h <= 0)
+        return false;
+    struct fat_dirent de;
+    if (!fat_find(path, &de) || de.is_dir || de.size == 0 ||
+        de.size > ICO_FILE_MAX)
+        return false;
+    u32 len = 0;
+    if (!fat_read_file(path, ico_buf, ICO_FILE_MAX, &len) || len < 24)
+        return false;
+    const u8 *d = ico_buf;
+    if (d[0] != 'G' || d[1] != 'T' || d[2] != 'L' || d[3] != '1')
+        return false;
+    u32 image_size = ico_le32(d + 8);
+    u32 count = ico_le32(d + 12);
+    if (count > 32)
+        return false;
+    u32 off = 16u + 28u * count;
+    if (off > len || image_size > len - off)
+        return false;
+    u32 io = off + image_size;
+    if (io + 8 > len || d[io] != 'G' || d[io + 1] != 'T' ||
+        d[io + 2] != 'I' || d[io + 3] != '1')
+        return false;
+    int iw = (int)ico_le16(d + io + 4);
+    int ih = (int)ico_le16(d + io + 6);
+    if (iw <= 0 || ih <= 0 || iw > 256 || ih > 256)
+        return false;
+    const u8 *src = d + io + 8;
+    if ((u32)iw * (u32)ih * 4u > len - (io + 8))
+        return false;
+
+    int dw, dh;
+    if ((long)w * ih <= (long)h * iw) {
+        dw = w;
+        dh = (int)((long)ih * w / iw);
+    } else {
+        dh = h;
+        dw = (int)((long)iw * h / ih);
+    }
+    if (dw < 1) dw = 1;
+    if (dh < 1) dh = 1;
+    int ox = x + (w - dw) / 2;
+    int oy = y + (h - dh) / 2;
+    for (int dy = 0; dy < dh; dy++) {
+        int sy0 = (int)((long)dy * ih / dh);
+        int sy1 = (int)(((long)(dy + 1) * ih + dh - 1) / dh);
+        if (sy1 <= sy0) sy1 = sy0 + 1;
+        if (sy1 > ih) sy1 = ih;
+        for (int dx = 0; dx < dw; dx++) {
+            int sx0 = (int)((long)dx * iw / dw);
+            int sx1 = (int)(((long)(dx + 1) * iw + dw - 1) / dw);
+            if (sx1 <= sx0) sx1 = sx0 + 1;
+            if (sx1 > iw) sx1 = iw;
+            u32 sr = 0, sg = 0, sb = 0, sa = 0, n = 0;
+            for (int sy = sy0; sy < sy1; sy++) {
+                const u8 *row = src + ((u32)sy * iw) * 4;
+                for (int sx = sx0; sx < sx1; sx++) {
+                    const u8 *p = row + sx * 4;
+                    sr += p[0]; sg += p[1]; sb += p[2]; sa += p[3];
+                    n++;
+                }
+            }
+            if (!n || !sa)
+                continue;
+            u8 a = (u8)(sa / n);
+            if (!a)
+                continue;
+            u32 r = sr / n, g = sg / n, b = sb / n;
+            gfx_pixel_a(ox + dx, oy + dy, (r << 16) | (g << 8) | b, a);
+        }
+    }
+    return true;
+}
+
 /* 预加载图标到缓存 (避免在菜单/对话框绘制过程中读盘) */
 bool ico_preload(const char *path)
 {

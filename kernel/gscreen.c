@@ -123,7 +123,7 @@ static void gs_card(const char *title, const char *sub)
     }
 
     /* 页脚提示 */
-    gfx_text(CT_X, FOOT_Y, "Enter = OK    Ctrl-C = skip", C_MUTED);
+    gfx_text(CT_X, FOOT_Y, "Enter = OK / defaults    Ctrl-C = skip", C_MUTED);
 
     gfx_flip();
     gfx_poked = false;
@@ -283,18 +283,15 @@ static int gs_read_field(const char *prompt, char *buf, int max, int mask)
     }
 }
 
-/* 非空行输入 (空输入重问, Ctrl-C 返回 -1) */
+/* 行输入 (空回车 = 采用默认值, Ctrl-C 返回 -1) */
 static int gs_ask_line(const char *prompt, char *buf, int max)
 {
-    for (;;) {
-        int r = gs_read_field(prompt, buf, max, 0);
-        if (r == -1)
-            power_reboot();
-        if (r == 1)
-            return -1;
-        if (buf[0])
-            return 0;
-    }
+    int r = gs_read_field(prompt, buf, max, 0);
+    if (r == -1)
+        power_reboot();
+    if (r == 1)
+        return -1;
+    return 0;
 }
 
 /* 数字选择 (与旧 OOBE ask_choice 语义一致) */
@@ -304,6 +301,8 @@ static int gs_ask_choice(const char *prompt, int min, int max)
     for (;;) {
         if (gs_ask_line(prompt, buf, sizeof(buf)) != 0)
             return -1;
+        if (buf[0] == '\0')
+            return min;               /* 空回车 = 默认选项 */
         int ok = 1;
         for (char *p = buf; *p; p++)
             if (!isdigit_(*p)) ok = 0;
@@ -336,6 +335,7 @@ void gs_oobe_run(void)
     gs_content(L("oobe.title"), (const char *[]){ L("oobe.welcome") }, 1);
 
     ui_info("%s", L("oobe.welcome"));
+    ui_info("%s", L("oobe.defaults"));
 
     /* ---- 步骤 1: 语言 ---- */
     ui_info("  [1/3] %s\n", L("oobe.lang"));

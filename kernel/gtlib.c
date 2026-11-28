@@ -12,7 +12,14 @@
 extern char __highbss_end[];
 
 struct gtl_sym { char name[24]; u64 addr; };
-struct gtl_lib { bool used; u64 base; int nsym; struct gtl_sym syms[32]; };
+struct gtl_lib {
+    bool used;
+    u64 base;
+    int nsym;
+    struct gtl_sym syms[32];
+    const u8 *icon;                 /* 内嵌图标 RGBA (无则 0) */
+    int iw, ih;
+};
 
 static struct gtl_lib libs[LIB_MAXLIBS];
 static u64 lib_used;                    /* 已占用的库区字节数 */
@@ -65,7 +72,21 @@ int lib_load(const char *path)
         libs[slot].syms[i].name[n] = '\0';
         libs[slot].syms[i].addr = base + gi.exports[i].rva;
     }
-    lib_used += (gi.image_size + 15u) & ~15u;
+    /* 内嵌图标位于镜像之后; memmove 只覆盖 [base, base+image_size),
+       图标区不受影响, 可直接指向库区. */
+    if (gi.icon_len) {
+        libs[slot].icon = (const u8 *)(base + gi.icon_off + 8);
+        libs[slot].iw = (int)gi.icon_w;
+        libs[slot].ih = (int)gi.icon_h;
+    } else {
+        libs[slot].icon = 0;
+        libs[slot].iw = libs[slot].ih = 0;
+    }
+    /* 占用长度必须覆盖图标, 否则后续库会覆盖它 */
+    u32 span = gi.image_size;
+    if (gi.icon_len)
+        span = (gi.icon_off - gi.image_off) + gi.icon_len;
+    lib_used += (span + 15u) & ~15u;
     return slot + 1;                     /* 句柄从 1 开始 */
 }
 
@@ -78,4 +99,17 @@ u64 lib_sym(int handle, const char *name)
         if (!strcmp(l->syms[i].name, name))
             return l->syms[i].addr;
     return 0;
+}
+
+bool lib_icon(int handle, const u8 **rgba, int *w, int *h)
+{
+    if (handle < 1 || handle > LIB_MAXLIBS)
+        return false;
+    struct gtl_lib *l = &libs[handle - 1];
+    if (!l->used || !l->icon || l->iw <= 0 || l->ih <= 0)
+        return false;
+    if (rgba) *rgba = l->icon;
+    if (w) *w = l->iw;
+    if (h) *h = l->ih;
+    return true;
 }

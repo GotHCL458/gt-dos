@@ -119,7 +119,9 @@ GUI 绘图与用户画布使用 64–73 号调用：
   目录句柄经 `SYS_OPENDIR`/`SYS_READDIR` 遍历
 - `RUN <文件.gtp>` 将平面二进制载入暂存区并跳转执行；程序经 `SYS_EXIT` 返回 shell
 - `.gtl` 共享库：加载器把镜像映射到 `LIB_BASE`（0x580000），
-  由 `SYS_LIBLOAD`/`SYS_LIBSYM` 按名解析导出符号；每个程序运行前重置库命名空间
+  由 `SYS_LIBLOAD`/`SYS_LIBSYM` 按名解析导出符号；每个程序运行前重置库命名空间。
+  镜像之后可附带内嵌图标块 `"GTI1" + u16 w + u16 h + RGBA`（Rust 解析器与
+  `lib_icon()` 读取，`SAMPLE.GTL` 内置示例图标，FILES 窗口直接显示）
 - `.gtd` 数据文件通过同一 fd 层读取（示例程序读取 `DATA.GTD`）
 - `kernel/include/` 下的公开头文件（`gtos.h`、`unistd.h`、`stat.h`、`dirent.h`、`gtlib.h`、
   `time.h`、`stdint.h`、`ctype.h`、`stdio.h`、`string.h`、`stdlib.h`）
@@ -245,6 +247,12 @@ GUI 绘图与用户画布使用 64–73 号调用：
   （`TERM`/`FILES`/`SYS`）、居中终端窗口与底部面板；窗口标题居中，右侧为
   最小化（—）/最大化（□）/关闭（×）图标按钮；最小化后可从面板按钮还原，
   最大化/最小化/还原带 150ms 动画
+- 桌面图标可拖动；双击（或再次单击已选中的图标）运行：`TERM` 还原终端，
+  `FILES` 打开文件窗口（列出 C:\ 条目，`.gtl` 显示内嵌图标），`SYS` 打开系统信息；
+  把图标拖入终端客户区即触发 drop 并打开对应应用
+- 桌面与图标右键菜单：桌面为 `Terminal` / `Files` / `System` / `Settings` /
+  `Properties`，图标为 `Open` / `Properties`；属性对话框显示名称/类型/大小/位置，
+  或分辨率/运行时间/主题/磁盘可用/语言/版本
 - 面板：应用网格 `START` 图标 + `Start`、活动窗口 `Terminal` 按钮
   （点击最小化/还原）、运行时钟、`TEXT` 按钮
 - 开始菜单（点击 `Start`）：`Terminal` 收起菜单，`Theme` 轮换三套壁纸配色，
@@ -269,6 +277,8 @@ GUI 绘图与用户画布使用 64–73 号调用：
   `Ctrl+Alt+G` 释放鼠标
 - `LANG EN|ZH` 即时切换界面语言（GUI 立即重绘）；`neofetch` / `uname -a` /
   `free` 提供 Linux 风格系统信息
+- `TEXT` / `TEXTMODE` 返回纯文本时只做一次全屏提交（静默解除暂停后统一重绘），
+  不再出现"视口重绘 → 整屏重绘"的中间帧闪烁
 - 需要 VBE 图形模式；仅 VGA 文本回退时 `GUI` 会提示不可用
 
 **图形化登录 / OOBE 与图像渲染**
@@ -372,7 +382,8 @@ qemu-system-x86_64 -hda gt-dos-hd.img -boot c
 ```
 
 首次启动会进入 OOBE 向导，依次询问语言、主机名与管理员名（图形模式下为 GUI 界面）。
-输入为空会重新询问；`Ctrl-C` 则以默认值跳过当前项。
+任一步直接回车即采用默认值（语言 1=English、主机名 `GT-DOS`、管理员 `admin`、
+口令留空不设密码）；`Ctrl-C` 同样以默认值跳过当前项。
 
 ## 磁盘布局
 
@@ -482,7 +493,8 @@ tools/
   demo.asm           示例程序: .gtd 读取/seek、stat、.gtl 库调用 (DEMO.GTP)
   sample_lib.asm     示例共享库, 导出 add/mul (SAMPLE.GTL)
   svc_net.asm        系统服务程序, 种子为 \GT-DOS\SERVICES\NETSVC.GTP
-  test_gui.py        桌面/控件/鼠标/拖动/缩放回归 (截图像素校验)
+  test_gui.py        桌面/控件/鼠标/拖动/缩放/右键菜单/属性/应用启动/
+                     拖入窗口/.gtl 图标回归 (截图像素校验)
   test_gui_lib.py    C GUI 库单元与边界测试 (裁剪、零/负尺寸、百分比钳制、
                      NULL 参数、重复 begin/end)
   test_png.py        GUI 登录/OOBE + PNG 像素回归 (RGBA/调色板/16 位/Adam7)
@@ -513,7 +525,7 @@ build.py             构建脚本与镜像组装
 
 ## 说明与限制
 
-- 内核目前为 665 扇区（340,336 字节，含 48 字节 `GTK1` 尾部），构建上限 736 扇区
+- 内核目前为 689 扇区（352,640 字节，含 48 字节 `GTK1` 尾部），构建上限 736 扇区
   （320KB），加载区间为 `0x10000` 到 `0x60000`；链接脚本同时断言
   `.bss <= 0xA0000` 与 `.highbss <= LIB_BASE`。
 - GDT 在低端内存（0x6800）由入口代码构造，而非放在 `.data`：CPU 装载段寄存器

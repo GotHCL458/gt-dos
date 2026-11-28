@@ -130,7 +130,9 @@ GUI drawing and the user GUI canvas use calls 64–73:
   program returns to the shell via `SYS_EXIT`
 - `.gtl` shared libraries: a loader maps the image into `LIB_BASE` (0x580000) and resolves
   exports by name through `SYS_LIBLOAD`/`SYS_LIBSYM`; the library namespace is reset for
-  every program
+  every program. An optional embedded icon block (`"GTI1" + u16 w + u16 h + RGBA`) may
+  follow the image; the Rust parser and `lib_icon()` expose it, `SAMPLE.GTL` ships one,
+  and the FILES window renders it
 - `.gtd` data files are read through the same fd layer (`DATA.GTD` in the demo)
 - Public headers under `kernel/include/` (`gtos.h`, `unistd.h`, `stat.h`, `dirent.h`,
   `gtlib.h`, `time.h`, `stdint.h`, `ctype.h`, `stdio.h`, `string.h`, `stdlib.h`)
@@ -278,6 +280,13 @@ GUI drawing and the user GUI canvas use calls 64–73:
   bottom panel. The title is centred and the right side has minimise (—), maximise (□)
   and close (×) icon buttons; a minimised window is restored from the panel button,
   and maximise/minimise/restore animate over 150 ms
+- Desktop icons are draggable; double-click (or click an already selected icon) to run:
+  `TERM` restores the terminal, `FILES` opens a file window listing `C:\` (`.gtl` rows
+  show their embedded icon) and `SYS` opens system information; dragging an icon into
+  the terminal client area performs a drop and launches that app
+- Right-click context menus: the desktop offers `Terminal` / `Files` / `System` /
+  `Settings` / `Properties`, an icon offers `Open` / `Properties`; the properties
+  dialog shows name/type/size/location or resolution/uptime/theme/disk/language/version
 - Panel: an app-grid `START` icon + `Start`, an active-window `Terminal` button
   (click toggles minimise/restore), a running clock and the `TEXT` button
 - Start menu (click the `Start` button): `Terminal` closes the menu, `Theme`
@@ -306,6 +315,10 @@ GUI drawing and the user GUI canvas use calls 64–73:
   immediately after every console commit (no overwrite flicker); movement
   restores the old area from the back buffer, so window content, menus and
   dialogs are never polluted
+- Returning to text (`TEXT` / `TEXTMODE`) performs exactly one full-screen commit:
+  the display hold is released silently and the text console is rendered once, so
+  the old "viewport repaint then full repaint" intermediate frame (and its flicker)
+  is gone
 - `python build.py run` uses `gtk,grab-on-hover=on,show-cursor=off`: the mouse
   is captured on hover and the host pointer hidden, avoiding double-cursor
   flicker and pointer escape at the window edges; `Ctrl+Alt+G` releases it
@@ -428,7 +441,8 @@ qemu-system-x86_64 -hda gt-dos-hd.img -boot c
 
 On first boot the OOBE wizard asks for language, hostname and administrator name
 (a GUI wizard in graphics mode).
-Empty input re-prompts; `Ctrl-C` skips a step with its default value.
+Pressing Enter on any step accepts its default (language 1=English, host `GT-DOS`,
+administrator `admin`, empty password); `Ctrl-C` also skips with the default.
 
 ## Disk Layout
 
@@ -544,7 +558,8 @@ tools/
   demo.asm           example program: .gtd read/seek, stat, .gtl library call (DEMO.GTP)
   sample_lib.asm     example shared library exporting add/mul (SAMPLE.GTL)
   svc_net.asm        system service program, seeded as \GT-DOS\SERVICES\NETSVC.GTP
-  test_gui.py        desktop/widgets/mouse/drag/resize regression with screenshots
+  test_gui.py        desktop/widgets/mouse/drag/resize/right-click/properties/
+                     app launch/drop/.gtl icon regression with screenshots
   test_gui_lib.py    C GUI library unit + boundary test (clipping, zero/negative
                      sizes, percentage clamps, NULL args, repeated begin/end)
   test_png.py        GUI login/OOBE + PNG pixel regression (RGBA/palette/16-bit/Adam7)
@@ -577,7 +592,7 @@ live in stack slots, no register allocation).
 
 ## Notes and Limitations
 
-- The kernel currently fits in 665 sectors (340,336 bytes including the 48-byte `GTK1`
+- The kernel currently fits in 689 sectors (352,640 bytes including the 48-byte `GTK1`
   trailer); the build cap is 736 sectors (368 KB), loaded between `0x10000` and `0x6A000`.
   The linker also asserts `.bss <= 0xA0000` and `.highbss <= LIB_BASE`.
 - The GDT is built in low memory (0x6800) rather than `.data`: loading a segment register

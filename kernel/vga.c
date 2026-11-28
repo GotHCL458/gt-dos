@@ -586,6 +586,9 @@ void vga_hold_display(bool on)
         render();
 }
 
+/* 只切换暂停标志, 不做任何绘制 (GUI 切回文本时避免中间帧闪烁) */
+void vga_hold_display_quiet(bool on) { disp_hold = on; }
+
 void vga_defer_flip(bool on) { defer_flip = on; }
 
 /* ------------------------------------------------ GUI 终端窗口视口 */

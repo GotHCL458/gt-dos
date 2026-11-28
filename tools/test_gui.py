@@ -214,6 +214,23 @@ def click():
     vm.mon("mouse_button 0", 300)
     vm.mon("mouse_move 1 0", 60); vm.mon("mouse_move -1 0", 60)
 
+def rclick():
+    # QEMU 监视器: mouse_button 2 = 右键 (PS/2 bit1), 4 = 中键
+    vm.mon("mouse_move 1 0", 60); vm.mon("mouse_move -1 0", 60)
+    vm.mon("mouse_button 2", 220)
+    vm.mon("mouse_move 1 0", 60); vm.mon("mouse_move -1 0", 60)
+    vm.mon("mouse_button 0", 250)
+    vm.mon("mouse_move 1 0", 60); vm.mon("mouse_move -1 0", 60)
+
+def drag(fx, fy, tx, ty):
+    goto(fx, fy)
+    vm.mon("mouse_button 1", 220)
+    vm.mon("mouse_move 1 0", 60); vm.mon("mouse_move -1 0", 60)
+    goto(tx, ty)
+    vm.mon("mouse_move 1 0", 60); vm.mon("mouse_move -1 0", 60)
+    vm.mon("mouse_button 0", 280)
+    vm.mon("mouse_move 1 0", 60); vm.mon("mouse_move -1 0", 60)
+
 # 开始菜单 (任务栏左下 GT-DOS 按钮)
 goto(44, 755); click(); time.sleep(0.3)
 img_menu = vm.shot(os.path.join(SRC, "gui_menu.ppm"))
@@ -466,6 +483,102 @@ if img_unmin:
     print(f"       unminimize title pixel {c}")
     check("window restored from minimize",
           c in {(0x2a, 0x2e, 0x36), (0x32, 0x36, 0x3f)})
+
+# ---- 桌面交互: 右键菜单 / 属性 / 双击运行 / 拖动 / 拖入窗口 ----
+vm.buf = ""
+goto(100, 700)
+rclick()
+check("right-click context menu", vm.expect("[gui] menu", 4000), vm.buf[-300:])
+img_ctx = vm.shot(os.path.join(SRC, "gui_ctx.ppm"))
+check("screendump context menu", img_ctx is not None)
+if img_ctx:
+    _, _, pc = img_ctx
+    i = (686 * 1024 + 240) * 3
+    c = (pc[i], pc[i + 1], pc[i + 2])
+    print(f"       context pixel {c}")
+    check("context menu drawn",
+          c in {(0x2b, 0x30, 0x38), (0x3d, 0xae, 0xe9)}, f"pixel={c}")
+
+vm.buf = ""
+goto(110, 686); click(); time.sleep(0.3)
+check("properties opened", vm.expect("[gui] properties", 4000), vm.buf[-300:])
+img_prop = vm.shot(os.path.join(SRC, "gui_props.ppm"))
+check("screendump properties", img_prop is not None)
+if img_prop:
+    _, _, pp = img_prop
+    i = (288 * 1024 + 600) * 3
+    c = (pp[i], pp[i + 1], pp[i + 2])
+    print(f"       properties title pixel {c}")
+    check("properties dialog drawn", c == (0x2a, 0x2e, 0x36))
+goto(652, 464); click(); time.sleep(0.2)      # OK 关闭
+
+# 双击 FILES 图标: 打开文件应用
+vm.buf = ""
+goto(32, 184); click(); click(); time.sleep(0.4)
+check("files app opened", vm.expect("[gui] open files", 5000), vm.buf[-300:])
+img_files = vm.shot(os.path.join(SRC, "gui_files.ppm"))
+check("screendump files", img_files is not None)
+if img_files:
+    _, _, pf = img_files
+    i = (250 * 1024 + 700) * 3
+    c = (pf[i], pf[i + 1], pf[i + 2])
+    print(f"       files title pixel {c}")
+    check("files window drawn", c == (0x2a, 0x2e, 0x36))
+    # SAMPLE.GTL 行左侧应显示内嵌图标 (WIDGETS 四色之一)
+    gtl_cols = {(0x3d, 0xae, 0xe9), (0x7f, 0xe0, 0xa0),
+                (0xff, 0xc0, 0x60), (0xc0, 0x90, 0xff)}
+    found = False
+    for yy in range(300, 500):
+        for xx in range(264, 292):
+            i = (yy * 1024 + xx) * 3
+            if (pf[i], pf[i + 1], pf[i + 2]) in gtl_cols:
+                found = True
+                break
+        if found:
+            break
+    check("gtl embedded icon drawn", found)
+goto(100, 700); click(); time.sleep(0.2)       # 点外部关闭
+
+# 双击 SYS 图标: 打开系统信息
+vm.buf = ""
+goto(32, 264); click(); click(); time.sleep(0.4)
+check("system app opened", vm.expect("[gui] open system", 5000), vm.buf[-300:])
+img_sys = vm.shot(os.path.join(SRC, "gui_sys.ppm"))
+check("screendump system", img_sys is not None)
+if img_sys:
+    _, _, pz2 = img_sys
+    i = (272 * 1024 + 600) * 3
+    c = (pz2[i], pz2[i + 1], pz2[i + 2])
+    print(f"       system title pixel {c}")
+    check("system window drawn", c == (0x2a, 0x2e, 0x36))
+goto(672, 276); click(); time.sleep(0.2)       # 关闭按钮
+
+# 拖动 TERM 图标: 旧位置应恢复壁纸, 新位置出现图标
+drag(32, 104, 90, 400)
+img_idrag = vm.shot(os.path.join(SRC, "gui_icon_drag.ppm"))
+check("screendump icon drag", img_idrag is not None)
+if img_idrag:
+    _, _, pd = img_idrag
+    io = (96 * 1024 + 40) * 3
+    inew = (392 * 1024 + 98) * 3
+    old = (pd[io], pd[io + 1], pd[io + 2])
+    new = (pd[inew], pd[inew + 1], pd[inew + 2])
+    print(f"       icon drag old={old} new={new}")
+    check("icon moved by drag", new == (0x2f, 0x6f, 0x9f) and
+          old != (0x2f, 0x6f, 0x9f), f"old={old} new={new}")
+
+# 拖入窗口: 把 FILES 图标拖到终端客户区 = 打开文件应用
+vm.buf = ""
+drag(32, 184, 600, 400)
+check("drop into window", vm.expect("[gui] drop Files", 5000), vm.buf[-300:])
+check("drop opens app", vm.expect("[gui] open files", 5000), vm.buf[-300:])
+goto(100, 700); click(); time.sleep(0.2)       # 关闭文件窗口
+
+# 再次点击已选中的 TERM 图标 = 打开终端
+vm.buf = ""
+goto(90, 400); click(); click(); time.sleep(0.3)
+check("terminal app opened", vm.expect("[gui] open terminal", 5000),
+      vm.buf[-300:])
 
 # ---- 语言切换与 Linux 风格命令 ----
 vm.buf = ""

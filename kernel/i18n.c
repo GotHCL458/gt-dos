@@ -18,6 +18,8 @@ static const struct entry table[] = {
       "\n     欢迎使用 GT-DOS！\n"
       "     让我们完成初始设置，只需一分钟。\n"
       "     (任意步骤按 Ctrl-C = 使用默认值 / 跳过)\n\n" },
+    { "oobe.defaults",   "  Press Enter to accept the default value on any step.\n",
+      "  任意步骤直接回车 = 采用默认值。\n" },
     { "oobe.lang",       "Language",                   "语言" },
     { "oobe.lang_en",    "  1) English",              "  1) English" },
     { "oobe.lang_zh",    "  2) 中文 (Chinese)",       "  2) 中文 (Chinese)" },
@@ -210,6 +212,37 @@ static const struct entry table[] = {
       "面板 -> 开始 / 主题 / 关于 / 设置 / 控件" },
     { "gui.about_l6",     "Click TEXT or the window close button to exit GUI",
       "点击 TEXT 或窗口关闭按钮退出图形界面" },
+
+    /* 右键菜单 / 属性 / 应用窗口 */
+    { "gui.ctx.terminal", "Open Terminal", "打开终端" },
+    { "gui.ctx.files",    "Open Files", "打开文件" },
+    { "gui.ctx.sys",      "System Info", "系统信息" },
+    { "gui.ctx.settings", "Settings", "设置" },
+    { "gui.ctx.props",    "Properties", "属性" },
+    { "gui.ctx.open",     "Open", "打开" },
+    { "gui.props_title",  "Properties", "属性" },
+    { "gui.prop.name",    "Name", "名称" },
+    { "gui.prop.type",    "Type", "类型" },
+    { "gui.prop.size",    "Size", "大小" },
+    { "gui.prop.loc",     "Location", "位置" },
+    { "gui.prop.res",     "Resolution", "分辨率" },
+    { "gui.prop.uptime",  "Uptime", "运行时间" },
+    { "gui.prop.theme",   "Theme", "主题" },
+    { "gui.prop.disk",    "Disk free", "磁盘可用" },
+    { "gui.prop.lang",    "Language", "语言" },
+    { "gui.prop.ver",     "Version", "版本" },
+    { "gui.desk",         "Desktop", "桌面" },
+    { "gui.desk.c",       "C:\\", "C:\\" },
+    { "gui.dir",          "<DIR>", "<目录>" },
+    { "gui.empty",        "(empty)", "(空)" },
+    { "gui.files_title",  "Files", "文件" },
+    { "gui.sys_title",    "System", "系统" },
+    { "gui.app",          "Application", "应用程序" },
+    { "gui.folder",       "Folder", "文件夹" },
+    { "gui.kernel",       "Kernel", "内核" },
+    { "gui.uptime_s",     "seconds", "秒" },
+    { "gui.bytes",        "bytes", "字节" },
+    { "gui.clusters",     "clusters", "簇" },
 
     { 0, 0, 0 }
 };

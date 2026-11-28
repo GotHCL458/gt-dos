@@ -389,12 +389,24 @@ def build_asm_asset(src_name, out_name):
     return open(out, "rb").read()
 
 
+def _gtl_icon_block(size=32):
+    """生成 .gtl 内嵌图标块: "GTI1" + u16 w + u16 h + RGBA.
+    PIL 不可用时返回 b"" (文件仍为合法无图标 GTL)."""
+    try:
+        from PIL import Image  # noqa: F401
+        img = _svg_render(ICON_SVGS["WIDGETS"], size, 4)
+        return (b"GTI1" + struct.pack("<HH", size, size) + img.tobytes())
+    except Exception:
+        return b""
+
+
 def build_demo_assets():
     """示例程序 / 共享库 / 数据文件 (随镜像种子写入 C:)."""
     return {
         "HELLO.GTP": build_asm_asset("hello.asm", "hello.gtp"),
         "DEMO.GTP": build_asm_asset("demo.asm", "demo.gtp"),
-        "SAMPLE.GTL": build_asm_asset("sample_lib.asm", "sample.gtl"),
+        "SAMPLE.GTL": (build_asm_asset("sample_lib.asm", "sample.gtl") +
+                       _gtl_icon_block()),
         "DATA.GTD": b"GTD-DATA\n",
     }
 
